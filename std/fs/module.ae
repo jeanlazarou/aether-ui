@@ -1,19 +1,26 @@
 // std.fs - File System Module
 // Import with: import std.fs
 //
-// Provides file, directory, path, and glob operations.
+// Provides file, directory, path, glob, and copy/move/realpath/chmod
+// operations.
 //
 // API shape:
 //   - Raw externs end in `_raw` and return ptr/int in the old C-style
 //     convention. They are the escape hatch for advanced callers.
 //   - Aether-native wrappers (below) use Go-style `(value, err)` tuple
 //     returns and are the idiomatic way to call fs operations.
-//   - A small set of newer wrappers (`copy`, `move`, `realpath`,
-//     `chmod`) ship the structured-error pilot from issue #392 —
-//     they return `(value, kind, message)` so callers can switch on
-//     the `KIND_*` enum below without parsing English. The pilot
-//     sits *next to* the (value, err) shape, not in place of it;
-//     existing wrappers are unchanged.
+//   - The newer wrappers `copy`, `move`, `realpath`, `chmod` ship the
+//     structured-error pilot from issue #392 — they return
+//     `(value, kind, message)` so callers can switch on the `KIND_*`
+//     enum below without parsing English. The pilot sits *next to*
+//     the (value, err) shape, not in place of it; every existing
+//     wrapper keeps its (value, err) or string-error return.
+//
+// Performance: `copy` zero-copies via the OS's best primitive
+// (copy_file_range / sendfile / fcopyfile / CopyFileExW); falls back
+// to an 8 MiB read/write loop on filesystems that reject the kernel
+// primitives. `move` is rename(2) with transparent EXDEV →
+// copy + unlink fallback. See aether_fs.c for the full hierarchy.
 
 exports (
     file_open_raw, file_close, file_read_all_raw, file_write_raw,
@@ -33,7 +40,8 @@ exports (
     symlink, readlink, unlink,
     list_dir, glob, glob_multi,
     write_binary, write_atomic, rename, file_stat, read_binary,
-    fs_copy_raw, copy,
+    fs_copy_raw, fs_move_raw, fs_realpath_raw, fs_chmod_raw,
+    copy, move, realpath, chmod,
     KIND_OK, KIND_NOT_FOUND, KIND_PERMISSION_DENIED, KIND_EXISTS,
     KIND_CROSS_DEVICE, KIND_IO, KIND_INVALID, KIND_LOOP,
     KIND_NAME_TOO_LONG, KIND_NO_SPACE, KIND_IS_DIR, KIND_NOT_DIR,
@@ -165,6 +173,22 @@ extern fs_read_binary_tuple(path: string) -> (ptr, int, string)
 // filesystems that reject the kernel primitives. See aether_fs.c for
 // the full performance hierarchy.
 extern fs_copy_raw(src: string, dst: string) -> (int, int, string)
+
+// fs_move_raw — atomic rename(2) when same-fs, transparent
+// copy + unlink fallback on EXDEV. Returns (1, KIND_OK, "") on
+// success, (0, KIND_*, msg) on failure.
+extern fs_move_raw(src: string, dst: string) -> (int, int, string)
+
+// fs_realpath_raw — OS-canonicalise the path (deref every symlink,
+// remove ./.. components). Returns (resolved_path, KIND_OK, "") on
+// success, ("", KIND_*, msg) on failure. Resolved path is heap-
+// allocated; the runtime owns it.
+extern fs_realpath_raw(path: string) -> (string, int, string)
+
+// fs_chmod_raw — POSIX chmod(2). On Windows only the user-write
+// bit (0o200) is honoured (matches Python's os.chmod docs). Returns
+// (1, KIND_OK, "") or (0, KIND_*, msg).
+extern fs_chmod_raw(path: string, mode: int) -> (int, int, string)
 
 extern dir_list_count(list: ptr) -> int
 extern dir_list_get(list: ptr, index: int) -> string
@@ -492,4 +516,33 @@ read_binary(path: string) -> {
 // truncated.
 copy(src: string, dst: string) -> {
     return fs_copy_raw(src, dst)
+}
+
+// Move file from `src` to `dst`. Atomic on the same filesystem;
+// transparently falls back to copy + unlink across filesystems
+// (EXDEV). Returns (1, KIND_OK, "") on success, (0, KIND_*, msg) on
+// failure. Cross-device directory moves surface as KIND_IS_DIR (the
+// underlying copy refuses to recurse into directories — that needs
+// a higher-level walker).
+move(src: string, dst: string) -> {
+    return fs_move_raw(src, dst)
+}
+
+// OS-canonicalise the path: deref every symlink, fold . and ..
+// components. Returns (resolved_path, KIND_OK, "") on success,
+// ("", KIND_*, msg) on failure (KIND_NOT_FOUND if a component is
+// missing, KIND_LOOP for symlink cycles, KIND_NAME_TOO_LONG if the
+// resolved form exceeds the OS limit). The returned path is
+// owned by the runtime; the caller does not need to free it.
+realpath(path: string) -> {
+    return fs_realpath_raw(path)
+}
+
+// Change the permission bits at `path`. POSIX chmod(2) — follows
+// symlinks. On Windows only the user-write bit (0o200) is honoured;
+// every other bit is silently ignored (matches Python's os.chmod
+// docs). `mode` is masked with 07777 internally. Returns
+// (1, KIND_OK, "") or (0, KIND_*, msg).
+chmod(path: string, mode: int) -> {
+    return fs_chmod_raw(path, mode)
 }

@@ -95,35 +95,37 @@ and "know where the binary lives" patterns common in CLI tools:
   on failure: replaces the current process image with another. Thin
   wrapper over POSIX `execvp()` and Windows `_execvp()`.
 
-### P4 — `std.fs` completeness bundle
+### P4 — `std.fs` completeness bundle ✅ done
 
-Six filesystem primitives that are present in every other language's
-stdlib and currently force Aether users to shell out:
+The six filesystem primitives that used to force Aether users to
+shell out are now in `std.fs`:
 
-| Wrapper | POSIX | Windows |
-|---|---|---|
-| `fs.copy(src, dst)` | `open` + `read`/`write` loop | `CopyFileW` |
-| `fs.move(src, dst)` | `rename` (same filesystem), fall back to copy+delete | `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` |
-| `fs.mkdir_p(path)` | recursive `mkdir(path, 0755)` | `SHCreateDirectoryExW` |
-| `fs.realpath(path)` | `realpath(3)` | `GetFullPathNameW` |
-| `fs.chmod(path, mode)` | `chmod(2)` | no-op or `SetFileAttributesW` for readonly |
-| `fs.symlink(target, link)` | `symlink(2)` | `CreateSymbolicLinkW` with junction fallback for dirs, copy-on-failure for files (non-elevated accounts can't create file symlinks on Windows) |
+| Wrapper | Status |
+|---|---|
+| `fs.copy(src, dst)` | ✅ shipped — zero-copy via `copy_file_range`/`sendfile`/`fcopyfile`/`CopyFileExW`; structured-error pilot |
+| `fs.move(src, dst)` | ✅ shipped — `rename(2)` with transparent EXDEV → copy+unlink fallback |
+| `fs.mkdir_p(path)` | ✅ shipped (pre-existed) |
+| `fs.realpath(path)` | ✅ shipped — POSIX `realpath(3)`; Windows `GetFinalPathNameByHandleW` |
+| `fs.chmod(path, mode)` | ✅ shipped — POSIX `chmod(2)`; Windows readonly-bit emulation |
+| `fs.symlink(target, link)` | ✅ shipped (pre-existed) |
 
-All six return the usual `(value, err)` or `string` error shape
-consistent with the rest of `std.fs`.
+`fs.copy`, `fs.move`, `fs.realpath`, `fs.chmod` are the pilot
+adopters of the structured-error tuple shape `(value, kind, message)`
+introduced for issue #392 — see `docs/stdlib-reference.md` and
+`docs/stdlib-module-pattern.md` for the full surface.
 
 **Note on existing functions:** `path.join`, `path.normalize`,
 `path.dirname`, `path.basename`, `path.is_absolute` are already
 implemented and don't need to be re-done. They live in `std/fs/aether_fs.c`.
 
-### Post-migration audit
+### Post-migration audit (still TODO)
 
-Once P1–P4 land, walk the `tools/*.ae` files (especially anything under
-`aetherBuild`) and migrate call sites from `os.system`/`os.exec` +
-manual quoting to `os.run`, and from shell-based file copying to
-`fs.copy`/`fs.move`. This is mechanical but high-signal: it proves the
-new primitives are actually better, and it'll surface any API gaps
-before external users hit them.
+Walk the `tools/*.ae` files (especially anything under `aetherBuild`)
+and migrate call sites from `os.system`/`os.exec` + manual quoting to
+`os.run`, and from shell-based file copying to `fs.copy`/`fs.move`.
+This is mechanical but high-signal: it proves the new primitives are
+actually better, and it'll surface any API gaps before external users
+hit them.
 
 ## Quick Wins
 

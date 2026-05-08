@@ -647,6 +647,12 @@ The pilot scope is `fs.copy` only in this commit; `fs.move`, `fs.realpath`, and 
 
   Performance: zero-copy via the platform's best primitive — Linux `copy_file_range(2)` (reflinks on btrfs/XFS) → `sendfile(2)`; macOS `fcopyfile(COPYFILE_DATA)` (APFS clone on same-volume); Windows `CopyFileExW` (kernel block copy). An 8 MiB read/write loop is the portable fallback for filesystems that reject the kernel primitives. The byte count saturates at `INT_MAX` for files larger than 2³¹ bytes — the data is still copied correctly; only the reported count is truncated.
 
+- `fs.move(src, dst)` → `(int, int, string)` — Move file from `src` to `dst`. Atomic when source and destination are on the same filesystem (POSIX `rename(2)`). On `EXDEV` (cross-device) the call transparently falls back to `fs.copy` + `unlink` — correct, but no longer atomic. Cross-device directory moves surface as `KIND_IS_DIR` (the underlying copy refuses to recurse). Windows uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED` so the cross-fs case is handled internally.
+
+- `fs.realpath(path)` → `(string, int, string)` — OS-canonicalise the path: every symlink is followed; `.` and `..` components are folded out. POSIX `realpath(3)`; on Windows `CreateFileW(FILE_FLAG_BACKUP_SEMANTICS)` + `GetFinalPathNameByHandleW(FILE_NAME_NORMALIZED)`, with the `\\?\` prefix stripped before returning. Common kinds: `KIND_NOT_FOUND` for a missing component, `KIND_LOOP` for symlink cycles, `KIND_NAME_TOO_LONG` if the resolved form exceeds the OS limit.
+
+- `fs.chmod(path, mode)` → `(int, int, string)` — Change permission bits. POSIX `chmod(2)` follows symlinks (matches what shell `chmod` does); `mode` is masked with `07777` internally so set-uid/sgid/sticky high-bits are honoured. On Windows only the user-write bit (`0o200`) is meaningful — read-only is toggled via `SetFileAttributesW(FILE_ATTRIBUTE_READONLY)`; every other bit is silently ignored, matching Python's `os.chmod` documented behaviour.
+
 ---
 
 ## JSON (`std.json`)
