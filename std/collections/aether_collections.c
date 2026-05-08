@@ -1,9 +1,17 @@
 #include "aether_collections.h"
 #include "../../runtime/aether_resource_caps.h"
+#include "../../runtime/aether_value_kind.h"
 #include <stdlib.h>
 #include <string.h>
 
+/* The leading uint32_t kind-magic on both ArrayList and HashMap is
+ * the discriminator used by aether_value_kind() in runtime/
+ * aether_config.c. Hosts holding an opaque AetherValue* can probe
+ * it safely (low-address guard + magic check) to discriminate map /
+ * list / scalar without a schema lookup. The struct layout is
+ * private to this TU; the magic must remain the first field. */
 struct ArrayList {
+    uint32_t _kind_magic;       /* = AETHER_KIND_LIST_MAGIC */
     void** items;
     int size;
     int capacity;
@@ -14,6 +22,7 @@ ArrayList* list_new() {
      * add — only the struct is accounted here. */
     ArrayList* list = (ArrayList*)aether_caps_malloc(sizeof(ArrayList));
     if (!list) return NULL;
+    list->_kind_magic = AETHER_KIND_LIST_MAGIC;
     list->items = NULL;
     list->size = 0;
     list->capacity = 0;
@@ -71,6 +80,14 @@ void list_clear(ArrayList* list) {
 
 void list_free(ArrayList* list) {
     if (!list) return;
+    /* Clear the kind-magic so a use-after-free probe via
+     * aether_value_kind() returns AETHER_KIND_UNKNOWN rather than
+     * false-matching the freed-but-still-readable memory. Defense
+     * in depth — the host should not be using a freed pointer at
+     * all, but we make the failure mode "kind says unknown,
+     * deep-free skips" instead of "kind says list, deep-free
+     * walks freed memory". */
+    list->_kind_magic = 0;
     /* Items array's allocated bytes = capacity × sizeof(void*).
      * Struct is sizeof(ArrayList). Both pair with the alloc-side
      * accounting in list_new + list_add_raw. */
@@ -96,6 +113,7 @@ typedef struct HashMapEntry {
 } HashMapEntry;
 
 struct HashMap {
+    uint32_t _kind_magic;       /* = AETHER_KIND_MAP_MAGIC */
     HashMapEntry** buckets;
     int capacity;
     int size;
@@ -128,6 +146,7 @@ static int key_equals(const HashMapEntry* e, const char* b, unsigned int b_len) 
 HashMap* map_new() {
     HashMap* map = (HashMap*)aether_caps_malloc(sizeof(HashMap));
     if (!map) return NULL;
+    map->_kind_magic = AETHER_KIND_MAP_MAGIC;
     map->capacity = HASHMAP_INITIAL_CAPACITY;
     map->size = 0;
     map->buckets = (HashMapEntry**)aether_caps_calloc(
@@ -278,6 +297,9 @@ void map_clear(HashMap* map) {
 void map_free(HashMap* map) {
     if (!map) return;
     map_clear(map);
+    /* Same defense-in-depth as list_free: clear the magic so a UAF
+     * probe sees AETHER_KIND_UNKNOWN. */
+    map->_kind_magic = 0;
     aether_caps_free(map->buckets,
                      (size_t)map->capacity * sizeof(HashMapEntry*));
     aether_caps_free(map, sizeof(HashMap));

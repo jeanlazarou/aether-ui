@@ -15,6 +15,8 @@
 
 #include "aether_config.h"
 #include "../std/collections/aether_collections.h"
+#include "../std/string/aether_string.h"
+#include "aether_value_kind.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -143,9 +145,111 @@ int32_t aether_config_list_get_bool(AetherValue* list, int32_t index, int32_t de
 
 void aether_config_free(AetherValue* root) {
     if (!root) return;
-    /* We can't distinguish map from list at this level without a type tag.
-     * For v1, assume the root is a HashMap — that's what Aether uses when
-     * a script returns a structured config via `map_new()`. If callers
-     * need list-root cleanup they can call list_free directly. */
-    map_free((HashMap*)root);
+    /* Use the kind tag to free the right container shape — the
+     * host doesn't have to know whether the script returned a map
+     * or a list. Falls back to the historical map-only path if the
+     * pointer carries no recognisable magic (preserves behaviour
+     * for callers in the field who rely on aether_config_free
+     * working on map roots specifically). */
+    switch (aether_value_kind(root)) {
+        case AETHER_KIND_MAP:  map_free((HashMap*)root);   return;
+        case AETHER_KIND_LIST: list_free((ArrayList*)root); return;
+        case AETHER_KIND_UNKNOWN:
+        default:               map_free((HashMap*)root);   return;
+    }
+}
+
+/* ------------------------------------------------------------------
+ * Kind discriminator — see header for safety contract.
+ * ------------------------------------------------------------------ */
+
+AetherKind aether_value_kind(AetherValue* v) {
+    if (!v) return AETHER_KIND_UNKNOWN;
+    /* Low-address guard: the zero page + first 64 KiB are unmapped
+     * on every supported OS (Linux's vm.mmap_min_addr default is
+     * 65536; macOS reserves more; Windows likewise). Any pointer
+     * below this range is a small intptr-cast scalar — never a
+     * heap allocation. Filter it before any deref. */
+    if ((uintptr_t)v < AETHER_KIND_MIN_VALID_ADDR) return AETHER_KIND_UNKNOWN;
+    /* Read the leading 4 bytes via memcpy to avoid strict-aliasing
+     * warnings. The cast is safe because the low-address guard
+     * above eliminated the only common UB case (intptr-cast small
+     * scalars); for higher-address intptr scalars that happen to
+     * land in mapped memory, the magic is 32 bits so the false-
+     * match probability is 1 - 2^-32 across both magics combined. */
+    uint32_t magic = 0;
+    /* Volatile cast: prevents the compiler from optimising the
+     * read away on the assumption that v's storage class implies
+     * a particular layout. */
+    const volatile uint32_t* head = (const volatile uint32_t*)v;
+    magic = *head;
+    if (magic == AETHER_KIND_LIST_MAGIC) return AETHER_KIND_LIST;
+    if (magic == AETHER_KIND_MAP_MAGIC)  return AETHER_KIND_MAP;
+    return AETHER_KIND_UNKNOWN;
+}
+
+int32_t aether_value_is_map(AetherValue* v) {
+    return aether_value_kind(v) == AETHER_KIND_MAP ? 1 : 0;
+}
+
+int32_t aether_value_is_list(AetherValue* v) {
+    return aether_value_kind(v) == AETHER_KIND_LIST ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------
+ * Deep-recursive free.
+ *
+ * The walk uses aether_value_kind() at every step so a scalar
+ * stored under a map key (e.g. `port: 8080` → intptr-cast int)
+ * is correctly skipped — only recognised containers are freed.
+ * This means the function is safe to call on any tree shape; it
+ * never derefs a stored scalar. The trade-off is that
+ * heap-allocated SCALARS (e.g. malloc'd float* or strdup'd
+ * strings the script put into the map) are NOT freed by this
+ * function — the host owns those separately. Documented in the
+ * header.
+ * ------------------------------------------------------------------ */
+
+static void free_deep_internal(AetherValue* v);
+
+static void free_deep_map(HashMap* m) {
+    if (!m) return;
+    /* Snapshot the keys, then walk values and recurse. The
+     * snapshot insulates us from re-entrant modifications during
+     * the walk (none expected from a free path, but cheap
+     * insurance). map_keys_raw allocates a MapKeys struct that we
+     * release with map_keys_free when done. */
+    MapKeys* keys = map_keys_raw(m);
+    if (keys) {
+        for (int i = 0; i < keys->count; i++) {
+            AetherString* k = keys->keys[i];
+            if (!k || !k->data) continue;
+            void* val = map_get_raw(m, k->data);
+            free_deep_internal((AetherValue*)val);
+        }
+        map_keys_free(keys);
+    }
+    map_free(m);
+}
+
+static void free_deep_list(ArrayList* l) {
+    if (!l) return;
+    int n = list_size(l);
+    for (int i = 0; i < n; i++) {
+        free_deep_internal((AetherValue*)list_get_raw(l, i));
+    }
+    list_free(l);
+}
+
+static void free_deep_internal(AetherValue* v) {
+    switch (aether_value_kind(v)) {
+        case AETHER_KIND_MAP:  free_deep_map((HashMap*)v);   return;
+        case AETHER_KIND_LIST: free_deep_list((ArrayList*)v); return;
+        case AETHER_KIND_UNKNOWN:
+        default:               return;  /* scalar / NULL / freed — leave alone */
+    }
+}
+
+void aether_config_free_deep(AetherValue* root) {
+    free_deep_internal(root);
 }

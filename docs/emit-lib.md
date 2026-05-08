@@ -348,20 +348,77 @@ re-arm + call again with a more generous budget, or surface
    (fs / net / os). Fine-grained gates like "allow file_open but not
    dir_delete" don't match any concrete threat model for the
    default-deny shape, and every additional flag is API surface.
-3. **Deep-recursive `aether_config_free`** — the runtime can't
-   discriminate map / list / scalar from a stored `void*` alone.
-   Aether's collections are deliberately untyped at the storage
-   level: a script writing `map_put(m, "port", 8080)` stores
-   `(void*)(intptr_t)8080`, which is *not a valid pointer to deref*.
-   Probing for a magic header would crash on every such intptr-cast
-   scalar. The host owns the schema; the host walks the tree. In
-   practice scripts build one tree and the whole thing is released
-   when the host is done, so this rarely matters; for hosts that
-   need recursive cleanup of a known-shape tree, walk it explicitly
-   using `aether_config_get_map` / `_get_list` / `_list_get` and
-   call `aether_config_free` on each container in post-order.
-4. **Typed returns beyond `void*`** — functions returning `map`/`list`
+3. **Typed returns beyond `void*`** — functions returning `map`/`list`
    come back as `AetherValue*` with no schema. Host knows the shape.
+
+## Kind discrimination + deep-free (`aether_value_kind`, `aether_config_free_deep`)
+
+Aether's collections are intentionally untyped at the storage level — a
+map's value slot is `void*`, and the host knows the schema. That
+historically meant schema-mismatch bugs (script stores an int where a
+map was expected) degraded into host-side segfaults. v1 closes that
+gap with a magic-tagged kind discriminator.
+
+Every `HashMap` and `ArrayList` carries a `uint32_t _kind_magic` as its
+leading field, set at construction and cleared on free. The runtime
+exposes:
+
+```c
+typedef enum {
+    AETHER_KIND_UNKNOWN = 0,
+    AETHER_KIND_MAP     = 1,
+    AETHER_KIND_LIST    = 2
+} AetherKind;
+
+AetherKind aether_value_kind(AetherValue* v);
+int32_t    aether_value_is_map(AetherValue* v);
+int32_t    aether_value_is_list(AetherValue* v);
+```
+
+These are **safe to call on any pointer the host holds**, including
+scalars that were intptr-cast to `AetherValue*` (e.g. `(void*)(intptr_t)42`
+from a schema-mismatched `_get_map` call). The probe applies two
+layers of safety:
+
+1. **Low-address guard** — the zero page + first 64 KiB are unmapped
+   on every supported OS (Linux's `vm.mmap_min_addr` default is
+   65536; macOS reserves more; Windows likewise). Any pointer below
+   `0x10000` is filtered before any deref attempt, so common
+   intptr-cast scalars never reach the magic check.
+2. **32-bit magic check** — for higher-address values that survive
+   the guard, the leading 4 bytes either match one of the two known
+   constants (`AETHER_KIND_LIST_MAGIC` / `AETHER_KIND_MAP_MAGIC`) or
+   the predicate reports `UNKNOWN`. False-match probability for a
+   non-container value is 2 / 2³² ≈ 5 × 10⁻¹⁰.
+
+`aether_config_free_deep(root)` builds on the predicate to walk a
+nested tree of containers and free each one in post-order. Scalars
+encountered along the way are left untouched (the host owns those
+separately). `aether_config_free` (shallow) auto-detects whether the
+root is a map or a list via the same predicate, so it now works on
+either container shape uniformly.
+
+```c
+AetherValue* root = aether_build_config("prod", 8080);
+
+if (aether_value_is_map(root)) {
+    /* Defensive — confirm what the script actually returned. */
+}
+
+AetherValue* db = aether_config_get_map(root, "db");
+if (aether_value_kind(db) == AETHER_KIND_MAP) {
+    const char* host = aether_config_get_string(db, "host");
+    /* … */
+}
+
+aether_config_free_deep(root);   /* nested map + list freed too */
+```
+
+Defense-in-depth: `list_free` and `map_free` clear the magic before
+releasing the struct's memory, so a use-after-free probe via
+`aether_value_kind` reads the cleared magic and reports `UNKNOWN`
+rather than a stale match on the freed-but-still-readable original
+value.
 
 ## Reflection: the symbol catalog (`aether_lib_meta`) — #403
 
@@ -486,6 +543,7 @@ The integration suite under `tests/integration/` covers:
 | `emit_lib_swig/` | SWIG Python round-trip (skips if `swig` missing) |
 | `emit_lib_with_capability/` | `--with=fs,net,os` opt-ins; `--with=first-party` and `--with=all` aliases |
 | `lib_meta/` | `aether_lib_meta` + `ae lib-info` round-trip — schema, source, function count, three signatures, c_symbol gating, source refs |
+| `emit_lib_kind_safe/` | Kind-discriminator predicates + deep-free safety — adversarial low-address probe (`(AetherValue*)42`) survives, kind correctly classifies map/list/scalar slots, deep-free walks nested map+list+scalars, magic-clear-on-free defends UAF probes |
 
 Run them with the standard `make test-ae` or individually:
 
