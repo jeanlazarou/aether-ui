@@ -29,6 +29,18 @@ JsonValue* json_parse_raw_n(const char* data, size_t len);
 // succeeded. The pointer is owned by the runtime; do not free it.
 const char* json_last_error(void);
 
+// Issue #392 — structured-error pilot. Programmatic accessors for
+// the kind / line / column of the last parse failure. Mirrors the
+// thread-local triple set by err_set in aether_json.c. KIND_OK = 0;
+// non-zero values mean a parse failure. Kinds:
+//   1 = parse error (any malformed JSON)
+//   2 = out of memory (arena allocation failed)
+//   3 = invalid input (NULL / empty handed to json_parse_raw)
+// The full enum is exported from std.json as `KIND_*` constants.
+int json_last_error_kind(void);
+int json_last_error_line(void);
+int json_last_error_col(void);
+
 // Serialize `value` to a newly malloc'd compact JSON string. Caller
 // must free. Returns a non-NULL empty string on allocation failure.
 // The Aether-side wrapper `json.stringify` copies into an owned

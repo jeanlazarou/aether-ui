@@ -79,21 +79,51 @@
 #define JSON_ERR_REASON_BUF 200
 #define JSON_ERROR_BUF_SIZE 256
 
+// Issue #392 — structured-error kinds. Mirror of the KIND_*
+// const block in std/json/module.ae. Update both in lock-step.
+// Values are stable; appending new kinds is fine, but existing
+// values are part of the surface contract.
+#define AETHER_JSON_KIND_OK             0
+#define AETHER_JSON_KIND_PARSE_ERROR    1   // ENOENT-of-syntax — any malformed JSON
+#define AETHER_JSON_KIND_OUT_OF_MEMORY  2   // arena allocation failed during parse
+#define AETHER_JSON_KIND_INVALID_INPUT  3   // NULL / empty input handed to json_parse_raw
+
 static JSON_THREAD_LOCAL char g_json_err_buf[JSON_ERROR_BUF_SIZE];
 static JSON_THREAD_LOCAL int  g_json_err_set;
+static JSON_THREAD_LOCAL int  g_json_err_kind;
+static JSON_THREAD_LOCAL int  g_json_err_line;
+static JSON_THREAD_LOCAL int  g_json_err_col;
 
 static void err_clear(void) {
     g_json_err_buf[0] = '\0';
     g_json_err_set = 0;
+    g_json_err_kind = AETHER_JSON_KIND_OK;
+    g_json_err_line = 0;
+    g_json_err_col = 0;
 }
 
 const char* json_last_error(void) {
     return g_json_err_set ? g_json_err_buf : "";
 }
 
+// Issue #392 — programmatic kind / position accessors. Callers that
+// want the structured-error tuple `(value, kind, message)` use the
+// `parse_strict` wrapper in module.ae which combines these with
+// json_last_error(). Kind constants live in module.ae as exported
+// `const KIND_*` (values match the AETHER_JSON_KIND_* macros above).
+int json_last_error_kind(void) { return g_json_err_set ? g_json_err_kind : AETHER_JSON_KIND_OK; }
+int json_last_error_line(void) { return g_json_err_set ? g_json_err_line : 0; }
+int json_last_error_col(void)  { return g_json_err_set ? g_json_err_col  : 0; }
+
 // Every parser error goes through this. First-error-wins so the innermost
 // diagnostic is preserved; outer callers that detect a NULL return don't
 // overwrite the deeper reason.
+//
+// Kind classification is single-site: any reason text containing
+// "out of memory" → KIND_OUT_OF_MEMORY; everything else →
+// KIND_PARSE_ERROR. This keeps the dozens of existing call sites
+// (~50 across this file) unchanged while still surfacing OOM
+// distinctly to callers who switch on the kind tuple.
 static void err_set(int line, int col, const char* fmt, ...) {
     if (g_json_err_set) return;
     char msg[JSON_ERR_REASON_BUF];
@@ -106,6 +136,11 @@ static void err_set(int line, int col, const char* fmt, ...) {
     snprintf(g_json_err_buf, sizeof(g_json_err_buf),
              "%s at %d:%d", msg, line, col);
     g_json_err_set = 1;
+    g_json_err_line = line;
+    g_json_err_col = col;
+    g_json_err_kind = (strstr(msg, "out of memory") != NULL)
+        ? AETHER_JSON_KIND_OUT_OF_MEMORY
+        : AETHER_JSON_KIND_PARSE_ERROR;
 }
 
 // Used once from json_parse_raw when the caller hands us a NULL pointer.
@@ -113,6 +148,9 @@ static void err_set_no_pos(const char* reason) {
     if (g_json_err_set) return;
     snprintf(g_json_err_buf, sizeof(g_json_err_buf), "%s", reason);
     g_json_err_set = 1;
+    g_json_err_line = 0;
+    g_json_err_col = 0;
+    g_json_err_kind = AETHER_JSON_KIND_INVALID_INPUT;
 }
 
 // ---------------------------------------------------------------------------

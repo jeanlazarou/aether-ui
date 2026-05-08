@@ -826,10 +826,43 @@ main() {
 
 **Parsing / Serialization:**
 - `json.parse(json_str)` → `(ptr, string)` - Parse JSON, returns `(value, err)` tuple
+- `json.parse_strict(json_str)` → `(ptr, int, string)` - Structured-error variant of `parse` (issue #392): returns `(value, KIND_OK, "")` on success or `(null, KIND_*, "<reason> at <line>:<col>")` on failure. `kind` discriminates between syntax errors (`KIND_PARSE_ERROR`), out-of-memory (`KIND_OUT_OF_MEMORY`), and invalid input (`KIND_INVALID_INPUT`) without parsing the human message. KIND values match `std.fs`'s pilot so callers can mix the two surfaces in a single switch.
+- `json.last_error_kind()` / `last_error_line()` / `last_error_col()` → `int` - Programmatic accessors for the most recent parse failure on this thread. Read AFTER a `parse` / `parse_strict` returned a failure; undefined after a successful parse. Line/column are 1-based and match the values embedded in the error message.
 - `json.stringify(value)` - Serialize to JSON string (returns plain `char*`, infallible)
 - `json.free(value)` - Free a JSON value tree
 
 Raw extern: `json_parse_raw`.
+
+**Structured-error kinds** (exported from `std.json`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `KIND_OK` | 0 | parse succeeded |
+| `KIND_PARSE_ERROR` | 1 | malformed JSON (the message carries `... at line:col`) |
+| `KIND_OUT_OF_MEMORY` | 2 | arena allocation failed during parse |
+| `KIND_INVALID_INPUT` | 3 | NULL / empty input handed to `parse_strict` |
+
+```aether
+import std.json
+
+main() {
+    v, kind, msg = json.parse_strict(input)
+    if kind == json.KIND_OK {
+        // use v ...
+        json.free(v)
+    } else if kind == json.KIND_PARSE_ERROR {
+        line = json.last_error_line()
+        col  = json.last_error_col()
+        println("syntax error at ${line}:${col}: ${msg}")
+    } else if kind == json.KIND_OUT_OF_MEMORY {
+        println("OOM during parse")
+    } else {
+        println("invalid input: ${msg}")
+    }
+}
+```
+
+The `parse_strict` shape is the std.fs pilot from issue #392 extended to a second module — same tuple, same KIND_* convention.
 
 **Type Checking:**
 - `json.type(value)` - Get type constant (0-5)
