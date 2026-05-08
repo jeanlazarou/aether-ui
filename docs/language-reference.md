@@ -787,6 +787,40 @@ checked_op(x: int) -> {
 }
 ```
 
+### String ownership for `-> string` functions
+
+Strings are special-cased in the memory model: every reassignment to a string variable that previously held a heap-allocated value frees the old buffer through a compiler-emitted wrapper. **You do not write `defer string.free(s)` for in-Aether assignments** — the compiler tracks ownership transitions automatically per [docs/memory-management.md "String memory model"](memory-management.md#string-memory-model-heap-string-tracker).
+
+A user-defined function declared `-> string` is treated as **heap-returning** iff every return statement in its body yields a heap-string-expression (recursive structural escape analysis):
+
+```aether
+my_concat(a: string, b: string) -> string {
+    return string.concat(a, b)        // heap-string-expr return → my_concat is heap-returning
+}
+
+s = ""
+i = 0
+while i < 1000000 {
+    s = my_concat(s, "x")              // O(1) memory — old s freed automatically
+    i = i + 1
+}
+```
+
+A function returning a string literal — or whose returns mix heap and literal sources — is **not** recognised. The wrapper won't try to free its result. This is the conservative stance taken to avoid free-of-literal aborts:
+
+```aether
+banner(name: string) -> string {
+    if string.length(name) == 0 {
+        return "guest"                 // literal — banner is NOT heap-returning
+    }
+    return string.concat("hi ", name)  // heap, but the function as a whole isn't heap-returning
+}
+```
+
+If you want every return from your `-> string` function to be heap (so the wrapper reclaims it), box any literals: `return string.concat("", "guest")` makes the literal return a heap-string-expression and pushes the function into the heap-returning set.
+
+See [examples/basics/string-ownership.ae](../examples/basics/string-ownership.ae) for a runnable demonstration. Closes issue #405.
+
 ---
 
 ## Structs

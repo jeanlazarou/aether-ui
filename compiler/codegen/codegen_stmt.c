@@ -1,18 +1,6 @@
 #include "codegen_internal.h"
 #include "optimizer.h"
 
-// File-local cache of the program-root AST set at codegen entry. Used
-// by is_heap_string_expr's structural escape analysis to look up
-// callee function-definition bodies by name when deciding whether a
-// user-defined `-> string` function returns a heap-allocated string
-// (issue #405). Clearing on codegen completion matters when the
-// codegen library is used iteratively (LSP, REPL).
-static ASTNode* g_codegen_program_for_heap_lookup = NULL;
-
-void codegen_set_program_for_heap_lookup(ASTNode* program) {
-    g_codegen_program_for_heap_lookup = program;
-}
-
 // Is `name` the variable name of a known closure? If yes, also returns the
 // closure id via *out_id. Used by return-site Bug B protection.
 static int lookup_closure_var(CodeGenerator* gen, const char* name, int* out_id) {
@@ -561,13 +549,20 @@ static int has_list_patterns(ASTNode* match_stmt) {
 }
 
 // Forward declarations.
-static int function_def_returns_heap_string(ASTNode* fn_def);
+static int function_def_returns_heap_string(CodeGenerator* gen, ASTNode* fn_def);
 
 // Linear scan over program-root children matching by `value`. Mirror
 // of count_function_clauses in codegen.c (kept module-local here to
 // avoid an internal-header churn). Returns the first match — for
 // pattern-matched multi-clause functions, the first clause's body is
 // representative for return-type purposes.
+//
+// Cost note: O(K) per call where K is the number of top-level fn
+// definitions. Called once per user-fn-call-site during codegen, so
+// total codegen-time cost is O(call_sites × K). For typical programs
+// (K < 200) this is well under a millisecond. If the count grows,
+// promote to a hash via gen->fn_def_lookup; the static here is the
+// O(1)-amortised refactor seam.
 static ASTNode* find_function_definition_by_name(ASTNode* program,
                                                  const char* name) {
     if (!program || !name) return NULL;
@@ -599,9 +594,15 @@ static ASTNode* find_function_definition_by_name(ASTNode* program,
 //      are explicitly NOT recognised — treating them as heap would
 //      free a literal at scope exit and abort.
 //
-// The recursion is bounded by the AST depth and a depth counter
-// (function_def_returns_heap_string clears its memo on cycle).
-static int is_heap_string_expr(ASTNode* expr) {
+// The recursion is bounded by AST depth and is memoised on the fn
+// def's annotation slot; mutual recursion through `-> string`
+// functions returns "not heap" conservatively (cycle break).
+//
+// `gen` may be NULL for unit-test contexts that exercise the
+// hardcoded-stdlib + string-interp fast paths in isolation. When
+// non-NULL, gen->program is consulted for user-defined-fn lookup;
+// when NULL, we fall through to the conservative answer.
+static int is_heap_string_expr(CodeGenerator* gen, ASTNode* expr) {
     if (!expr) return 0;
 
     // String interpolation (non-printf mode) allocates via _aether_interp.
@@ -622,18 +623,16 @@ static int is_heap_string_expr(ASTNode* expr) {
         // User-defined function: only heap if its body provably
         // returns heap strings. Structurally analyse the function
         // definition (memoised on the def node's annotation slot to
-        // bound recursion). Look up the def by name in the program
-        // root cached at codegen entry. Without the program (e.g.
-        // unit tests of is_heap_string_expr in isolation) we fall
-        // through to the conservative "not heap" answer, which is
-        // strictly better than the literal-free abort the naive
+        // bound recursion). Without `gen->program` (e.g. unit tests)
+        // fall through to the conservative "not heap" answer, which
+        // is strictly better than the literal-free abort the naive
         // node_type-only check produced.
-        if (expr->node_type && expr->node_type->kind == TYPE_STRING &&
-            g_codegen_program_for_heap_lookup) {
+        if (gen && gen->program &&
+            expr->node_type && expr->node_type->kind == TYPE_STRING) {
             ASTNode* fn_def = find_function_definition_by_name(
-                g_codegen_program_for_heap_lookup, fn);
+                gen->program, fn);
             if (fn_def) {
-                return function_def_returns_heap_string(fn_def);
+                return function_def_returns_heap_string(gen, fn_def);
             }
         }
     }
@@ -650,11 +649,13 @@ static int is_heap_string_expr(ASTNode* expr) {
 // "heap_pending". A pending mark means we hit a cycle (two
 // mutually-recursive `-> string` user functions); we conservatively
 // return 0 in that case.
-static void walk_returns_for_heap_check(ASTNode* node, int* found, int* all_heap) {
+static void walk_returns_for_heap_check(CodeGenerator* gen, ASTNode* node,
+                                         int* found, int* all_heap) {
     if (!node || !*all_heap) return;
     if (node->type == AST_RETURN_STATEMENT) {
         *found = 1;
-        if (node->child_count == 0 || !is_heap_string_expr(node->children[0])) {
+        if (node->child_count == 0 ||
+            !is_heap_string_expr(gen, node->children[0])) {
             *all_heap = 0;
         }
         return;
@@ -666,11 +667,11 @@ static void walk_returns_for_heap_check(ASTNode* node, int* found, int* all_heap
         return;
     }
     for (int i = 0; i < node->child_count && *all_heap; i++) {
-        walk_returns_for_heap_check(node->children[i], found, all_heap);
+        walk_returns_for_heap_check(gen, node->children[i], found, all_heap);
     }
 }
 
-static int function_def_returns_heap_string(ASTNode* fn_def) {
+static int function_def_returns_heap_string(CodeGenerator* gen, ASTNode* fn_def) {
     if (!fn_def ||
         (fn_def->type != AST_FUNCTION_DEFINITION &&
          fn_def->type != AST_BUILDER_FUNCTION)) {
@@ -698,7 +699,7 @@ static int function_def_returns_heap_string(ASTNode* fn_def) {
     }
     int found = 0;
     int all_heap = 1;
-    if (body) walk_returns_for_heap_check(body, &found, &all_heap);
+    if (body) walk_returns_for_heap_check(gen, body, &found, &all_heap);
     int result = (found && all_heap) ? 1 : 0;
 
     if (memoise) {
@@ -731,7 +732,7 @@ static int function_def_returns_heap_string(ASTNode* fn_def) {
 // went out of scope when control left that block. Cross-block
 // reassignment of a string variable then either failed to compile
 // (`'_heap_x' undeclared`) or silently leaked the old value.
-static void collect_heap_string_var_names(ASTNode* node,
+static void collect_heap_string_var_names(CodeGenerator* gen, ASTNode* node,
                                           const char** names,
                                           int* count, int cap) {
     if (!node || *count >= cap) return;
@@ -739,7 +740,7 @@ static void collect_heap_string_var_names(ASTNode* node,
     if (node->type == AST_VARIABLE_DECLARATION && node->value) {
         // Decide whether this declaration's LHS deserves a tracker.
         int needs_tracker = 0;
-        if (node->child_count > 0 && is_heap_string_expr(node->children[0])) {
+        if (node->child_count > 0 && is_heap_string_expr(gen, node->children[0])) {
             needs_tracker = 1;
         }
         // Type-annotated string variable (covers `s: string = ""`).
@@ -766,7 +767,7 @@ static void collect_heap_string_var_names(ASTNode* node,
     }
 
     for (int i = 0; i < node->child_count; i++) {
-        collect_heap_string_var_names(node->children[i], names, count, cap);
+        collect_heap_string_var_names(gen, node->children[i], names, count, cap);
     }
 }
 
@@ -784,7 +785,7 @@ void hoist_heap_string_trackers(CodeGenerator* gen, ASTNode* body) {
     if (!body || !gen) return;
     const char* names[256];  // 256 string vars per fn is generous
     int count = 0;
-    collect_heap_string_var_names(body, names, &count, 256);
+    collect_heap_string_var_names(gen, body, names, &count, 256);
     for (int i = 0; i < count; i++) {
         if (is_heap_string_var(gen, names[i])) continue;
         print_indent(gen);
@@ -1210,7 +1211,7 @@ void generate_statement(CodeGenerator* gen, ASTNode* stmt) {
             
             if (is_state_var) {
                 // Generate as assignment to self->field
-                if (stmt->child_count > 0 && is_heap_string_expr(stmt->children[0])) {
+                if (stmt->child_count > 0 && is_heap_string_expr(gen, stmt->children[0])) {
                     fprintf(gen->output, "{ const char* _tmp_old = self->%s; ", stmt->value);
                     fprintf(gen->output, "self->%s = ", stmt->value);
                     generate_expression(gen, stmt->children[0]);
@@ -1343,7 +1344,7 @@ void generate_statement(CodeGenerator* gen, ASTNode* stmt) {
                     // this, heap→lit would leave _heap stale and a
                     // later free could attempt to release a literal.
                     int rhs_is_heap = (stmt->child_count > 0 &&
-                                       is_heap_string_expr(stmt->children[0]));
+                                       is_heap_string_expr(gen, stmt->children[0]));
                     int var_is_string = is_heap_string_var(gen, stmt->value);
                     if (var_is_string && stmt->child_count > 0) {
                         // Defensive: if the hoist somehow missed this
@@ -1609,13 +1610,13 @@ void generate_statement(CodeGenerator* gen, ASTNode* stmt) {
                                 init->node_type && init->node_type->kind == TYPE_STRING) {
                                 is_string_var = 1;
                             }
-                            if (is_heap_string_expr(init)) {
+                            if (is_heap_string_expr(gen, init)) {
                                 is_string_var = 1;
                             }
                         }
                         if (is_string_var) {
                             int init_heap = (stmt->child_count > 0 &&
-                                             is_heap_string_expr(stmt->children[0]));
+                                             is_heap_string_expr(gen, stmt->children[0]));
                             print_indent(gen);
                             // Issue #405: the function-entry hoist
                             // (hoist_heap_string_trackers, called from

@@ -342,6 +342,13 @@ When `AETHER_HAS_ATOMICS == 0`, `<stdatomic.h>` is replaced with fallback typede
 - NUMA-aware placement on the local node of the assigned core
 - Falls back to standard allocation on non-NUMA systems
 
+**String Ownership (heap-string tracker, issue #405):**
+- Every string variable carries a compiler-emitted `_heap_<name>` companion that flips between 0 (literal) and 1 (heap-allocated) on each reassignment
+- Trackers are emitted at function-entry scope by a dedicated codegen pre-pass (`hoist_heap_string_trackers` in `compiler/codegen/codegen_stmt.c`), making cross-block reassignment safe
+- Reassignment goes through a unified wrapper handling all four heap/literal transitions: `{ const char* _tmp_old = s; s = <rhs>; if (_heap_s) free(_tmp_old); _heap_s = <rhs_is_heap>; }`
+- Recognised heap sources: hardcoded stdlib `string.{concat,substring,to_upper,to_lower,trim}`, string interpolation `"foo ${x}"`, and user-defined `-> string` functions whose body provably returns heap (recursive structural escape analysis with cycle detection, memoised on the function-definition AST node's annotation slot)
+- Runtime cost: zero — just `if (...) free(...)` per assignment. Codegen-time cost: O(K) per call site for fn-def lookup where K is the number of top-level fn definitions; total well under a millisecond for typical programs
+
 ### Performance Optimizations
 
 The runtime implements these optimization strategies in the active code paths:

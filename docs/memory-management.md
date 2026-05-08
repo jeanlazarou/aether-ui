@@ -213,6 +213,12 @@ while i < n {
 
 Strings have a more granular model than other allocations: every reassignment to a string variable that has held a heap-allocated value frees the old buffer through a compiler-emitted wrapper. You don't write `defer string.free(s)` — the compiler tracks ownership transitions automatically.
 
+This follows the principle Bjarne Stroustrup laid out in [_How do I deal with memory leaks?_](https://www.stroustrup.com/bs_faq2.html#memory-leaks):
+
+> ... successful techniques rely on hiding allocation and deallocation inside more manageable types. Good examples are the standard containers. They manage memory for their elements better than you could without disproportionate effort.
+
+Aether takes the same shape — strings are the "standard container" for character data, and the compiler hides allocation and deallocation transitions behind the assignment operator. The user-visible model is "assign and reassign normally"; reclamation is the compiler's job.
+
 ### What gets freed automatically
 
 For every string variable in a function, the compiler emits a companion `int _heap_<name>` tracker that's set to `1` after every heap-string assignment and `0` after every literal assignment. On reassignment, the wrapper `if (_heap_<name>) free(<old>)` decides whether to release the previous buffer.

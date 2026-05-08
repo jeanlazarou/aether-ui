@@ -1300,10 +1300,10 @@ void generate_main_function(CodeGenerator* gen, ASTNode* main) {
 void generate_program(CodeGenerator* gen, ASTNode* program) {
     if (!program || program->type != AST_PROGRAM) return;
     gen->program = program;
-    // Publish the program root to codegen_stmt.c's heap-string
-    // lookup so user-defined `-> string` functions can be analysed
-    // structurally for heap-allocation status (issue #405).
-    codegen_set_program_for_heap_lookup(program);
+    // Note: `gen->program` is the source of truth for the
+    // structural-escape-analysis lookup (issue #405). Setting it
+    // here means every per-fn codegen pass beyond this point can
+    // recognise user-defined `-> string` functions as heap-returning.
 
     // If emitting header, write prologue
     if (gen->emit_header && gen->header_file) {
@@ -2205,9 +2205,4 @@ void generate_program(CodeGenerator* gen, ASTNode* program) {
     if (gen->emit_header && gen->header_file) {
         emit_header_epilogue(gen);
     }
-
-    // Clear the program-root cache on the way out so iterative
-    // codegen sessions (LSP, REPL) don't retain a stale pointer to
-    // the previous program's AST.
-    codegen_set_program_for_heap_lookup(NULL);
 }
