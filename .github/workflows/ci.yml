@@ -198,6 +198,33 @@ jobs:
       run: make ci-embedded
 
   # ============================================================
+  # RISC-V 64-bit cross-compile + qemu-user-static (issue #397).
+  # Catches portability bugs that an x86_64-only matrix can't see —
+  # pointer-width / struct-padding / atomic-instruction differences
+  # between x86_64 and riscv64. The cross-compiler is a host x86_64
+  # binary; qemu-riscv64-static actually runs the cross-built
+  # aetherc / ae for a smoke check.
+  # ============================================================
+  ci-riscv64:
+    name: Linux / RISC-V 64 (cross via qemu)
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install RISC-V cross-toolchain + qemu
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-riscv64-linux-gnu \
+          libc6-dev-riscv64-cross \
+          qemu-user-static \
+          make bc pkg-config file
+
+    - name: Run RISC-V CI
+      run: make ci-riscv64
+
+  # ============================================================
   # Memory safety — Valgrind + AddressSanitizer on Linux/GCC
   # Separate from main CI because it needs special build flags
   # and is slower. Runs in parallel with the ci job.

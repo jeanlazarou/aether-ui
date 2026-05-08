@@ -215,6 +215,27 @@ make docker-ci-embedded    # arm-none-eabi-gcc → syntax-check
 make ci-portability        # All: native coop + WASM + embedded
 ```
 
+### RISC-V 64-bit (`ci-riscv64`)
+
+Cross-compile + run-under-qemu portability check (issue #397):
+
+```bash
+# Install host toolchain (Ubuntu 22.04+):
+sudo apt-get install -y gcc-riscv64-linux-gnu \
+    libc6-dev-riscv64-cross qemu-user-static
+
+# Cross-compile compiler/ae/stdlib for riscv64; verify the binaries
+# are riscv64 ELF; smoke-run them under qemu-user-static.
+make ci-riscv64
+```
+
+Useful for catching pointer-width, struct-padding, and atomic-
+instruction-availability bugs that an x86_64-only matrix can't
+surface. Optional libs (OpenSSL, zlib, nghttp2, GTK4) are disabled
+in the riscv64 build because the host runner's pkg-config returns
+x86_64 lib paths — the std.* feature-detection wrappers fall into
+their "unavailable" stubs cleanly.
+
 Docker images: `docker/Dockerfile.wasm` (Emscripten), `docker/Dockerfile.embedded` (ARM Cortex-M4).
 
 ## Build Recommendations
