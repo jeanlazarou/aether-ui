@@ -155,6 +155,14 @@ const char* fs_get_read_binary(void);
 int   fs_get_read_binary_length(void);
 void  fs_release_read_binary(void);
 
+/* The structured-error pilot primitives (#391 + #392) — fs_copy_raw,
+ * fs_move_raw, fs_realpath_raw, fs_chmod_raw — return the codegen-
+ * emitted (int, int, string) / (string, int, string) tuple ABI and
+ * have no C-visible declarations in this header (they're only ever
+ * called from generated Aether code, the same way fs_read_binary_tuple
+ * is). The saturation contract is documented at each implementation
+ * site in std/fs/aether_fs.c. */
+
 // Path operations
 char* path_join(const char* path1, const char* path2);
 char* path_dirname(const char* path);

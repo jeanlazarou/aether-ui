@@ -33,6 +33,7 @@ exports (
     symlink, readlink, unlink,
     list_dir, glob, glob_multi,
     write_binary, write_atomic, rename, file_stat, read_binary,
+    fs_copy_raw, copy,
     KIND_OK, KIND_NOT_FOUND, KIND_PERMISSION_DENIED, KIND_EXISTS,
     KIND_CROSS_DEVICE, KIND_IO, KIND_INVALID, KIND_LOOP,
     KIND_NAME_TOO_LONG, KIND_NO_SPACE, KIND_IS_DIR, KIND_NOT_DIR,
@@ -155,6 +156,15 @@ extern fs_release_read_binary()
 // failure. The bytes pointer owns its payload; no companion release
 // call needed.
 extern fs_read_binary_tuple(path: string) -> (ptr, int, string)
+
+// Structured-error pilot (issue #392) — these externs return
+// (value, kind, message) where kind is one of the KIND_* constants
+// at the top of this module. fs_copy_raw zero-copies via the
+// platform's best primitive (copy_file_range / sendfile / fcopyfile /
+// CopyFileExW); falls back to an 8 MiB read/write loop on
+// filesystems that reject the kernel primitives. See aether_fs.c for
+// the full performance hierarchy.
+extern fs_copy_raw(src: string, dst: string) -> (int, int, string)
 
 extern dir_list_count(list: ptr) -> int
 extern dir_list_get(list: ptr, index: int) -> string
@@ -461,4 +471,25 @@ read_binary(path: string) -> {
     // wrapper used to orchestrate is still in place for callers built
     // directly against it; new bindings reach for the unified shape.
     return fs_read_binary_tuple(path)
+}
+
+// Copy file contents from `src` to `dst`, preserving source mode bits
+// (file owner is NOT changed). Returns (bytes_copied, kind, message):
+//   on success: (n, KIND_OK, "")
+//   on failure: (bytes_so_far, KIND_*, "<reason>")
+//
+// Symlinks in `src` are followed (matches POSIX `cp` without -P).
+// `dst` is overwritten if it exists; if `dst` is an existing directory
+// the call returns KIND_IS_DIR — we do not nest into it. `src` and
+// `dst` must differ lexically; the call returns KIND_INVALID otherwise.
+//
+// Performance: zero-copy primitives are tried in order
+// (copy_file_range → sendfile on Linux; fcopyfile on macOS;
+// CopyFileExW on Windows). An 8 MiB read/write loop is the portable
+// fallback for filesystems that reject the kernel primitives. The
+// reported byte count saturates at INT_MAX for files larger than
+// 2^31 bytes — the data is still copied correctly; only the count is
+// truncated.
+copy(src: string, dst: string) -> {
+    return fs_copy_raw(src, dst)
 }

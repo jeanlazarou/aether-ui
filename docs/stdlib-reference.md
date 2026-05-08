@@ -604,6 +604,49 @@ main() {
 - `fs.file_stat(path)` → `(kind, size, mtime, err)` - One `lstat(2)`; symlinks report kind 3, target is not followed.
 - `fs.read_binary(path)` → `(content, length, err)` - Length-aware read preserving embedded NULs.
 
+### Structured-error pilot (issue #392)
+
+The four wrappers below return a three-element tuple `(value, kind: int, message: string)` instead of the usual `(value, err)` shape. `kind` is one of the `KIND_*` constants exported from `std.fs`; switch on it to discriminate failure modes programmatically without parsing English. `kind == fs.KIND_OK` (the integer `0`) means success; the message stays empty.
+
+```aether
+import std.fs
+
+bytes, kind, msg = fs.copy("a.bin", "b.bin")
+if kind == fs.KIND_OK {
+    println("copied ${bytes} bytes")
+} else if kind == fs.KIND_NOT_FOUND {
+    println("source missing")
+} else if kind == fs.KIND_PERMISSION_DENIED {
+    println("permission denied (${msg})")
+} else {
+    println("copy failed: ${msg}")
+}
+```
+
+The pilot scope is `fs.copy` only in this commit; `fs.move`, `fs.realpath`, and `fs.chmod` join it in the next commit. Existing wrappers keep their `(value, err)` shape unchanged — the structured-error shape sits next to it, not in place of it.
+
+**Constants** (exported from `std.fs`):
+| Constant | Value | Errno |
+|---|---|---|
+| `KIND_OK` | 0 | (none — success) |
+| `KIND_NOT_FOUND` | 1 | `ENOENT` |
+| `KIND_PERMISSION_DENIED` | 2 | `EACCES` / `EPERM` |
+| `KIND_EXISTS` | 3 | `EEXIST` |
+| `KIND_CROSS_DEVICE` | 4 | `EXDEV` |
+| `KIND_IO` | 5 | `EIO` and unspecified I/O errors |
+| `KIND_INVALID` | 6 | `EINVAL` (illegal argument; e.g. `src == dst`) |
+| `KIND_LOOP` | 7 | `ELOOP` (symlink cycle) |
+| `KIND_NAME_TOO_LONG` | 8 | `ENAMETOOLONG` |
+| `KIND_NO_SPACE` | 9 | `ENOSPC` |
+| `KIND_IS_DIR` | 10 | `EISDIR` |
+| `KIND_NOT_DIR` | 11 | `ENOTDIR` |
+| `KIND_UNAVAILABLE` | 99 | platform feature compiled out |
+
+**Functions:**
+- `fs.copy(src, dst)` → `(int, int, string)` — Copy file contents; preserves source mode bits. Symlinks in `src` are followed (matches POSIX `cp` without `-P`); `dst` is overwritten if it exists; `dst` cannot be an existing directory (returns `KIND_IS_DIR`). On partial failure, the bytes count reflects how far the copy got.
+
+  Performance: zero-copy via the platform's best primitive — Linux `copy_file_range(2)` (reflinks on btrfs/XFS) → `sendfile(2)`; macOS `fcopyfile(COPYFILE_DATA)` (APFS clone on same-volume); Windows `CopyFileExW` (kernel block copy). An 8 MiB read/write loop is the portable fallback for filesystems that reject the kernel primitives. The byte count saturates at `INT_MAX` for files larger than 2³¹ bytes — the data is still copied correctly; only the reported count is truncated.
+
 ---
 
 ## JSON (`std.json`)
