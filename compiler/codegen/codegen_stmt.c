@@ -1007,58 +1007,80 @@ static int has_identifier_ref(ASTNode* node, const char* name) {
 // disambiguated by the surrounding "<predicate-text> in <fn-name>"
 // line+column info from the panic stack trace (issue #347).
 
-// Round-trip a predicate-expression AST back to source-like text so
-// the diagnostic names the specific failed check. Best-effort —
-// covers the operator subset most contracts use.
-static void fprint_expr_text(FILE* out, ASTNode* e) {
-    if (!e) { fputs("?", out); return; }
+/* Tiny in-memory string-builder used to round-trip predicate text
+ * for the contract-check diagnostic. Earlier this used `fmemopen`,
+ * which is POSIX-only — MinGW64 has no equivalent. Plain
+ * `char[] + size_t off` works everywhere and produces the same
+ * bytes. Truncation is silent: a predicate longer than the
+ * caller's buffer ends with the last char that fit, no
+ * terminator overflow. */
+typedef struct { char* buf; size_t cap; size_t off; } _ContractStr;
+
+static void _cstr_putc(_ContractStr* s, char c) {
+    /* Reserve one byte for the trailing NUL. */
+    if (s->off + 1 < s->cap) s->buf[s->off++] = c;
+}
+static void _cstr_puts(_ContractStr* s, const char* str) {
+    while (*str) _cstr_putc(s, *str++);
+}
+static void _cstr_terminate(_ContractStr* s) {
+    if (s->cap == 0) return;
+    if (s->off >= s->cap) s->buf[s->cap - 1] = '\0';
+    else s->buf[s->off] = '\0';
+}
+
+/* Round-trip a predicate-expression AST back to source-like text so
+ * the diagnostic names the specific failed check. Best-effort —
+ * covers the operator subset most contracts use. */
+static void sprint_expr_text(_ContractStr* s, ASTNode* e) {
+    if (!e) { _cstr_puts(s, "?"); return; }
     switch (e->type) {
         case AST_IDENTIFIER:
         case AST_LITERAL:
-            if (e->value) fputs(e->value, out);
-            else fputs("?", out);
+            if (e->value) _cstr_puts(s, e->value);
+            else _cstr_puts(s, "?");
             return;
         case AST_NULL_LITERAL:
-            fputs("null", out);
+            _cstr_puts(s, "null");
             return;
         case AST_BINARY_EXPRESSION:
             if (e->child_count == 2) {
-                fprint_expr_text(out, e->children[0]);
-                fputc(' ', out);
-                if (e->value) fputs(e->value, out);
-                fputc(' ', out);
-                fprint_expr_text(out, e->children[1]);
+                sprint_expr_text(s, e->children[0]);
+                _cstr_putc(s, ' ');
+                if (e->value) _cstr_puts(s, e->value);
+                _cstr_putc(s, ' ');
+                sprint_expr_text(s, e->children[1]);
                 return;
             }
             break;
         case AST_UNARY_EXPRESSION:
             if (e->child_count == 1) {
-                if (e->value) fputs(e->value, out);
-                fprint_expr_text(out, e->children[0]);
+                if (e->value) _cstr_puts(s, e->value);
+                sprint_expr_text(s, e->children[0]);
                 return;
             }
             break;
         case AST_MEMBER_ACCESS:
             if (e->child_count == 1) {
-                fprint_expr_text(out, e->children[0]);
-                fputc('.', out);
-                if (e->value) fputs(e->value, out);
+                sprint_expr_text(s, e->children[0]);
+                _cstr_putc(s, '.');
+                if (e->value) _cstr_puts(s, e->value);
                 return;
             }
             break;
         case AST_FUNCTION_CALL:
-            if (e->value) fputs(e->value, out);
-            fputc('(', out);
+            if (e->value) _cstr_puts(s, e->value);
+            _cstr_putc(s, '(');
             for (int i = 0; i < e->child_count; i++) {
-                if (i) fputs(", ", out);
-                fprint_expr_text(out, e->children[i]);
+                if (i) _cstr_puts(s, ", ");
+                sprint_expr_text(s, e->children[i]);
             }
-            fputc(')', out);
+            _cstr_putc(s, ')');
             return;
         default:
             break;
     }
-    fputs("<expr>", out);
+    _cstr_puts(s, "<expr>");
 }
 
 // Recursively evaluate a predicate AST as a compile-time constant.
@@ -1135,15 +1157,9 @@ static void emit_contract_check(CodeGenerator* gen,
         print_indent(gen);
         fprintf(gen->output, "/* %s elided (always-true): ", role);
         char buf[1024];
-        FILE* mem = fmemopen(buf, sizeof(buf) - 1, "w");
-        if (mem) {
-            fprint_expr_text(mem, predicate);
-            long n = ftell(mem);
-            if (n < 0) n = 0;
-            if ((size_t)n >= sizeof(buf)) n = sizeof(buf) - 1;
-            buf[n] = '\0';
-            fclose(mem);
-        } else { buf[0] = '\0'; }
+        _ContractStr s = { buf, sizeof(buf), 0 };
+        sprint_expr_text(&s, predicate);
+        _cstr_terminate(&s);
         for (const char* p = buf; *p; p++) {
             /* Defensively split any star-slash sequence so the
              * predicate text can't accidentally terminate the
@@ -1163,17 +1179,9 @@ static void emit_contract_check(CodeGenerator* gen,
      * through (Aether-source-level printable ASCII is safe in C
      * literals). */
     char buf[1024];
-    FILE* mem = fmemopen(buf, sizeof(buf) - 1, "w");
-    if (mem) {
-        fprint_expr_text(mem, predicate);
-        long n = ftell(mem);
-        if (n < 0) n = 0;
-        if ((size_t)n >= sizeof(buf)) n = sizeof(buf) - 1;
-        buf[n] = '\0';
-        fclose(mem);
-    } else {
-        buf[0] = '\0';
-    }
+    _ContractStr s = { buf, sizeof(buf), 0 };
+    sprint_expr_text(&s, predicate);
+    _cstr_terminate(&s);
     for (const char* p = buf; *p; p++) {
         if (*p == '\\' || *p == '"') fputc('\\', gen->output);
         fputc(*p, gen->output);
