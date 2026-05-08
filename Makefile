@@ -2093,10 +2093,16 @@ ci-riscv64: clean
 	@echo "==================================="
 	@echo ""
 	@echo "[1/3] Cross-compiling compiler + ae + stdlib for riscv64..."
-	@CC=riscv64-linux-gnu-gcc \
+	# Variables passed as make COMMAND-LINE args (after `$(MAKE)`),
+	# not as the leading-VAR=VAL environment-export form. Make's
+	# command-line overrides beat the Makefile's `CC := gcc`
+	# (immediate assignment); environment variables do NOT, so
+	# the env-export form would silently fall through to the host
+	# gcc and pass `-mabi=lp64d` to it, which it rejects.
+	@$(MAKE) compiler ae stdlib \
+	    CC=riscv64-linux-gnu-gcc \
 	    EXTRA_CFLAGS="-march=rv64gc -mabi=lp64d" \
-	    OPENSSL=0 ZLIB=0 NGHTTP2=0 \
-	    $(MAKE) compiler ae stdlib
+	    OPENSSL=0 ZLIB=0 NGHTTP2=0
 	@echo ""
 	@echo "[2/3] Verifying cross-built binaries are riscv64 ELF..."
 	@file build/aetherc | grep -q "RISC-V" || { echo "  FAIL: aetherc not riscv64 ELF"; file build/aetherc; exit 1; }
