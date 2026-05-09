@@ -1555,6 +1555,22 @@ void generate_main_function(CodeGenerator* gen, ASTNode* main) {
         if (main->children[0] && main->children[0]->type == AST_BLOCK) {
             hoist_heap_string_trackers(gen, main->children[0]);
             mark_escaped_heap_string_vars(gen, main->children[0]);
+            /* Mirror the regular-function path in
+             * codegen_func.c::generate_function_definition: push a
+             * function-exit defer-free for every non-escaped
+             * hoisted heap-string variable so heap allocations
+             * surviving to main()'s tail are reclaimed at exit
+             * instead of leaking per-process. Without this the
+             * tracker would correctly free on every reassignment
+             * but the FINAL allocation in main() would never be
+             * freed — a constant per-program leak.
+             *
+             * Safety: the @retain annotations on string_retain/
+             * release/free (std/string/module.ae) mark vars that
+             * the user explicitly hands to a refcount call as
+             * escaped, so the auto-free here cannot double-free
+             * a buffer the user already released manually. */
+            push_heap_string_exit_free_defers(gen, main->children[0]);
         }
         generate_statement(gen, main->children[0]);
         gen->current_promoted_captures = prev_promoted;
