@@ -1827,10 +1827,64 @@ void generate_statement(CodeGenerator* gen, ASTNode* stmt) {
             generate_expression(gen, rhs);
             fprintf(gen->output, ";\n");
 
+            /* Per-position heap-ness lookup for the destructure
+             * (issue #420). For each tuple position `j`, decide
+             * whether the source value at that position is a fresh
+             * heap allocation that the destructured LHS now owns.
+             * Computed once up-front so the per-LHS loop can route
+             * correctly:
+             *
+             *   - User-defined tuple-returning fn: walk return-sites
+             *     via `function_def_returns_heap_at`, AND-fold per
+             *     position. Memoised on the fn's annotation slot.
+             *   - Extern or any other RHS: read the per-position
+             *     `tuple_heap_flags[j]` populated by the parser
+             *     when an `@heap` annotation is in scope. NULL
+             *     flags ⇒ all 0 (borrow) — preserves the silent
+             *     pre-#420 behaviour for unannotated externs.
+             *
+             * Heap classification is only meaningful for TYPE_STRING
+             * positions; non-string positions keep their plain
+             * assignment shape regardless of the flag. */
+            ASTNode* callee_def = NULL;
+            if (rhs && rhs->type == AST_FUNCTION_CALL && rhs->value) {
+                callee_def = find_function_definition_by_name(gen->program,
+                                                              rhs->value);
+            }
+
             // Generate: type a = _tmp._0; type b = _tmp._1; ...
             for (int j = 0; j < var_count; j++) {
                 ASTNode* var = stmt->children[j];
-                if (var->value && strcmp(var->value, "_") == 0) continue;  // Skip discard
+
+                /* Per-position heap classification. Defaults to 0
+                 * for any case the analyzer can't classify. */
+                int pos_is_string = (rhs_type && rhs_type->kind == TYPE_TUPLE &&
+                                     j < rhs_type->tuple_count &&
+                                     rhs_type->tuple_types[j] &&
+                                     rhs_type->tuple_types[j]->kind == TYPE_STRING);
+                int pos_is_heap = 0;
+                if (pos_is_string) {
+                    if (callee_def) {
+                        pos_is_heap = function_def_returns_heap_at(gen, callee_def, j);
+                    } else if (rhs_type && rhs_type->tuple_heap_flags) {
+                        pos_is_heap = rhs_type->tuple_heap_flags[j];
+                    }
+                }
+
+                /* `_` discard slot. If the position is a heap value,
+                 * the destructure target has no name to free against
+                 * — emit an immediate `free` so the heap allocation
+                 * doesn't leak across the destructure. Non-heap
+                 * positions stay no-ops. */
+                if (var->value && strcmp(var->value, "_") == 0) {
+                    if (pos_is_heap) {
+                        print_indent(gen);
+                        fprintf(gen->output,
+                                "if (_tup%d._%d) free((void*)_tup%d._%d);\n",
+                                tmp_id, j, tmp_id, j);
+                    }
+                    continue;
+                }
 
                 // Prefer tuple element type over var's node_type (may be UNKNOWN)
                 const char* var_type;
@@ -1888,10 +1942,62 @@ void generate_statement(CodeGenerator* gen, ASTNode* stmt) {
                         fprintf(gen->output, "_env->%s = _tup%d._%d;\n", var->value, tmp_id, j);
                         continue;
                     }
+                    /* String-typed LHS with a hoisted heap tracker —
+                     * route through the wrapper so heap-allocated
+                     * values from the destructure don't leak on
+                     * later reassignments. Mirrors the AST_VARIABLE_
+                     * DECLARATION reassignment shape at lines
+                     * 2087-2094. Issue #420.
+                     *
+                     * Escape gate: if the LHS has been passed to
+                     * something that may have stored its pointer
+                     * (map.put value, list.add, struct field write,
+                     * actor message field, closure capture), the
+                     * `free(_tmp_old)` would dangle the stored
+                     * copy — emit a plain assignment instead.
+                     * Strictly leaks the previous value; strictly
+                     * better than UAF.
+                     *
+                     * The wrapper fires for BOTH first-destructure
+                     * and re-destructure of a hoisted var, because
+                     * the hoist initialised `<lhs> = NULL` and
+                     * `_heap_<lhs> = 0`, so on first use the free
+                     * is a no-op and the tracker simply moves to
+                     * its true value. */
+                    int lhs_is_tracked = (var->value &&
+                                          is_heap_string_var(gen, var->value));
+                    if (pos_is_string && lhs_is_tracked) {
+                        int escaped = is_escaped_string_var(gen, var->value);
+                        if (escaped) {
+                            fprintf(gen->output, "%s = _tup%d._%d;\n",
+                                    var->value, tmp_id, j);
+                        } else {
+                            fprintf(gen->output,
+                                "{ const char* _tmp_old = %s; "
+                                "%s = _tup%d._%d; "
+                                "if (_heap_%s) free((void*)_tmp_old); "
+                                "_heap_%s = %d; }\n",
+                                var->value,
+                                var->value, tmp_id, j,
+                                var->value,
+                                var->value, pos_is_heap);
+                        }
+                        continue;
+                    }
                     fprintf(gen->output, "%s = _tup%d._%d;\n", var->value, tmp_id, j);
                 } else {
                     mark_var_declared(gen, var->value);
                     fprintf(gen->output, "%s %s = _tup%d._%d;\n", var_type, var->value, tmp_id, j);
+                    /* If the LHS is a hoisted heap-string tracker
+                     * (rare for first-decl since the hoist also
+                     * marks the var declared, but kept defensively
+                     * for the lazy-promote case) and the source
+                     * position is heap, set the tracker. */
+                    if (pos_is_string && var->value &&
+                        is_heap_string_var(gen, var->value) && pos_is_heap) {
+                        print_indent(gen);
+                        fprintf(gen->output, "_heap_%s = 1;\n", var->value);
+                    }
                 }
             }
             break;
