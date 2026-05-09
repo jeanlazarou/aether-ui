@@ -24,12 +24,31 @@ exports (
     json_create_string, json_create_array, json_create_object,
     parse, stringify, get_string,
     object_get, object_set, object_size, object_entry,
-    array_get, array_add
+    array_get, array_add,
+    parse_strict, last_error_kind, last_error_line, last_error_col,
+    KIND_OK, KIND_PARSE_ERROR, KIND_OUT_OF_MEMORY, KIND_INVALID_INPUT
 )
+
+// ---- Structured-error pilot (issue #392) ----
+//
+// A non-breaking extension of `json.parse` that returns the
+// canonical (value, kind, message) tuple from the std.fs pilot.
+// Existing `parse` callers (with the (value, err) shape) keep
+// working unchanged; new callers that want to switch on the failure
+// reason without parsing English use `parse_strict`. Kinds match
+// std.fs's where applicable so callers can mix the two surfaces in
+// the same switch.
+const KIND_OK            = 0
+const KIND_PARSE_ERROR   = 1   // any malformed JSON (with line:col in message)
+const KIND_OUT_OF_MEMORY = 2   // arena allocation failed during parse
+const KIND_INVALID_INPUT = 3   // NULL / empty input handed to json_parse_raw
 
 // ---- parsing and serialization (raw externs) ----
 extern json_parse_raw(json_str: string) -> ptr
 extern json_last_error() -> string
+extern json_last_error_kind() -> int
+extern json_last_error_line() -> int
+extern json_last_error_col() -> int
 extern json_stringify_raw(value: ptr) -> string
 extern json_free(value: ptr)
 
@@ -82,6 +101,37 @@ parse(json_str: string) -> {
     }
     return value, ""
 }
+
+// Issue #392 — structured-error variant of `parse`. Returns the
+// canonical (value, kind, message) tuple:
+//   on success: (value, KIND_OK, "")
+//   on failure: (null,  KIND_*, "<reason> at <line>:<col>")
+//
+// `kind` is one of the KIND_* constants exported from this module
+// — switch on it to discriminate between syntax errors, OOM, and
+// invalid-input failures without parsing the human-readable message.
+// Use `last_error_line` / `last_error_col` to pull the position
+// programmatically (the message also carries it as text, but the
+// accessors avoid a regex).
+parse_strict(json_str: string) -> (ptr, int, string) {
+    value = json_parse_raw(json_str)
+    if value == null {
+        kind = json_last_error_kind()
+        msg = json_last_error()
+        msg_owned = string_concat(msg, "")
+        return null, kind, msg_owned
+    }
+    return value, KIND_OK, ""
+}
+
+// Programmatic accessors for the most recent parse failure on this
+// thread (issue #392). Read these AFTER a `parse` / `parse_strict`
+// call returned a failure; they're undefined after a successful
+// parse. The line/col are 1-based and match the values embedded in
+// the error message.
+last_error_kind() -> int { return json_last_error_kind() }
+last_error_line() -> int { return json_last_error_line() }
+last_error_col()  -> int { return json_last_error_col()  }
 
 // Serialize a JSON value to a compact string. Returns (string, "") on
 // success, ("", error) on failure. The returned string is a refcounted

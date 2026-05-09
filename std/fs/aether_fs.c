@@ -50,6 +50,28 @@ typedef struct { void* _0; int _1; const char* _2; } _tuple_ptr_int_string;
 _tuple_ptr_int_string fs_read_binary_tuple(const char* p) {
     (void)p; _tuple_ptr_int_string out = { NULL, 0, "fs unavailable" }; return out;
 }
+typedef struct { int _0; int _1; const char* _2; } _tuple_int_int_string;
+_tuple_int_int_string fs_copy_raw(const char* s, const char* d) {
+    (void)s; (void)d;
+    _tuple_int_int_string out = { 0, AETHER_FS_KIND_UNAVAILABLE, "fs unavailable" };
+    return out;
+}
+_tuple_int_int_string fs_move_raw(const char* s, const char* d) {
+    (void)s; (void)d;
+    _tuple_int_int_string out = { 0, AETHER_FS_KIND_UNAVAILABLE, "fs unavailable" };
+    return out;
+}
+_tuple_int_int_string fs_chmod_raw(const char* p, int m) {
+    (void)p; (void)m;
+    _tuple_int_int_string out = { 0, AETHER_FS_KIND_UNAVAILABLE, "fs unavailable" };
+    return out;
+}
+typedef struct { const char* _0; int _1; const char* _2; } _tuple_string_int_string;
+_tuple_string_int_string fs_realpath_raw(const char* p) {
+    (void)p;
+    _tuple_string_int_string out = { "", AETHER_FS_KIND_UNAVAILABLE, "fs unavailable" };
+    return out;
+}
 char* path_join(const char* a, const char* b) { (void)a; (void)b; return NULL; }
 char* path_dirname(const char* p) { (void)p; return NULL; }
 char* path_basename(const char* p) { (void)p; return NULL; }
@@ -92,6 +114,22 @@ DirList* fs_glob_multi_raw(void* l) { (void)l; return NULL; }
 #else
     #include <dirent.h>
     #include <unistd.h>
+    /* Per-platform zero-copy primitives for fs.copy.
+     * Linux  : sys/sendfile.h + SYS_copy_file_range via syscall (no
+     *          _GNU_SOURCE needed; avoids the feature-test macro
+     *          dance for the whole TU).
+     * macOS  : <copyfile.h> for fcopyfile(COPYFILE_DATA) — APFS clone
+     *          on same-volume copies, kernel-level block copy
+     *          otherwise. Always works since macOS 10.12.
+     * Other  : pure POSIX read/write fallback (BSDs, illumos, etc.).
+     */
+    #if defined(__linux__)
+        #include <sys/sendfile.h>
+        #include <sys/syscall.h>
+    #elif defined(__APPLE__)
+        #include <copyfile.h>
+    #endif
+    #include <limits.h>           // INT_MAX (saturate the byte count)
 #endif
 
 // Unwrap the payload+length from a value that may be either an
@@ -722,6 +760,639 @@ _tuple_ptr_int_string fs_read_binary_tuple(const char* path) {
     out._1 = len;
     out._2 = "";
     return out;
+}
+
+// ============================================================
+// Structured-error pilot (issue #392) for fs.copy/move/realpath/chmod
+// ============================================================
+//
+// Tuple ABI struct mirroring the codegen-emitted typedef from
+// `extern fs_copy_raw(...) -> (int, int, string)`. _0 = bytes copied
+// (or progress made on partial failure), _1 = AETHER_FS_KIND_*,
+// _2 = "" on success or human-readable diagnostic on failure.
+typedef struct {
+    int _0;            // bytes copied (saturated at INT_MAX)
+    int _1;            // AETHER_FS_KIND_*
+    const char* _2;    // "" on success, error message on failure
+} _tuple_int_int_string;
+
+// Single errno -> kind translation site, used by every pilot
+// primitive. Adding a new kind: extend the switch + the macros in
+// aether_fs.h + the const block in std/fs/module.ae together.
+static int aether_fs_errno_to_kind(int err) {
+    switch (err) {
+        case 0:            return AETHER_FS_KIND_OK;
+        case ENOENT:       return AETHER_FS_KIND_NOT_FOUND;
+#ifdef EACCES
+        case EACCES:       return AETHER_FS_KIND_PERMISSION_DENIED;
+#endif
+#if defined(EPERM) && (!defined(EACCES) || EPERM != EACCES)
+        case EPERM:        return AETHER_FS_KIND_PERMISSION_DENIED;
+#endif
+        case EEXIST:       return AETHER_FS_KIND_EXISTS;
+#ifdef EXDEV
+        case EXDEV:        return AETHER_FS_KIND_CROSS_DEVICE;
+#endif
+#ifdef EIO
+        case EIO:          return AETHER_FS_KIND_IO;
+#endif
+        case EINVAL:       return AETHER_FS_KIND_INVALID;
+#ifdef ELOOP
+        case ELOOP:        return AETHER_FS_KIND_LOOP;
+#endif
+#ifdef ENAMETOOLONG
+        case ENAMETOOLONG: return AETHER_FS_KIND_NAME_TOO_LONG;
+#endif
+#ifdef ENOSPC
+        case ENOSPC:       return AETHER_FS_KIND_NO_SPACE;
+#endif
+#ifdef EISDIR
+        case EISDIR:       return AETHER_FS_KIND_IS_DIR;
+#endif
+#ifdef ENOTDIR
+        case ENOTDIR:      return AETHER_FS_KIND_NOT_DIR;
+#endif
+        default:           return AETHER_FS_KIND_IO;
+    }
+}
+
+static int aether_fs_saturate_int(long long v) {
+    if (v < 0) return 0;
+    if (v > (long long)INT_MAX) return INT_MAX;
+    return (int)v;
+}
+
+static _tuple_int_int_string aether_fs_iks_err(int kind, const char* msg) {
+    _tuple_int_int_string out = { 0, kind, msg };
+    return out;
+}
+static _tuple_int_int_string aether_fs_iks_err_partial(long long bytes, int kind, const char* msg) {
+    _tuple_int_int_string out = { aether_fs_saturate_int(bytes), kind, msg };
+    return out;
+}
+static _tuple_int_int_string aether_fs_iks_ok(long long bytes) {
+    _tuple_int_int_string out = { aether_fs_saturate_int(bytes), AETHER_FS_KIND_OK, "" };
+    return out;
+}
+
+#if defined(__linux__) && defined(SYS_copy_file_range)
+/* Wrap copy_file_range via syscall(2) so we don't need _GNU_SOURCE
+ * across the whole translation unit and don't depend on the libc
+ * actually exporting the symbol. Returns the same shape the libc
+ * wrapper would: bytes copied (>=0), or -1 with errno set. */
+static long long aether_fs_copy_file_range_syscall(int in_fd, int out_fd, size_t len) {
+    return (long long)syscall(SYS_copy_file_range,
+                              in_fd, (long long*)NULL,
+                              out_fd, (long long*)NULL,
+                              len, (unsigned int)0);
+}
+#endif
+
+#ifndef _WIN32
+/* Last-tier portable fallback: 8 MiB read/write loop with
+ * partial-write resumption + EINTR retry. Returns total bytes
+ * written on success, or -1 with errno set on failure. On failure
+ * `*out_partial` is set to bytes successfully written so far so the
+ * caller can surface progress in the structured-error tuple. */
+static long long aether_fs_copy_readwrite(int in_fd, int out_fd, long long* out_partial) {
+    enum { BUF_BYTES = 8 * 1024 * 1024 };  // 8 MiB
+    char* buf = (char*)malloc((size_t)BUF_BYTES);
+    if (!buf) {
+        if (out_partial) *out_partial = 0;
+        errno = ENOMEM;
+        return -1;
+    }
+    long long total = 0;
+    for (;;) {
+        ssize_t r;
+        do { r = read(in_fd, buf, (size_t)BUF_BYTES); } while (r < 0 && errno == EINTR);
+        if (r < 0) {
+            int saved = errno;
+            free(buf);
+            if (out_partial) *out_partial = total;
+            errno = saved;
+            return -1;
+        }
+        if (r == 0) break;  // EOF
+        const char* p = buf;
+        ssize_t left = r;
+        while (left > 0) {
+            ssize_t w;
+            do { w = write(out_fd, p, (size_t)left); } while (w < 0 && errno == EINTR);
+            if (w < 0) {
+                int saved = errno;
+                free(buf);
+                if (out_partial) *out_partial = total;
+                errno = saved;
+                return -1;
+            }
+            left -= w;
+            p += w;
+            total += w;
+        }
+    }
+    free(buf);
+    if (out_partial) *out_partial = total;
+    return total;
+}
+#endif
+
+/* fs_copy_raw — copy file contents from `src` to `dst`, preserving
+ * source mode bits (file owner is NOT changed; that needs CAP_CHOWN
+ * and is out of scope). Returns the structured-error tuple
+ * (bytes_copied, kind, message). On partial failure `bytes_copied`
+ * reflects how far we got before erroring out.
+ *
+ * Symlink behaviour: follows the source symlink (matches POSIX `cp`
+ * without -P). The destination is overwritten if it exists (matches
+ * `cp` with no -i / -n). Concurrent copies to the same destination
+ * are caller-coordinated — interleaving is POSIX UB and surfaces
+ * here as KIND_IO.
+ *
+ * Performance tiers (best to fallback):
+ *   Linux:   copy_file_range(2) via syscall  -> sendfile(2) -> read/write
+ *   macOS:   fcopyfile(COPYFILE_DATA)        -> read/write
+ *   Other:   read/write
+ *   Windows: CopyFileExW (kernel block copy; UTF-8 path conversion)
+ */
+_tuple_int_int_string fs_copy_raw(const char* src, const char* dst) {
+    if (!src || !dst) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "null path");
+    }
+    if (!aether_sandbox_check("fs_read", src)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot read src");
+    }
+    if (!aether_sandbox_check("fs_write", dst)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot write dst");
+    }
+    /* Lexical equality reject — POSIX `cp` also refuses. Doesn't catch
+     * the same-file-via-different-paths case; that's the caller's
+     * responsibility (would require resolving both via `realpath`,
+     * which itself can fail if a parent doesn't exist yet). */
+    if (strcmp(src, dst) == 0) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID,
+                                 "src and dst are the same path");
+    }
+
+#ifdef _WIN32
+    /* Windows fast path: kernel-side block copy via CopyFileExW.
+     * UTF-8 → UTF-16 conversion required; CopyFileA only handles ANSI
+     * code-page paths, which mishandles non-Latin1 filenames. */
+    int wsrc_len = MultiByteToWideChar(CP_UTF8, 0, src, -1, NULL, 0);
+    int wdst_len = MultiByteToWideChar(CP_UTF8, 0, dst, -1, NULL, 0);
+    if (wsrc_len <= 0 || wdst_len <= 0) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "path UTF-8 invalid");
+    }
+    wchar_t* wsrc = (wchar_t*)malloc((size_t)wsrc_len * sizeof(wchar_t));
+    wchar_t* wdst = (wchar_t*)malloc((size_t)wdst_len * sizeof(wchar_t));
+    if (!wsrc || !wdst) {
+        free(wsrc); free(wdst);
+        return aether_fs_iks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    MultiByteToWideChar(CP_UTF8, 0, src, -1, wsrc, wsrc_len);
+    MultiByteToWideChar(CP_UTF8, 0, dst, -1, wdst, wdst_len);
+    /* Pre-flight: classify directories explicitly. CopyFileExW returns
+     * ERROR_ACCESS_DENIED when src is a directory or dst is an
+     * existing directory, which would surface as KIND_PERMISSION_DENIED
+     * — wrong: the POSIX path returns KIND_IS_DIR for the same shape
+     * (S_ISDIR check), and callers expect that classification. Use
+     * GetFileAttributesW to discriminate before the syscall. */
+    DWORD src_attr = GetFileAttributesW(wsrc);
+    if (src_attr != INVALID_FILE_ATTRIBUTES &&
+        (src_attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        free(wsrc); free(wdst);
+        return aether_fs_iks_err(AETHER_FS_KIND_IS_DIR, "src is a directory");
+    }
+    DWORD dst_attr = GetFileAttributesW(wdst);
+    if (dst_attr != INVALID_FILE_ATTRIBUTES &&
+        (dst_attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        free(wsrc); free(wdst);
+        return aether_fs_iks_err(AETHER_FS_KIND_IS_DIR, "dst is a directory");
+    }
+    /* bFailIfExists=FALSE → match POSIX cp: overwrite. */
+    BOOL ok = CopyFileExW(wsrc, wdst, NULL, NULL, NULL, 0);
+    DWORD win_err = GetLastError();
+    free(wsrc); free(wdst);
+    if (!ok) {
+        int kind = AETHER_FS_KIND_IO;
+        const char* msg = "CopyFileExW failed";
+        switch (win_err) {
+            case ERROR_FILE_NOT_FOUND:
+            case ERROR_PATH_NOT_FOUND:
+                kind = AETHER_FS_KIND_NOT_FOUND; msg = "src not found"; break;
+            case ERROR_ACCESS_DENIED:
+                kind = AETHER_FS_KIND_PERMISSION_DENIED; msg = "access denied"; break;
+            case ERROR_DISK_FULL:
+                kind = AETHER_FS_KIND_NO_SPACE; msg = "disk full"; break;
+            case ERROR_ALREADY_EXISTS:
+                kind = AETHER_FS_KIND_EXISTS; msg = "destination exists"; break;
+        }
+        return aether_fs_iks_err(kind, msg);
+    }
+    /* Windows stat for the size — best-effort (CopyFileExW already
+     * succeeded so the file is fully written). */
+    struct _stat64 win_st;
+    long long bytes = 0;
+    if (_stat64(dst, &win_st) == 0) bytes = (long long)win_st.st_size;
+    return aether_fs_iks_ok(bytes);
+#else
+    /* POSIX path. */
+    struct stat src_st;
+    if (stat(src, &src_st) != 0) {
+        int kind = aether_fs_errno_to_kind(errno);
+        return aether_fs_iks_err(kind, "stat src failed");
+    }
+    if (S_ISDIR(src_st.st_mode)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_IS_DIR, "src is a directory");
+    }
+
+    int in_fd = open(src, O_RDONLY);
+    if (in_fd < 0) {
+        int kind = aether_fs_errno_to_kind(errno);
+        return aether_fs_iks_err(kind, "open src failed");
+    }
+    /* Reject if dst already exists as a directory — overwriting onto
+     * a directory is not what the caller meant. POSIX open(O_CREAT)
+     * would EISDIR here; we surface that as KIND_IS_DIR cleanly. */
+    struct stat dst_st;
+    if (stat(dst, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+        close(in_fd);
+        return aether_fs_iks_err(AETHER_FS_KIND_IS_DIR, "dst is a directory");
+    }
+    int out_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC,
+                      (mode_t)(src_st.st_mode & 07777));
+    if (out_fd < 0) {
+        int kind = aether_fs_errno_to_kind(errno);
+        close(in_fd);
+        return aether_fs_iks_err(kind, "open dst failed");
+    }
+
+    long long total = 0;
+    long long expected = (long long)src_st.st_size;
+
+#if defined(__linux__) && defined(SYS_copy_file_range)
+    /* Tier 1: copy_file_range — kernel-side; reflinks on btrfs/XFS. */
+    while (total < expected) {
+        size_t want = (size_t)(expected - total);
+        long long n = aether_fs_copy_file_range_syscall(in_fd, out_fd, want);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            /* Fall through to sendfile only on the documented
+             * "this filesystem can't" / "kernel doesn't support"
+             * errnos. Anything else is a real failure that we
+             * surface immediately with the partial count. */
+            if (errno == ENOSYS || errno == EINVAL || errno == EXDEV ||
+                errno == EOPNOTSUPP || errno == EBADF || errno == ETXTBSY) {
+                break;
+            }
+            int kind = aether_fs_errno_to_kind(errno);
+            close(in_fd); close(out_fd);
+            return aether_fs_iks_err_partial(total, kind, "copy_file_range failed");
+        }
+        if (n == 0) break;  /* EOF */
+        total += n;
+    }
+#endif
+
+#if defined(__linux__)
+    /* Tier 2: sendfile — older kernels and cross-fs cases that
+     * copy_file_range refused. Picks up from the fd offset advanced
+     * by tier 1 (both syscalls share the kernel fd-pos invariant). */
+    while (total < expected) {
+        size_t want = (size_t)(expected - total);
+        ssize_t n = sendfile(out_fd, in_fd, NULL, want);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == ENOSYS || errno == EINVAL || errno == EOPNOTSUPP) {
+                break;  /* fall through to read/write */
+            }
+            int kind = aether_fs_errno_to_kind(errno);
+            close(in_fd); close(out_fd);
+            return aether_fs_iks_err_partial(total, kind, "sendfile failed");
+        }
+        if (n == 0) break;
+        total += n;
+    }
+#elif defined(__APPLE__)
+    /* macOS fast path: fcopyfile triggers APFS clone on same-volume
+     * copies, kernel-level block copy otherwise. Fully resets fd
+     * offsets internally; if it fails we restart with a fresh truncate
+     * for the read/write fallback. */
+    if (total == 0) {
+        copyfile_state_t state = copyfile_state_alloc();
+        int rv = (state ? fcopyfile(in_fd, out_fd, state, COPYFILE_DATA) : -1);
+        if (state) copyfile_state_free(state);
+        if (rv == 0) {
+            total = expected;
+        } else {
+            /* Reset for read/write fallback. */
+            (void)lseek(in_fd, 0, SEEK_SET);
+            (void)lseek(out_fd, 0, SEEK_SET);
+            (void)ftruncate(out_fd, 0);
+            total = 0;
+        }
+    }
+#endif
+
+    if (total < expected) {
+        /* Tier 3 (or sole tier on platforms that fell through both
+         * tier 1 and tier 2): portable read/write with EINTR retry,
+         * partial-write resumption, and 8 MiB chunks. */
+        long long partial = 0;
+        long long rv = aether_fs_copy_readwrite(in_fd, out_fd, &partial);
+        if (rv < 0) {
+            int kind = aether_fs_errno_to_kind(errno);
+            close(in_fd); close(out_fd);
+            return aether_fs_iks_err_partial(total + partial, kind, "read/write failed");
+        }
+        total += rv;
+    }
+
+    /* Preserve permission bits. Failure to fchmod is non-fatal —
+     * the data copy already succeeded; the caller can chmod
+     * separately if they care. */
+    (void)fchmod(out_fd, (mode_t)(src_st.st_mode & 07777));
+
+    close(in_fd);
+    if (close(out_fd) != 0) {
+        /* Some filesystems (NFS) defer write errors until close.
+         * Surface as KIND_IO with the bytes-counted-so-far. */
+        int kind = aether_fs_errno_to_kind(errno);
+        return aether_fs_iks_err_partial(total, kind, "close dst failed");
+    }
+    return aether_fs_iks_ok(total);
+#endif
+}
+
+/* fs_move_raw — move file from `src` to `dst` with cross-device
+ * fallback. Returns (1, KIND_OK, "") on success or (0, KIND_*, msg)
+ * on failure. POSIX rename(2) is atomic on the same filesystem. On
+ * cross-device (EXDEV) we fall back to fs_copy_raw + unlink — NOT
+ * atomic, but correct. On copy failure during the EXDEV path, src
+ * is left in place (no half-move) and the copy's kind is
+ * propagated. Windows MoveFileExW with REPLACE_EXISTING +
+ * COPY_ALLOWED handles the cross-fs case internally. */
+_tuple_int_int_string fs_move_raw(const char* src, const char* dst) {
+    if (!src || !dst) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "null path");
+    }
+    if (!aether_sandbox_check("fs_write", src)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot remove src");
+    }
+    if (!aether_sandbox_check("fs_write", dst)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot write dst");
+    }
+    if (strcmp(src, dst) == 0) {
+        /* POSIX rename of a path onto itself is a successful no-op —
+         * but POSIX `mv x x` errors out. Match the user-facing tool. */
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID,
+                                 "src and dst are the same path");
+    }
+
+#ifdef _WIN32
+    int wsrc_len = MultiByteToWideChar(CP_UTF8, 0, src, -1, NULL, 0);
+    int wdst_len = MultiByteToWideChar(CP_UTF8, 0, dst, -1, NULL, 0);
+    if (wsrc_len <= 0 || wdst_len <= 0) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "path UTF-8 invalid");
+    }
+    wchar_t* wsrc = (wchar_t*)malloc((size_t)wsrc_len * sizeof(wchar_t));
+    wchar_t* wdst = (wchar_t*)malloc((size_t)wdst_len * sizeof(wchar_t));
+    if (!wsrc || !wdst) {
+        free(wsrc); free(wdst);
+        return aether_fs_iks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    MultiByteToWideChar(CP_UTF8, 0, src, -1, wsrc, wsrc_len);
+    MultiByteToWideChar(CP_UTF8, 0, dst, -1, wdst, wdst_len);
+    BOOL ok = MoveFileExW(wsrc, wdst,
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+    DWORD win_err = GetLastError();
+    free(wsrc); free(wdst);
+    if (!ok) {
+        int kind = AETHER_FS_KIND_IO;
+        const char* msg = "MoveFileExW failed";
+        switch (win_err) {
+            case ERROR_FILE_NOT_FOUND:
+            case ERROR_PATH_NOT_FOUND:
+                kind = AETHER_FS_KIND_NOT_FOUND; msg = "src not found"; break;
+            case ERROR_ACCESS_DENIED:
+                kind = AETHER_FS_KIND_PERMISSION_DENIED; msg = "access denied"; break;
+            case ERROR_DISK_FULL:
+                kind = AETHER_FS_KIND_NO_SPACE; msg = "disk full"; break;
+        }
+        return aether_fs_iks_err(kind, msg);
+    }
+    _tuple_int_int_string out = { 1, AETHER_FS_KIND_OK, "" };
+    return out;
+#else
+    if (rename(src, dst) == 0) {
+        _tuple_int_int_string out = { 1, AETHER_FS_KIND_OK, "" };
+        return out;
+    }
+    int saved = errno;
+    if (saved != EXDEV) {
+        int kind = aether_fs_errno_to_kind(saved);
+        return aether_fs_iks_err(kind, "rename failed");
+    }
+    /* Cross-device fallback: copy + unlink. fs_copy_raw refuses to
+     * copy directories, so cross-device directory moves surface as
+     * KIND_IS_DIR with a clear message — documented limitation. */
+    _tuple_int_int_string copy_result = fs_copy_raw(src, dst);
+    if (copy_result._1 != AETHER_FS_KIND_OK) {
+        /* Don't try to roll back a partial dst — the destination is
+         * the caller's territory, removing it could surprise them.
+         * Surface the copy's kind so the caller knows what failed. */
+        return aether_fs_iks_err(copy_result._1, copy_result._2);
+    }
+    if (unlink(src) != 0) {
+        /* Data is now in dst (good) but src is still there (bad).
+         * Half-move state. Surface as KIND_IO with a clear message;
+         * caller may want to retry the unlink or accept the duplicate. */
+        int kind = aether_fs_errno_to_kind(errno);
+        _tuple_int_int_string out = { 1, kind, "moved (copy) but unlink src failed" };
+        return out;
+    }
+    _tuple_int_int_string out = { 1, AETHER_FS_KIND_OK, "" };
+    return out;
+#endif
+}
+
+/* Tuple ABI for (string, int, string) returns. _0 is a heap-allocated
+ * resolved-path string the caller (Aether runtime) takes ownership of;
+ * _1 is the kind; _2 is a string literal — never freed. Mirrors the
+ * shape used by std/os/aether_os.c's _tuple_string_int_string. */
+typedef struct {
+    const char* _0;    // resolved path (heap, runtime owns) or "" on failure
+    int _1;            // AETHER_FS_KIND_*
+    const char* _2;    // "" on success, error message on failure
+} _tuple_string_int_string;
+
+static _tuple_string_int_string aether_fs_sks_err(int kind, const char* msg) {
+    _tuple_string_int_string out = { "", kind, msg };
+    return out;
+}
+static _tuple_string_int_string aether_fs_sks_ok(const char* resolved) {
+    _tuple_string_int_string out = { resolved, AETHER_FS_KIND_OK, "" };
+    return out;
+}
+
+/* fs_realpath_raw — canonicalise `path` via the OS resolver. Follows
+ * every symlink along the way and removes . / .. components.
+ * POSIX: realpath(path, NULL) allocates a fresh buffer (POSIX.1-2008
+ * extension; available in glibc 2.3+, every modern BSD, macOS).
+ * Windows: GetFinalPathNameByHandleW after CreateFileW with
+ * FILE_FLAG_BACKUP_SEMANTICS so it works on directories. The
+ * \\?\ prefix that GetFinalPathNameByHandleW prepends is stripped
+ * before returning so callers get plain forward-slash paths. */
+_tuple_string_int_string fs_realpath_raw(const char* path) {
+    if (!path) {
+        return aether_fs_sks_err(AETHER_FS_KIND_INVALID, "null path");
+    }
+    if (!aether_sandbox_check("fs_read", path)) {
+        return aether_fs_sks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot read path");
+    }
+
+#ifdef _WIN32
+    int wpath_len = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (wpath_len <= 0) {
+        return aether_fs_sks_err(AETHER_FS_KIND_INVALID, "path UTF-8 invalid");
+    }
+    wchar_t* wpath = (wchar_t*)malloc((size_t)wpath_len * sizeof(wchar_t));
+    if (!wpath) {
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wpath_len);
+    HANDLE h = CreateFileW(wpath, 0,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD win_err = GetLastError();
+        int kind = (win_err == ERROR_FILE_NOT_FOUND ||
+                    win_err == ERROR_PATH_NOT_FOUND)
+                   ? AETHER_FS_KIND_NOT_FOUND
+                   : (win_err == ERROR_ACCESS_DENIED
+                      ? AETHER_FS_KIND_PERMISSION_DENIED
+                      : AETHER_FS_KIND_IO);
+        return aether_fs_sks_err(kind, "CreateFileW failed");
+    }
+    /* GetFinalPathNameByHandleW: first call with cb=0 returns required size. */
+    DWORD need = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED);
+    if (need == 0) {
+        CloseHandle(h);
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "GetFinalPathNameByHandleW failed");
+    }
+    wchar_t* wresult = (wchar_t*)malloc((size_t)need * sizeof(wchar_t));
+    if (!wresult) {
+        CloseHandle(h);
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    DWORD got = GetFinalPathNameByHandleW(h, wresult, need, FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    if (got == 0 || got >= need) {
+        free(wresult);
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "GetFinalPathNameByHandleW size race");
+    }
+    /* Strip the \\?\ prefix (4 wchars) so callers see a plain path. */
+    const wchar_t* wstart = wresult;
+    if (got >= 4 && wresult[0] == L'\\' && wresult[1] == L'\\' &&
+        wresult[2] == L'?'  && wresult[3] == L'\\') {
+        wstart = wresult + 4;
+    }
+    int u8_len = WideCharToMultiByte(CP_UTF8, 0, wstart, -1, NULL, 0, NULL, NULL);
+    if (u8_len <= 0) {
+        free(wresult);
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "UTF-16 → UTF-8 failed");
+    }
+    char* u8 = (char*)malloc((size_t)u8_len);
+    if (!u8) {
+        free(wresult);
+        return aether_fs_sks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    WideCharToMultiByte(CP_UTF8, 0, wstart, -1, u8, u8_len, NULL, NULL);
+    free(wresult);
+    return aether_fs_sks_ok(u8);
+#else
+    char* resolved = realpath(path, NULL);
+    if (!resolved) {
+        int kind = aether_fs_errno_to_kind(errno);
+        const char* msg = "realpath failed";
+        if (kind == AETHER_FS_KIND_NOT_FOUND) msg = "path not found";
+        else if (kind == AETHER_FS_KIND_LOOP) msg = "symlink cycle";
+        else if (kind == AETHER_FS_KIND_NAME_TOO_LONG) msg = "name too long";
+        else if (kind == AETHER_FS_KIND_NOT_DIR) msg = "non-directory in path";
+        else if (kind == AETHER_FS_KIND_PERMISSION_DENIED) msg = "access denied";
+        return aether_fs_sks_err(kind, msg);
+    }
+    return aether_fs_sks_ok(resolved);
+#endif
+}
+
+/* fs_chmod_raw — change permission bits on `path`. POSIX chmod(2)
+ * follows symlinks (matches what a shell `chmod` does). Windows has
+ * no concept of POSIX mode bits at the filesystem layer, so we
+ * emulate the user-write bit only via SetFileAttributesW: the
+ * read-only attribute is toggled by 0o200; every other bit is
+ * silently ignored. This matches the documented behaviour of
+ * Python's `os.chmod`. Returns (1, KIND_OK, "") on success or
+ * (0, KIND_*, msg) on failure. */
+_tuple_int_int_string fs_chmod_raw(const char* path, int mode) {
+    if (!path) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "null path");
+    }
+    if (!aether_sandbox_check("fs_write", path)) {
+        return aether_fs_iks_err(AETHER_FS_KIND_PERMISSION_DENIED,
+                                 "sandbox: cannot chmod path");
+    }
+#ifdef _WIN32
+    int wpath_len = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (wpath_len <= 0) {
+        return aether_fs_iks_err(AETHER_FS_KIND_INVALID, "path UTF-8 invalid");
+    }
+    wchar_t* wpath = (wchar_t*)malloc((size_t)wpath_len * sizeof(wchar_t));
+    if (!wpath) {
+        return aether_fs_iks_err(AETHER_FS_KIND_IO, "allocation failed");
+    }
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wpath_len);
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        free(wpath);
+        DWORD win_err = GetLastError();
+        int kind = (win_err == ERROR_FILE_NOT_FOUND ||
+                    win_err == ERROR_PATH_NOT_FOUND)
+                   ? AETHER_FS_KIND_NOT_FOUND
+                   : AETHER_FS_KIND_IO;
+        return aether_fs_iks_err(kind, "GetFileAttributesW failed");
+    }
+    /* Owner-write (0o200) sets clear; all other bits ignored. */
+    if (mode & 0200) {
+        attrs &= ~FILE_ATTRIBUTE_READONLY;
+    } else {
+        attrs |= FILE_ATTRIBUTE_READONLY;
+    }
+    BOOL ok = SetFileAttributesW(wpath, attrs);
+    free(wpath);
+    if (!ok) {
+        int kind = (GetLastError() == ERROR_ACCESS_DENIED)
+                   ? AETHER_FS_KIND_PERMISSION_DENIED
+                   : AETHER_FS_KIND_IO;
+        return aether_fs_iks_err(kind, "SetFileAttributesW failed");
+    }
+    _tuple_int_int_string out = { 1, AETHER_FS_KIND_OK, "" };
+    return out;
+#else
+    if (chmod(path, (mode_t)(mode & 07777)) != 0) {
+        int kind = aether_fs_errno_to_kind(errno);
+        return aether_fs_iks_err(kind, "chmod failed");
+    }
+    _tuple_int_int_string out = { 1, AETHER_FS_KIND_OK, "" };
+    return out;
+#endif
 }
 
 // Path operations

@@ -459,6 +459,33 @@ Raw out-parameter externs are preserved as `string_to_int_raw`, `string_to_long_
 - `string.release(str)` - Decrement reference count (frees when zero)
 - `string.free(str)` - Alias for `release`
 
+### String ownership and the heap-string tracker (issue #405)
+
+Strings reassigned to a variable are reclaimed automatically by a compiler-emitted wrapper — you do **not** write `defer string.free(s)` for in-Aether assignments. For every string variable in a function, the compiler emits a companion `_heap_<name>` tracker at function-entry scope that flips between 0 (current value is a literal) and 1 (current value is heap-allocated) as you reassign. On every reassignment, the wrapper `if (_heap_<name>) free(<old>)` decides whether to release the previous buffer.
+
+Both the **stdlib** functions in the table above (`string.concat`, `string.substring`, `string.to_upper`, `string.to_lower`, `string.trim`) and **string interpolation** (`"foo ${x}"`) are recognised as heap-allocated.
+
+A **user-defined `-> string` function** is recognised as heap-allocated iff every return statement in its body yields a heap-string-expression (recursive structural check with cycle detection):
+
+```aether
+my_concat(a: string, b: string) -> string {
+    return string.concat(a, b)        // RHS is heap → my_concat is heap-returning
+}
+
+s = ""
+i = 0
+while i < 1000000 {
+    s = my_concat(s, "x")              // O(1) memory — old s is freed automatically
+    i = i + 1
+}
+```
+
+A function returning a string literal — or a function whose returns mix heap and literal sources — is NOT recognised, and the wrapper won't try to free its result. This is the structural escape analysis added to close issue #405.
+
+The function-entry hoist closes the cross-block visibility gap that previously kept the simpler `node_type == TYPE_STRING` recognition unsafe: the tracker is now visible at every nesting depth, so a variable first-assigned in an if-then and reassigned in an else-if (or in a deeply nested loop) sees the same `_heap_<name>` cell and follows the same free/no-free rules.
+
+For the full memory-management background, see [Memory Management](memory-management.md#string-memory-model-heap-string-tracker).
+
 ---
 
 ## File System
@@ -604,6 +631,123 @@ main() {
 - `fs.file_stat(path)` → `(kind, size, mtime, err)` - One `lstat(2)`; symlinks report kind 3, target is not followed.
 - `fs.read_binary(path)` → `(content, length, err)` - Length-aware read preserving embedded NULs.
 
+### Structured-error pilot (issue #392)
+
+The four wrappers below return a three-element tuple `(value, kind: int, message: string)` instead of the usual `(value, err)` shape. `kind` is one of the `KIND_*` constants exported from `std.fs`; switch on it to discriminate failure modes programmatically without parsing English. `kind == fs.KIND_OK` (the integer `0`) means success; the message stays empty.
+
+```aether
+import std.fs
+
+bytes, kind, msg = fs.copy("a.bin", "b.bin")
+if kind == fs.KIND_OK {
+    println("copied ${bytes} bytes")
+} else if kind == fs.KIND_NOT_FOUND {
+    println("source missing")
+} else if kind == fs.KIND_PERMISSION_DENIED {
+    println("permission denied (${msg})")
+} else {
+    println("copy failed: ${msg}")
+}
+```
+
+The pilot scope is `fs.copy` only in this commit; `fs.move`, `fs.realpath`, and `fs.chmod` join it in the next commit. Existing wrappers keep their `(value, err)` shape unchanged — the structured-error shape sits next to it, not in place of it.
+
+**Constants** (exported from `std.fs`):
+| Constant | Value | Errno |
+|---|---|---|
+| `KIND_OK` | 0 | (none — success) |
+| `KIND_NOT_FOUND` | 1 | `ENOENT` |
+| `KIND_PERMISSION_DENIED` | 2 | `EACCES` / `EPERM` |
+| `KIND_EXISTS` | 3 | `EEXIST` |
+| `KIND_CROSS_DEVICE` | 4 | `EXDEV` |
+| `KIND_IO` | 5 | `EIO` and unspecified I/O errors |
+| `KIND_INVALID` | 6 | `EINVAL` (illegal argument; e.g. `src == dst`) |
+| `KIND_LOOP` | 7 | `ELOOP` (symlink cycle) |
+| `KIND_NAME_TOO_LONG` | 8 | `ENAMETOOLONG` |
+| `KIND_NO_SPACE` | 9 | `ENOSPC` |
+| `KIND_IS_DIR` | 10 | `EISDIR` |
+| `KIND_NOT_DIR` | 11 | `ENOTDIR` |
+| `KIND_UNAVAILABLE` | 99 | platform feature compiled out |
+
+**Functions:**
+- `fs.copy(src, dst)` → `(int, int, string)` — Copy file contents; preserves source mode bits. Symlinks in `src` are followed (matches POSIX `cp` without `-P`); `dst` is overwritten if it exists; `dst` cannot be an existing directory (returns `KIND_IS_DIR`). On partial failure, the bytes count reflects how far the copy got.
+
+  Performance: zero-copy via the platform's best primitive — Linux `copy_file_range(2)` (reflinks on btrfs/XFS) → `sendfile(2)`; macOS `fcopyfile(COPYFILE_DATA)` (APFS clone on same-volume); Windows `CopyFileExW` (kernel block copy). An 8 MiB read/write loop is the portable fallback for filesystems that reject the kernel primitives. The byte count saturates at `INT_MAX` for files larger than 2³¹ bytes — the data is still copied correctly; only the reported count is truncated.
+
+- `fs.move(src, dst)` → `(int, int, string)` — Move file from `src` to `dst`. Atomic when source and destination are on the same filesystem (POSIX `rename(2)`). On `EXDEV` (cross-device) the call transparently falls back to `fs.copy` + `unlink` — correct, but no longer atomic. Cross-device directory moves surface as `KIND_IS_DIR` (the underlying copy refuses to recurse). Windows uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED` so the cross-fs case is handled internally.
+
+- `fs.realpath(path)` → `(string, int, string)` — OS-canonicalise the path: every symlink is followed; `.` and `..` components are folded out. POSIX `realpath(3)`; on Windows `CreateFileW(FILE_FLAG_BACKUP_SEMANTICS)` + `GetFinalPathNameByHandleW(FILE_NAME_NORMALIZED)`, with the `\\?\` prefix stripped before returning. Common kinds: `KIND_NOT_FOUND` for a missing component, `KIND_LOOP` for symlink cycles, `KIND_NAME_TOO_LONG` if the resolved form exceeds the OS limit.
+
+- `fs.chmod(path, mode)` → `(int, int, string)` — Change permission bits. POSIX `chmod(2)` follows symlinks (matches what shell `chmod` does); `mode` is masked with `07777` internally so set-uid/sgid/sticky high-bits are honoured. On Windows only the user-write bit (`0o200`) is meaningful — read-only is toggled via `SetFileAttributesW(FILE_ATTRIBUTE_READONLY)`; every other bit is silently ignored, matching Python's `os.chmod` documented behaviour.
+
+---
+
+## In-process script gateway (`std.http.script_gateway`)
+
+CGI-style ergonomics — one `.ae` script file per route — without paying the per-request fork/exec cost. The script is pre-compiled with `aetherc --emit=lib --with=net script.ae -o script.so` to a shared library; the host server `dlopen()`s it once at mount time and dispatches matched requests via a direct indirect call. Empirically ~50× faster than the equivalent subprocess-spawn dispatch (issue #384).
+
+### Script shape
+
+The script must export an `aether_script_handle` symbol with the canonical `HttpHandler` signature, marked `@c_callback` so the emitted C uses the unmangled name:
+
+```aether
+// greeting.ae
+import std.http
+
+@c_callback aether_script_handle(req: ptr, res: ptr, ud: ptr) {
+    http.response_set_status(res, 200)
+    http.response_set_header(res, "Content-Type", "text/plain")
+    http.response_set_body(res, "hello from greeting.ae\n")
+}
+```
+
+Build it as a shared library — `--with=net` is required because `std.http` is the `net` capability and `--emit=lib` is capability-empty by default:
+
+```sh
+aetherc --emit=lib --with=net greeting.ae -o /var/aether/scripts/greeting.so
+```
+
+### Mount in the host
+
+```aether
+import std.http
+import std.http.script_gateway
+
+main() {
+    s = http.server_create(8080)
+    ok, kind, msg = script_gateway.mount(
+        s, "/greet", "/var/aether/scripts/greeting.so")
+    if kind != script_gateway.KIND_OK {
+        println("mount failed: ${msg}"); exit(1)
+    }
+    http.server_listen(s)
+}
+```
+
+Now `GET /greet/anything` runs `aether_script_handle` from `greeting.so` directly on the connection thread.
+
+### API
+
+- `script_gateway.mount(server, path_prefix, so_path)` → `(int, int, string)` — Mount the shared library at `so_path` as the request handler for every URL whose path starts with `path_prefix`. Returns `(1, KIND_OK, "")` on successful mount; `(0, KIND_*, msg)` on failure. The dlopen handle is intentionally long-lived (process-lifetime); hot-reload is a separate feature.
+
+**Constants** (subset of std.fs's KIND_* — values match so callers can mix the two surfaces):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `KIND_OK` | 0 | mount succeeded |
+| `KIND_NOT_FOUND` | 1 | `so_path` is missing or unreadable |
+| `KIND_INVALID` | 6 | null arg, or `.so` missing the `aether_script_handle` entrypoint |
+| `KIND_IO` | 5 | `dlopen` failure (incompatible ABI, etc.) |
+| `KIND_UNAVAILABLE` | 99 | platform stub (Windows DLL hosting is a follow-up) |
+
+### Sandbox
+
+`mount()` calls `aether_sandbox_check("fs_read", so_path)` before dlopen, so a sandboxed host cannot bring in arbitrary native code via untrusted `.so` paths. The script itself runs subject to whatever caps the host has armed via `libaether.h` (`aether_set_memory_cap`, `aether_set_call_deadline`).
+
+### Performance characteristic
+
+Per-request hot path is one `strncmp(path, prefix, prefix_len)` plus one indirect call. On Linux/glibc the indirect call goes through the dlopened SO's PLT once and is then jit-bound; subsequent calls are direct. On macOS (lazy bind disabled by RTLD_NOW) the binding happens at mount time so per-request cost is one direct indirect call.
+
 ---
 
 ## JSON (`std.json`)
@@ -682,10 +826,43 @@ main() {
 
 **Parsing / Serialization:**
 - `json.parse(json_str)` → `(ptr, string)` - Parse JSON, returns `(value, err)` tuple
+- `json.parse_strict(json_str)` → `(ptr, int, string)` - Structured-error variant of `parse` (issue #392): returns `(value, KIND_OK, "")` on success or `(null, KIND_*, "<reason> at <line>:<col>")` on failure. `kind` discriminates between syntax errors (`KIND_PARSE_ERROR`), out-of-memory (`KIND_OUT_OF_MEMORY`), and invalid input (`KIND_INVALID_INPUT`) without parsing the human message. KIND values match `std.fs`'s pilot so callers can mix the two surfaces in a single switch.
+- `json.last_error_kind()` / `last_error_line()` / `last_error_col()` → `int` - Programmatic accessors for the most recent parse failure on this thread. Read AFTER a `parse` / `parse_strict` returned a failure; undefined after a successful parse. Line/column are 1-based and match the values embedded in the error message.
 - `json.stringify(value)` - Serialize to JSON string (returns plain `char*`, infallible)
 - `json.free(value)` - Free a JSON value tree
 
 Raw extern: `json_parse_raw`.
+
+**Structured-error kinds** (exported from `std.json`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `KIND_OK` | 0 | parse succeeded |
+| `KIND_PARSE_ERROR` | 1 | malformed JSON (the message carries `... at line:col`) |
+| `KIND_OUT_OF_MEMORY` | 2 | arena allocation failed during parse |
+| `KIND_INVALID_INPUT` | 3 | NULL / empty input handed to `parse_strict` |
+
+```aether
+import std.json
+
+main() {
+    v, kind, msg = json.parse_strict(input)
+    if kind == json.KIND_OK {
+        // use v ...
+        json.free(v)
+    } else if kind == json.KIND_PARSE_ERROR {
+        line = json.last_error_line()
+        col  = json.last_error_col()
+        println("syntax error at ${line}:${col}: ${msg}")
+    } else if kind == json.KIND_OUT_OF_MEMORY {
+        println("OOM during parse")
+    } else {
+        println("invalid input: ${msg}")
+    }
+}
+```
+
+The `parse_strict` shape is the std.fs pilot from issue #392 extended to a second module — same tuple, same KIND_* convention.
 
 **Type Checking:**
 - `json.type(value)` - Get type constant (0-5)

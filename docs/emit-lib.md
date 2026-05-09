@@ -57,7 +57,7 @@ int main(void) {
 |---|---|
 | `--emit=exe` *(default)* | Current behaviour — produces an executable. |
 | `--emit=lib` | No `main()` in the output; every top-level Aether function gets an `aether_<name>()` C-ABI alias; built with `-fPIC -shared`. |
-| `--emit=both` | Accepted by `aetherc` (emits both symbols into the `.c` file) but **not yet wired up in `ae build`** — run `ae build --emit=exe` and `ae build --emit=lib` separately when you need both artifacts from one source. |
+| `--emit=both` | Produces both an executable AND a shared library from one source. `ae build --emit=both foo.ae -o foo` writes `foo` (the exe) and `foo.dylib` / `foo.so` (the lib) side by side. With no `-o`, defaults are `<base>` (exe) and `lib<base>.<ext>` (lib). Internally dispatches `cmd_build` twice (once per emit mode); the lib pass appends the platform lib extension to the user's `-o` so the second pass doesn't overwrite the first. |
 
 ## Naming
 
@@ -344,17 +344,188 @@ re-arm + call again with a more generous budget, or surface
    have it retained. If you want this (the ARexx / rules-engine model),
    track the "Shape B" design note in
    [aether-embedded-in-host-applications.md](aether-embedded-in-host-applications.md).
-2. **`--emit=both` for `ae build`** — use two invocations.
-3. **Per-function capability grants** — `--with=` flags are coarse
+2. **Per-function capability grants** — `--with=` flags are coarse
    (fs / net / os). Fine-grained gates like "allow file_open but not
    dir_delete" don't match any concrete threat model for the
    default-deny shape, and every additional flag is API surface.
-4. **Deep-recursive `aether_config_free`** — the v1 free only releases
-   the root map/list; nested containers leak unless the caller walks
-   the tree. In practice scripts build one tree and it's all released
-   when the host is done.
-5. **Typed returns beyond `void*`** — functions returning `map`/`list`
+3. **Typed returns beyond `void*`** — functions returning `map`/`list`
    come back as `AetherValue*` with no schema. Host knows the shape.
+
+## Kind discrimination + deep-free (`aether_value_kind`, `aether_config_free_deep`)
+
+Aether's collections are intentionally untyped at the storage level — a
+map's value slot is `void*`, and the host knows the schema. That
+historically meant schema-mismatch bugs (script stores an int where a
+map was expected) degraded into host-side segfaults. v1 closes that
+gap with a magic-tagged kind discriminator.
+
+Every `HashMap` and `ArrayList` carries a `uint32_t _kind_magic` as its
+leading field, set at construction and cleared on free. The runtime
+exposes:
+
+```c
+typedef enum {
+    AETHER_KIND_UNKNOWN = 0,
+    AETHER_KIND_MAP     = 1,
+    AETHER_KIND_LIST    = 2
+} AetherKind;
+
+AetherKind aether_value_kind(AetherValue* v);
+int32_t    aether_value_is_map(AetherValue* v);
+int32_t    aether_value_is_list(AetherValue* v);
+```
+
+These are **safe to call on any pointer the host holds**, including
+scalars that were intptr-cast to `AetherValue*` (e.g. `(void*)(intptr_t)42`
+from a schema-mismatched `_get_map` call). The probe applies two
+layers of safety:
+
+1. **Low-address guard** — the zero page + first 64 KiB are unmapped
+   on every supported OS (Linux's `vm.mmap_min_addr` default is
+   65536; macOS reserves more; Windows likewise). Any pointer below
+   `0x10000` is filtered before any deref attempt, so common
+   intptr-cast scalars never reach the magic check.
+2. **32-bit magic check** — for higher-address values that survive
+   the guard, the leading 4 bytes either match one of the two known
+   constants (`AETHER_KIND_LIST_MAGIC` / `AETHER_KIND_MAP_MAGIC`) or
+   the predicate reports `UNKNOWN`. False-match probability for a
+   non-container value is 2 / 2³² ≈ 5 × 10⁻¹⁰.
+
+`aether_config_free_deep(root)` builds on the predicate to walk a
+nested tree of containers and free each one in post-order. Scalars
+encountered along the way are left untouched (the host owns those
+separately). `aether_config_free` (shallow) auto-detects whether the
+root is a map or a list via the same predicate, so it now works on
+either container shape uniformly.
+
+```c
+AetherValue* root = aether_build_config("prod", 8080);
+
+if (aether_value_is_map(root)) {
+    /* Defensive — confirm what the script actually returned. */
+}
+
+AetherValue* db = aether_config_get_map(root, "db");
+if (aether_value_kind(db) == AETHER_KIND_MAP) {
+    const char* host = aether_config_get_string(db, "host");
+    /* … */
+}
+
+aether_config_free_deep(root);   /* nested map + list freed too */
+```
+
+Defense-in-depth: `list_free` and `map_free` clear the magic before
+releasing the struct's memory, so a use-after-free probe via
+`aether_value_kind` reads the cleared magic and reports `UNKNOWN`
+rather than a stale match on the freed-but-still-readable original
+value.
+
+## Reflection: the symbol catalog (`aether_lib_meta`) — #403
+
+Every `--emit=lib` artifact exports a single reflection entry point:
+
+```c
+const AetherLibMeta* aether_lib_meta(void);
+```
+
+declared in `runtime/aether_lib_meta.h`. The returned struct describes
+every exported function — Aether name, C symbol, public signature,
+source file, source line — in a layout-stable, allocation-free form
+that any FFI consumer (Python ctypes, Java Panama, Ruby Fiddle,
+Node-API, hand-rolled `dlsym`) can walk directly.
+
+```c
+typedef struct {
+    const char* aether_name;     /* "double_int", "std.fs.copy"      */
+    const char* c_symbol;         /* unmangled symbol to dlsym         */
+    const char* signature;        /* "(int) -> int"                    */
+    const char* source_file;      /* the .ae that defined it           */
+    int         source_line;      /* 1-based                            */
+} AetherLibFunction;
+
+typedef struct {
+    const char* schema_version;   /* "1.0" — bump on breaking change   */
+    const char* aether_version;   /* compiler version                  */
+    const char* primary_source;   /* the .ae passed to aetherc         */
+    int                       function_count;
+    const AetherLibFunction*  functions;
+    int                       closure_count;   /* always 0 in v1       */
+    const void*               closures;        /* always NULL in v1    */
+} AetherLibMeta;
+```
+
+No JSON, no parsing, no dynamic allocation — the struct is `static const`
+in the artifact and the catalog literally lives in `.rodata`. Schema is
+versioned (`"1.0"`); within `1.x` only additive fields appear at the
+struct tail (the `closure_count` / `closures` slots are reserved for v2's
+closure-context records). v1 includes every Aether-defined function the
+linker exports; functions skipped from the `aether_<name>` alias surface
+(unsupported types, tuple returns, trailing-underscore privates) are
+also omitted from the catalog.
+
+### `ae lib-info <path>` — inspect any artifact
+
+The `ae` CLI ships a turnkey reader that `dlopen`s a `.so`/`.dylib`,
+calls `aether_lib_meta`, and prints a human-readable dump:
+
+```sh
+$ ae lib-info build/libscript.so
+Aether Library: build/libscript.so
+  Schema:        1.0
+  Aether:        0.134.0-dev
+  Source:        script.ae
+  Functions:     3
+
+  - aether_script_handle(ptr, ptr, ptr) -> void
+        @ script.ae:3
+  - double_int(int) -> int
+        c_symbol: aether_double_int
+        @ script.ae:7
+  - greet(string) -> string
+        c_symbol: aether_greet
+        @ script.ae:11
+```
+
+The `c_symbol:` line is suppressed when the symbol equals `aether_<name>`
+(the default for plain exports — printing it would just be noise).
+`@c_callback`-marked functions whose Aether name *is* the C symbol show
+no `c_symbol:` line either; they are their own export.
+
+Windows is a follow-up — `ae lib-info` returns 1 with a "DLL hosting is
+a follow-up" message; the metadata struct *is* still emitted into the
+DLL's `.rodata` and is reachable via `LoadLibrary` +
+`GetProcAddress("aether_lib_meta")` from any host.
+
+### What this enables for FFI hosts
+
+Any embedder can build a typed binding without re-parsing the source:
+
+```python
+import ctypes
+lib = ctypes.CDLL("./libscript.so")
+class AetherLibFunction(ctypes.Structure):
+    _fields_ = [("aether_name", ctypes.c_char_p),
+                ("c_symbol",    ctypes.c_char_p),
+                ("signature",   ctypes.c_char_p),
+                ("source_file", ctypes.c_char_p),
+                ("source_line", ctypes.c_int)]
+class AetherLibMeta(ctypes.Structure):
+    _fields_ = [("schema_version", ctypes.c_char_p),
+                ("aether_version", ctypes.c_char_p),
+                ("primary_source", ctypes.c_char_p),
+                ("function_count", ctypes.c_int),
+                ("functions",      ctypes.POINTER(AetherLibFunction)),
+                ("closure_count",  ctypes.c_int),
+                ("closures",       ctypes.c_void_p)]
+lib.aether_lib_meta.restype = ctypes.POINTER(AetherLibMeta)
+meta = lib.aether_lib_meta()[0]
+for i in range(meta.function_count):
+    fn = meta.functions[i]
+    print(fn.aether_name.decode(), fn.signature.decode())
+```
+
+Same struct walks from Java Panama, Ruby Fiddle, Go cgo. The flat-C
+layout is the lowest common denominator across every FFI in the wild.
 
 ## Working tests
 
@@ -371,6 +542,8 @@ The integration suite under `tests/integration/` covers:
 | `emit_lib_dual_build/` | Same source → exe AND lib via separate invocations |
 | `emit_lib_swig/` | SWIG Python round-trip (skips if `swig` missing) |
 | `emit_lib_with_capability/` | `--with=fs,net,os` opt-ins; `--with=first-party` and `--with=all` aliases |
+| `lib_meta/` | `aether_lib_meta` + `ae lib-info` round-trip — schema, source, function count, three signatures, c_symbol gating, source refs |
+| `emit_lib_kind_safe/` | Kind-discriminator predicates + deep-free safety — adversarial low-address probe (`(AetherValue*)42`) survives, kind correctly classifies map/list/scalar slots, deep-free walks nested map+list+scalars, magic-clear-on-free defends UAF probes |
 
 Run them with the standard `make test-ae` or individually:
 

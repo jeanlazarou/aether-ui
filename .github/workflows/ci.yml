@@ -25,21 +25,39 @@ jobs:
           - name: Linux / GCC
             os: ubuntu-22.04
             cc: gcc
+            harden: "0"
             install: sudo apt-get update && sudo apt-get install -y gcc make bc pkg-config libgtk-4-dev
 
           - name: Linux / Clang
             os: ubuntu-22.04
             cc: clang
+            harden: "0"
             install: sudo apt-get update && sudo apt-get install -y clang make bc pkg-config libgtk-4-dev
+
+          # Hardened gcc build (issue #396). Same OS + compiler as
+          # Linux / GCC but with HARDEN=1 set in the environment, which
+          # adds -fstack-protector-all + -D_FORTIFY_SOURCE=2 +
+          # -Wformat-security to CFLAGS in the Makefile. A regression
+          # that introduces an unchecked memcpy / strncpy / printf-
+          # format-injection trips the gcc compile-time diagnostic here
+          # before merge — defence-in-depth without imposing the
+          # runtime overhead on the default release builds.
+          - name: Linux / Hardened (gcc)
+            os: ubuntu-22.04
+            cc: gcc
+            harden: "1"
+            install: sudo apt-get update && sudo apt-get install -y gcc make bc pkg-config libgtk-4-dev
 
           - name: macOS / Clang (ARM64)
             os: macos-latest
             cc: clang
+            harden: "0"
             install: ""
 
           - name: macOS / Clang (x86_64)
             os: macos-15-intel
             cc: clang
+            harden: "0"
             install: ""
 
     steps:
@@ -50,7 +68,7 @@ jobs:
       run: ${{ matrix.install }}
 
     - name: Run full CI suite
-      run: CC=${{ matrix.cc }} make ci
+      run: HARDEN=${{ matrix.harden }} CC=${{ matrix.cc }} make ci
 
   # ============================================================
   # contrib/host bridge check — syntax check of every host bridge
@@ -178,6 +196,33 @@ jobs:
 
     - name: Run embedded CI
       run: make ci-embedded
+
+  # ============================================================
+  # RISC-V 64-bit cross-compile + qemu-user-static (issue #397).
+  # Catches portability bugs that an x86_64-only matrix can't see —
+  # pointer-width / struct-padding / atomic-instruction differences
+  # between x86_64 and riscv64. The cross-compiler is a host x86_64
+  # binary; qemu-riscv64-static actually runs the cross-built
+  # aetherc / ae for a smoke check.
+  # ============================================================
+  ci-riscv64:
+    name: Linux / RISC-V 64 (cross via qemu)
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install RISC-V cross-toolchain + qemu
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-riscv64-linux-gnu \
+          libc6-dev-riscv64-cross \
+          qemu-user-static \
+          make bc pkg-config file
+
+    - name: Run RISC-V CI
+      run: make ci-riscv64
 
   # ============================================================
   # Memory safety — Valgrind + AddressSanitizer on Linux/GCC

@@ -113,8 +113,59 @@ int32_t     aether_config_list_get_bool(AetherValue* list, int32_t index, int32_
  * moment the root is freed.
  * ------------------------------------------------------------------ */
 
-/* Frees the tree rooted at `root`. Passing NULL is a no-op. */
+/* Frees the tree rooted at `root`. Shallow — releases only the
+ * root container's storage. Nested maps/lists are NOT freed; use
+ * aether_config_free_deep() for recursive cleanup. Passing NULL
+ * is a no-op. */
 void aether_config_free(AetherValue* root);
+
+/* ------------------------------------------------------------------
+ * Kind discrimination — defense against schema mismatch
+ *
+ * Aether's collections are deliberately untyped at the storage
+ * level: a map's value slot is `void*` and the host is expected
+ * to know the schema. The kind predicates below let a host
+ * defensively check what it actually got, so a script bug stores-
+ * an-int-where-a-map-was-expected becomes "predicate returns 0"
+ * instead of "host segfaults dereferencing the int as a map".
+ *
+ * Safety: the predicates apply a low-address guard (the zero
+ * page + first 64 KiB are unmapped on every modern OS) before
+ * any deref, so common intptr-cast scalars (small integers
+ * stored as `(void*)(intptr_t)42`) are filtered cheaply. For
+ * higher-address intptr values that happen to land in mapped
+ * memory, the 32-bit kind-magic check rejects with probability
+ * 1 - 2^-32. Containers freed via list_free / map_free clear
+ * their magic, so a use-after-free probe reports
+ * AETHER_KIND_UNKNOWN rather than the freed-but-still-readable
+ * memory.
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    AETHER_KIND_UNKNOWN = 0,    /* not a recognised container — scalar, NULL, freed, or arbitrary */
+    AETHER_KIND_MAP     = 1,
+    AETHER_KIND_LIST    = 2
+} AetherKind;
+
+/* Returns the kind of `v` — safe to call on any pointer the host
+ * holds, including scalars cast to `AetherValue*`. */
+AetherKind aether_value_kind(AetherValue* v);
+
+/* Convenience predicates — equivalent to `aether_value_kind(v) == K`. */
+int32_t aether_value_is_map(AetherValue* v);
+int32_t aether_value_is_list(AetherValue* v);
+
+/* Recursive free — walks the tree rooted at `root`, freeing every
+ * nested container reachable from it. Uses aether_value_kind() to
+ * discriminate so it never derefs a scalar.  Scalars (ints, bools,
+ * floats stored as `(void*)(intptr_t)…` and string pointers) are
+ * left untouched — those are either small integers with no
+ * allocation, or pointers the host owns separately.
+ *
+ * Idempotent on NULL. After this returns, every map/list reachable
+ * from `root` (including `root` itself) is freed; the host MUST
+ * NOT use any handle previously obtained via aether_config_get_*. */
+void aether_config_free_deep(AetherValue* root);
 
 #ifdef __cplusplus
 }  /* extern "C" */

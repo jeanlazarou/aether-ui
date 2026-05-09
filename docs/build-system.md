@@ -215,6 +215,27 @@ make docker-ci-embedded    # arm-none-eabi-gcc → syntax-check
 make ci-portability        # All: native coop + WASM + embedded
 ```
 
+### RISC-V 64-bit (`ci-riscv64`)
+
+Cross-compile + run-under-qemu portability check (issue #397):
+
+```bash
+# Install host toolchain (Ubuntu 22.04+):
+sudo apt-get install -y gcc-riscv64-linux-gnu \
+    libc6-dev-riscv64-cross qemu-user-static
+
+# Cross-compile compiler/ae/stdlib for riscv64; verify the binaries
+# are riscv64 ELF; smoke-run them under qemu-user-static.
+make ci-riscv64
+```
+
+Useful for catching pointer-width, struct-padding, and atomic-
+instruction-availability bugs that an x86_64-only matrix can't
+surface. Optional libs (OpenSSL, zlib, nghttp2, GTK4) are disabled
+in the riscv64 build because the host runner's pkg-config returns
+x86_64 lib paths — the std.* feature-detection wrappers fall into
+their "unavailable" stubs cleanly.
+
 Docker images: `docker/Dockerfile.wasm` (Emscripten), `docker/Dockerfile.embedded` (ARM Cortex-M4).
 
 ## Build Recommendations
@@ -225,8 +246,32 @@ Docker images: `docker/Dockerfile.wasm` (Emscripten), `docker/Dockerfile.embedde
 | Testing/CI | `-O2` | Balanced optimization |
 | Release | `-O3 -march=native -flto` | Full optimization |
 | Profiling | PGO pipeline | Based on representative workload |
+| Hardened | `HARDEN=1` | See "Hardening" section below |
 | WASM | `PLATFORM=wasm` | Cooperative scheduler, Emscripten |
 | Embedded | `PLATFORM=embedded` | Cooperative scheduler, no OS |
+
+## Hardening (`HARDEN=1`)
+
+Opt-in hardening flags add stack canaries, fortified libc-call wrappers, and format-string-injection diagnostics. Enabled with the `HARDEN=1` environment variable; disabled by default in release builds because the runtime overhead is non-zero (~3-5% on micro-benchmarks) and macOS Clang has historically been finicky with `_FORTIFY_SOURCE` on a few setups.
+
+```bash
+# Local hardened build — recommended before submitting a PR that
+# touches C in compiler/, runtime/, or std/.
+HARDEN=1 make compiler ae stdlib
+
+# Hardened CI: run the full suite end-to-end under hardening.
+HARDEN=1 make ci
+```
+
+Flags enabled (issue #396):
+
+| Flag | Purpose |
+|------|---------|
+| `-fstack-protector-all` | Stack canaries on every function (not just gcc-strong heuristic candidates) — catches the smashing class of bugs that escape the default heuristic. |
+| `-D_FORTIFY_SOURCE=2` | Runtime checks on `read`/`write`/`memcpy`/`strncpy`/`printf`-family calls. Linux `gcc` also emits compile-time warnings when it can prove a buffer overflow — those should be fixed at the source, never blanket-suppressed. Requires at least `-O1`; the default `-O2` satisfies that. |
+| `-Wformat -Wformat-security` | Diagnose `printf`-family format strings sourced from non-literals (the `%s`-format-injection class). Default in modern Linux distros; we standardise on it explicitly. |
+
+The flags are added to `CFLAGS` only when `HARDEN=1` is set; the default build path is byte-identical to the unhardened release. The Linux/Hardened (gcc) CI matrix entry pins this so a regression that introduces an unchecked `memcpy`-over-fixed-buffer trips a red check before merge.
 
 ## References
 

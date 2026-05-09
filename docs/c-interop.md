@@ -621,6 +621,29 @@ For ASCII-text accumulation in print / interpolation contexts, `string_concat` i
 
 > **Historical bug (#270):** prior to this docs entry, `string_concat` was the only Aether-side string-builder, and downstream callers built `string.length(string.concat(a, b))` patterns that worked for text and silently truncated binary content. The `_wrapped` variant closes the gap; existing call sites that operate on text don't need to change.
 
+### Heap-string ownership across the FFI boundary
+
+When an Aether function takes the result of a C extern `-> string` call and assigns it to a variable, the same heap-string-tracker machinery (issue #405) decides whether the buffer is freed on later reassignment:
+
+- **Hardcoded heap-returning stdlib calls** (`string.concat`, `string.substring`, `string.{to_upper, to_lower, trim}`) and **string interpolation** are always treated as heap.
+- **A user-defined Aether `-> string` function** is heap-returning iff the codegen's recursive structural-escape-analysis pass can prove every return statement yields a heap-string-expression (chain into another heap-returning function counts).
+- **A C extern `-> string`** is NOT analysed structurally — the codegen has no body to walk. It's treated as **non-heap** by default (literal-shape contract). If your C extern returns malloc'd memory that the caller is expected to free, capture its result via `ptr` and free it explicitly:
+
+```aether
+// Heap-returning C extern — declare result as ptr, free explicitly.
+extern my_strdup_raw(s: string) -> ptr
+
+main() {
+    p = my_strdup_raw("hello")
+    defer free(p)   // explicit cleanup
+    // ... use p ...
+}
+```
+
+Why not auto-treat C externs as heap: the C side has no calling-convention discipline that distinguishes heap from literal returns. `getenv(3)`, `dlerror(3)`, and dozens of POSIX functions return *borrowed* `char*` that must NOT be freed. A blanket "C extern returning string = heap" rule would surface as silent free-of-borrowed-memory aborts. The conservative stance is correct.
+
+If your C function genuinely matches Aether's heap-returning contract (always allocates, never returns a literal or borrow), wrap it in a small `.ae` shim that returns a heap-string-expr (e.g. `string.concat("", c_result)`) and the structural-analysis pass will recognise the shim as heap-returning automatically.
+
 ## Embedding Aether in C Applications
 
 If you want to embed Aether actors in your existing C application (the reverse direction), see the [C Embedding Guide](c-embedding.md). This covers:

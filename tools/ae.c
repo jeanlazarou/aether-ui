@@ -44,6 +44,7 @@
 #include <spawn.h>
 #include <libgen.h>
 #include <dirent.h>
+#include <dlfcn.h>            /* `ae lib-info` opens a `--emit=lib` artifact via dlopen + dlsym */
 #define PATH_SEP "/"
 #define EXE_EXT ""
 #define mkdir_p(path) mkdir(path, 0755)
@@ -1612,8 +1613,19 @@ static void build_gcc_cmd(char* cmd, size_t size,
         char* slash = strrchr(lib_dir, '/');
         if (slash) *slash = '\0';
 
+        /* -rdynamic on POSIX: adds the executable's static-linked
+         * symbols (everything from libaether.a) to the dynamic
+         * symbol table, so std.http.script_gateway and std.dl
+         * can dlopen plugins that reference runtime symbols
+         * (http_response_set_*, string_concat, etc.) without the
+         * .so having to link against libaether itself. macOS gets
+         * the same effect via -Wl,-export_dynamic which `-rdynamic`
+         * maps to. Without this flag, a host built by `ae build`
+         * would dlopen a script.so with RTLD_NOW and the resolver
+         * would fail to find any libaether symbol — silently on
+         * macOS via dynamic_lookup, hard-failing on Linux. */
         int w = snprintf(cmd, size,
-            "gcc %s %s \"%s\"%s %s -L%s -laether -o \"%s\" -pthread -lm %s %s %s %s",
+            "gcc %s %s \"%s\"%s %s -rdynamic -L%s -laether -o \"%s\" -pthread -lm %s %s %s %s",
             opt, tc.include_flags, c_file, config_c, extra, lib_dir, out_file, openssl_libs, zlib_libs, nghttp2_libs, link_flags);
         if (w >= (int)size) {
             fprintf(stderr,
@@ -1624,7 +1636,7 @@ static void build_gcc_cmd(char* cmd, size_t size,
         }
     } else {
         int w = snprintf(cmd, size,
-            "gcc %s %s \"%s\"%s %s %s -o \"%s\" -pthread -lm %s %s %s %s",
+            "gcc %s %s \"%s\"%s %s %s -rdynamic -o \"%s\" -pthread -lm %s %s %s %s",
             opt, tc.include_flags, c_file, config_c, extra, tc.runtime_srcs, out_file, openssl_libs, zlib_libs, nghttp2_libs, link_flags);
         if (w >= (int)size) {
             fprintf(stderr,
@@ -3619,14 +3631,69 @@ static int cmd_build(int argc, char** argv) {
                 g_emit_exe = false;
                 g_emit_lib = true;
             } else if (strcmp(val, "both") == 0) {
-                // v1 scope: `ae build --emit=both` is not supported because
-                // producing both a .so and an executable from one gcc call
-                // needs either two invocations or a two-pass build. Users
-                // who need both artifacts today should run `ae build --emit=exe`
-                // and `ae build --emit=lib -o ...` separately.
-                fprintf(stderr, "Error: --emit=both is not yet implemented for `ae build`.\n");
-                fprintf(stderr, "       Run `ae build --emit=exe` and `ae build --emit=lib` separately.\n");
-                return 1;
+                /* `ae build --emit=both` produces both an executable and
+                 * a shared library from a single source. Implementation:
+                 * dispatch cmd_build twice — first as --emit=exe, then
+                 * as --emit=lib — using a duplicated argv with the flag
+                 * rewritten in place. Two gcc calls, yes, but that's
+                 * what producing two ELFs from one source genuinely
+                 * costs — the .c file content for exe and lib differ
+                 * on whether `main` is emitted, so a single gcc call
+                 * can't produce both shapes anyway.
+                 *
+                 * Output paths: when the user passes `-o NAME` we keep
+                 * NAME for the exe pass and append the platform lib
+                 * extension (`NAME.dylib` / `NAME.so`) for the lib
+                 * pass — otherwise the lib pass would overwrite the
+                 * exe at the same path. When `-o` is absent both
+                 * passes use their defaults (exe = `<src-base>`,
+                 * lib = `lib<src-base>.<ext>`) which already differ.
+                 *
+                 * If the exe pass fails the lib pass is skipped and
+                 * the exe's exit code is returned so the user sees
+                 * the precise error.  */
+                int o_idx = -1;
+                for (int j = 0; j < argc - 1; j++) {
+                    if (strcmp(argv[j], "-o") == 0) { o_idx = j + 1; break; }
+                }
+                char lib_out_buf[1024] = {0};
+                char* lib_out_override = NULL;
+                if (o_idx > 0) {
+#ifdef __APPLE__
+                    const char* lib_ext = ".dylib";
+#elif defined(_WIN32)
+                    const char* lib_ext = ".dll";
+#else
+                    const char* lib_ext = ".so";
+#endif
+                    snprintf(lib_out_buf, sizeof(lib_out_buf), "%s%s",
+                             argv[o_idx], lib_ext);
+                    lib_out_override = lib_out_buf;
+                }
+                char** dup_exe = (char**)malloc(sizeof(char*) * (size_t)argc);
+                char** dup_lib = (char**)malloc(sizeof(char*) * (size_t)argc);
+                if (!dup_exe || !dup_lib) {
+                    fprintf(stderr, "Error: out of memory dispatching --emit=both\n");
+                    free(dup_exe); free(dup_lib);
+                    return 1;
+                }
+                for (int j = 0; j < argc; j++) {
+                    if (j == i) {
+                        dup_exe[j] = (char*)"--emit=exe";
+                        dup_lib[j] = (char*)"--emit=lib";
+                    } else if (j == o_idx && lib_out_override) {
+                        dup_exe[j] = argv[j];
+                        dup_lib[j] = lib_out_override;
+                    } else {
+                        dup_exe[j] = argv[j];
+                        dup_lib[j] = argv[j];
+                    }
+                }
+                int rc_exe = cmd_build(argc, dup_exe);
+                int rc_lib = (rc_exe == 0) ? cmd_build(argc, dup_lib) : 0;
+                free(dup_exe); free(dup_lib);
+                if (rc_exe != 0) return rc_exe;
+                return rc_lib;
             } else {
                 fprintf(stderr, "Error: --emit must be one of: exe, lib (got '%s')\n", val);
                 return 1;
@@ -5714,6 +5781,125 @@ static void print_usage(void) {
     printf("  AETHER_HOME          Aether installation directory\n");
 }
 
+// `ae lib-info <path>` — dump the symbol catalog embedded in a
+// `--emit=lib` artifact (issue #403). Opens the .so/.dylib/.dll via
+// dlopen, dlsym for the canonical `aether_lib_meta` entry point,
+// walks the returned struct, and prints in human-readable form.
+//
+// The schema is layout-compatible with runtime/aether_lib_meta.h's
+// AetherLibMeta — we redeclare the minimum here to keep ae's own
+// build self-contained (no header-include race against an
+// installed runtime). Updates to the schema must touch BOTH this
+// declaration and the canonical header in lock-step.
+typedef struct {
+    const char* aether_name;
+    const char* c_symbol;
+    const char* signature;
+    const char* source_file;
+    int         source_line;
+} _AeLibInfoFn;
+
+typedef struct {
+    const char* schema_version;
+    const char* aether_version;
+    const char* primary_source;
+    int         function_count;
+    const _AeLibInfoFn* functions;
+    int         closure_count;
+    const void* closures;
+} _AeLibInfoMeta;
+
+static int cmd_lib_info(int argc, char** argv) {
+#ifdef _WIN32
+    (void)argc; (void)argv;
+    fprintf(stderr,
+        "ae lib-info: Windows DLL hosting is a follow-up. The metadata\n"
+        "is still embedded in the produced artifact; consume it via\n"
+        "LoadLibrary + GetProcAddress(\"aether_lib_meta\") for now.\n");
+    return 1;
+#else
+    if (argc < 1) {
+        fprintf(stderr,
+            "Usage: ae lib-info <path-to-library>\n"
+            "\n"
+            "Prints the symbol catalog embedded in an `--emit=lib` artifact:\n"
+            "  ae build --emit=lib script.ae -o build/script.so\n"
+            "  ae lib-info build/script.so\n");
+        return 1;
+    }
+    const char* path = argv[0];
+
+    /* dlopen with RTLD_LAZY — we only need the metadata symbol; the
+     * artifact's other functions don't have to bind successfully
+     * (a missing runtime dependency would still let lib-info dump
+     * what's there). RTLD_LOCAL keeps the library's symbols out of
+     * the host's global namespace. */
+    void* h = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+    if (!h) {
+        fprintf(stderr, "ae lib-info: dlopen failed: %s\n", dlerror());
+        return 1;
+    }
+
+    /* Clear stale dlerror state, then dlsym, then check. POSIX
+     * specifies dlsym can legitimately return NULL for a defined
+     * symbol, so dlerror is the canonical "did the lookup fail"
+     * test. */
+    (void)dlerror();
+    typedef const _AeLibInfoMeta* (*meta_fn_t)(void);
+    meta_fn_t meta_fn = (meta_fn_t)dlsym(h, "aether_lib_meta");
+    const char* dl_err = dlerror();
+    if (!meta_fn || dl_err) {
+        fprintf(stderr,
+            "ae lib-info: artifact has no `aether_lib_meta` export.\n"
+            "Was it built with `--emit=lib`?\n");
+        if (dl_err) fprintf(stderr, "  dlerror: %s\n", dl_err);
+        dlclose(h);
+        return 1;
+    }
+    const _AeLibInfoMeta* m = meta_fn();
+    if (!m) {
+        fprintf(stderr, "ae lib-info: aether_lib_meta() returned NULL\n");
+        dlclose(h);
+        return 1;
+    }
+
+    printf("Aether Library: %s\n", path);
+    printf("  Schema:        %s\n",
+           m->schema_version ? m->schema_version : "(none)");
+    printf("  Aether:        %s\n",
+           m->aether_version ? m->aether_version : "(unknown)");
+    printf("  Source:        %s\n",
+           (m->primary_source && m->primary_source[0])
+             ? m->primary_source : "(unknown)");
+    printf("  Functions:     %d\n", m->function_count);
+    if (m->closure_count > 0) {
+        printf("  Closures:      %d (v2 — surface not yet emitted)\n",
+               m->closure_count);
+    }
+    printf("\n");
+
+    if (m->function_count > 0 && m->functions) {
+        for (int i = 0; i < m->function_count; i++) {
+            const _AeLibInfoFn* f = &m->functions[i];
+            const char* aname = f->aether_name ? f->aether_name : "?";
+            const char* csym  = f->c_symbol    ? f->c_symbol    : "?";
+            const char* sig   = f->signature   ? f->signature   : "(?) -> ?";
+            const char* src   = (f->source_file && f->source_file[0])
+                                ? f->source_file : "<unknown>";
+            /* Format: name + signature + (c_symbol if different) + source. */
+            printf("  - %s%s\n", aname, sig);
+            if (strcmp(aname, csym) != 0) {
+                printf("        c_symbol: %s\n", csym);
+            }
+            printf("        @ %s:%d\n", src, f->source_line);
+        }
+    }
+
+    dlclose(h);
+    return 0;
+#endif
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     // Set UTF-8 console codepage so Aether programs can print Unicode correctly
@@ -5776,6 +5962,7 @@ int main(int argc, char** argv) {
     if (strcmp(cmd, "cache") == 0)    return cmd_cache(sub_argc, sub_argv);
     if (strcmp(cmd, "cflags") == 0)   return cmd_cflags(sub_argc, sub_argv);
     if (strcmp(cmd, "repl") == 0)     return cmd_repl();
+    if (strcmp(cmd, "lib-info") == 0) return cmd_lib_info(sub_argc, sub_argv);
 
     fprintf(stderr, "Unknown command '%s'. Run 'ae help' for usage.\n", cmd);
     return 1;
