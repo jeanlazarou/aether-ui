@@ -12,11 +12,24 @@
 
 import std.fs
 import std.string
+import std.os
 
 extern exit(code: int)
 
 main() {
     println("=== fs.realpath regression ===")
+
+    // Skip on Windows: the test hardcodes POSIX `/tmp/...` paths
+    // and `/`-separated suffix matching. Windows remaps `/tmp` to
+    // `D:\tmp` and returns paths with `\` separators, so the
+    // assertions don't apply. The realpath implementation itself
+    // (`GetFinalPathNameByHandleW` on Windows) is exercised at
+    // build time; this test guards POSIX realpath specifically.
+    if os_getenv("OS") == "Windows_NT" {
+        println("  SKIP: POSIX path conventions; Windows realpath uses backslashes")
+        println("=== Skipped on Windows ===")
+        exit(0)
+    }
 
     tmpdir = "/tmp/aether_fs_realpath_test"
     fs.delete_dir(tmpdir)

@@ -63,8 +63,15 @@ main() {
     if kind1 != fs.KIND_OK {
         println("FAIL 1: kind=${kind1} msg=${msg1}, expected KIND_OK"); exit(1)
     }
-    if bytes1 != string.length(payload1) {
-        println("FAIL 1: bytes=${bytes1}, expected ${string.length(payload1)}"); exit(1)
+    // Compare against the on-disk size, not string.length(payload).
+    // On Windows, fopen("w") translates "\n" to "\r\n", so the file
+    // is one byte longer than the Aether string on every line. The
+    // copy primitive correctly reports the actual byte count copied;
+    // the test must compare against the actual file size to be
+    // platform-portable.
+    on_disk_size, _size_err = fs.size(src1)
+    if bytes1 != on_disk_size {
+        println("FAIL 1: bytes=${bytes1}, expected on-disk size ${on_disk_size}"); exit(1)
     }
     if read_or_empty(dst1) != payload1 {
         println("FAIL 1: dst content mismatch"); exit(1)
