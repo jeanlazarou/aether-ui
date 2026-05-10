@@ -2,6 +2,9 @@
 
 Not a CLAUDE.md — short, opinionated, written for a future LLM picking up mid-task. Re-read at start of every session.
 
+## Context
+This file covers UI/UX development for the Aether UI component. For language-level questions, the compiler, standard library, or general Aether idioms, consult the primary [Aether LLM.md](https://github.com/aether-lang-org/aether/blob/main/LLM.md).
+
 ## What Aether UI is
 A declarative widget DSL for Aether, porting the Perry UI framework. It supports Linux (GTK4), macOS (AppKit), and Windows (native Win32), sharing a common backend ABI in `aether_ui_backend.h`.
 
