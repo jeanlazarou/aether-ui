@@ -17,7 +17,7 @@ patterns. Based on commit
 [`7f1e3f9`](https://github.com/PerryTS/perry/commit/7f1e3f979832c33d2da79970ea62bc1b74c2e31a)
 of the `main` branch.
 
-Portions Copyright (c) 2026 Perry Contributors, and portions Copyright (c) 2026 Aether Contributors. MIT License.
+Portions Copyright (c) 2026 Perry Contributors collectively, and portions Copyright (c) 2026 Aether Contributors collectively. MIT License.
 
 ## Quick start
 
