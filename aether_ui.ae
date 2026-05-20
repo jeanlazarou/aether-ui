@@ -40,7 +40,11 @@ exports (
     enable_test_server, seal_widget, seal_subtree,
     menu_bar, menu, menu_item, menu_separator,
     menu_bar_add, attach_menu_bar, menu_popup,
-    root_grid, grid, grid_place
+    root_grid, grid, grid_place,
+    tray_icon, tray_set_tooltip, tray_set_menu,
+    tray_set_icon_for_state, tray_set_icon_template, tray_seal,
+    app_run_headless,
+    notify, notify_full, notify_request_permission
 )
 
 // ---------------------------------------------------------------------------
@@ -208,6 +212,23 @@ extern aether_ui_clear_children_impl(handle: int)
 extern aether_ui_enable_test_server_impl(port: int, root_handle: int)
 extern aether_ui_seal_widget_impl(handle: int)
 extern aether_ui_seal_subtree_impl(handle: int)
+
+// System tray + notifications + headless run
+extern aether_ui_tray_create_impl(name: string, boxed_closure: ptr) -> int
+extern aether_ui_tray_set_tooltip_impl(tray_id: int, text: string)
+extern aether_ui_tray_set_menu_impl(tray_id: int, menu_handle: int)
+extern aether_ui_tray_set_icon_for_state_impl(tray_id: int, state_handle: int,
+                                              icon_clean: string,
+                                              icon_busy: string,
+                                              icon_alert: string)
+extern aether_ui_tray_set_icon_template_impl(tray_id: int, is_template: int)
+extern aether_ui_tray_seal_impl(tray_id: int)
+extern aether_ui_app_run_headless_impl()
+extern aether_ui_notify_impl(title: string, body: string) -> int
+extern aether_ui_notify_full_impl(title: string, body: string,
+                                  icon_path: string, tag: string,
+                                  boxed_closure: ptr) -> int
+extern aether_ui_notify_request_permission_impl() -> int
 
 // ---------------------------------------------------------------------------
 // DSL wrappers — builder-pattern functions with _ctx auto-injection
@@ -816,4 +837,79 @@ grid(_ctx: ptr, cols: int, row_spacing: int, col_spacing: int) {
 grid_place(grid_handle: int, child_handle: int,
            row: int, col: int, row_span: int, col_span: int) {
     aether_ui_grid_place(grid_handle, child_handle, row, col, row_span, col_span)
+}
+
+// --- System tray ---
+//
+// tray_icon("name") callback { ... } registers an OS status-area
+// icon. Right-click conventionally opens the menu set via
+// tray_set_menu(); left-click fires the callback passed here.
+// On macOS the menu binds to left-click instead (platform
+// convention) — the DSL surface stays the same.
+tray_icon(name: string, on_left_click: fn) {
+    boxed = box_closure(on_left_click)
+    return aether_ui_tray_create_impl(name, boxed)
+}
+
+// Tray without a left-click handler — for menu-only tray apps where
+// every interaction goes through the popup menu.
+tray_icon_plain(name: string) {
+    return aether_ui_tray_create_impl(name, 0)
+}
+
+tray_set_tooltip(tray_id: int, text: string) {
+    aether_ui_tray_set_tooltip_impl(tray_id, text)
+}
+
+tray_set_menu(tray_id: int, menu_handle: int) {
+    aether_ui_tray_set_menu_impl(tray_id, menu_handle)
+}
+
+// Reactive icon swap. state_handle is a ui_state cell holding 0/1/2
+// (clean / busy / conflict). When the state changes, the tray icon
+// updates to the matching path.
+tray_set_icon_for_state(tray_id: int, state_handle: int,
+                        icon_clean: string, icon_busy: string,
+                        icon_alert: string) {
+    aether_ui_tray_set_icon_for_state_impl(tray_id, state_handle,
+                                           icon_clean, icon_busy, icon_alert)
+}
+
+// macOS template-mode toggle. 1 = template (mono adaptive light/dark);
+// 0 = full-colour. No-op on Linux/Win.
+tray_set_icon_template(tray_id: int, is_template: int) {
+    aether_ui_tray_set_icon_template_impl(tray_id, is_template)
+}
+
+// Protect a tray from the AetherUIDriver test API (returns 403).
+tray_seal(tray_id: int) {
+    aether_ui_tray_seal_impl(tray_id)
+}
+
+// app_run_headless — keep the main loop alive for tray-only apps
+// (no root widget). Honours AETHER_UI_HEADLESS for CI.
+app_run_headless() {
+    aether_ui_app_run_headless_impl()
+}
+
+// --- Desktop notifications ---
+
+// Fire-and-forget notification.
+notify(title: string, body: string) {
+    return aether_ui_notify_impl(title, body)
+}
+
+// Notification with optional icon, replace-by-tag, and click callback.
+// icon_path and tag may be empty strings to skip.
+notify_full(title: string, body: string, icon_path: string, tag: string,
+            on_click: fn) {
+    boxed = box_closure(on_click)
+    return aether_ui_notify_full_impl(title, body, icon_path, tag, boxed)
+}
+
+// macOS-only permission prompt. Returns 1 on platforms that don't
+// require it (Linux, Win). Apps that want to prompt at startup call
+// this; otherwise the first notify_full() is best-effort.
+notify_request_permission() {
+    return aether_ui_notify_request_permission_impl()
 }

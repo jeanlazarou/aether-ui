@@ -13,6 +13,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #include "aether_ui_backend.h"  // cross-platform backend ABI
+#include "aether_ui_system_extras.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2112,6 +2113,8 @@ void aether_ui_menu_add_item(int menu_handle, const char* label,
     [item setTarget:g_menu_target];
     [item setRepresentedObject:[NSNumber numberWithLongLong:(intptr_t)boxed_closure]];
     [m addItem:item];
+    // Side-store for the AetherUIDriver /tray/{id}/menu/activate route.
+    aether_ui_menu_item_record(menu_handle, label, boxed_closure);
 }
 
 void aether_ui_menu_add_separator(int menu_handle) {
@@ -2197,6 +2200,67 @@ int aether_ui_handle_for_widget(void* widget) {
         if (widgets[i] == widget) return i + 1;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// System tray (Group 7) — registry-only stub.
+//
+// Real implementation should use NSStatusItem + NSStatusBar.system. On
+// click of the status item, call aether_ui_tray_emit_click(id). For
+// tray_set_menu, set [statusItem setMenu:] with an NSMenu built from
+// the menu_handle's items. tray_set_icon_template maps to
+// [statusItem.button.image setTemplate:YES] for adaptive light/dark.
+//
+// Cannot be authored here without a macOS host to test against; the
+// registry + driver routes still validate the callback wiring from
+// AvnSync v2's perspective.
+// ---------------------------------------------------------------------------
+int aether_ui_tray_create_impl(const char* name, void* boxed_left_click) {
+    return aether_ui_tray_register(name, boxed_left_click);
+}
+void aether_ui_tray_set_tooltip_impl(int tray_id, const char* text) {
+    aether_ui_tray_set_tooltip_reg(tray_id, text);
+}
+void aether_ui_tray_set_menu_impl(int tray_id, int menu_handle) {
+    aether_ui_tray_set_menu_reg(tray_id, menu_handle);
+}
+void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
+                                             const char* icon_clean,
+                                             const char* icon_busy,
+                                             const char* icon_alert) {
+    aether_ui_tray_set_icon_for_state_reg(tray_id, state_handle,
+                                          icon_clean, icon_busy, icon_alert);
+}
+void aether_ui_tray_set_icon_template_impl(int tray_id, int is_template) {
+    aether_ui_tray_set_icon_template_reg(tray_id, is_template);
+}
+void aether_ui_tray_seal_impl(int tray_id) {
+    aether_ui_tray_seal_reg(tray_id);
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (Group 7b) — registry-only stub.
+//
+// Real implementation should use UNUserNotificationCenter (modern;
+// requires a real .app bundle and UNUserNotificationCenter
+// requestAuthorizationWithOptions on first use) or NSUserNotification
+// (deprecated since 10.14, still works in un-bundled CLI tools).
+// On user click, the delegate's userNotificationCenter:didReceive:
+// handler should call aether_ui_notif_emit_click(id).
+// ---------------------------------------------------------------------------
+int aether_ui_notify_impl(const char* title, const char* body) {
+    return aether_ui_notify_register(title, body);
+}
+int aether_ui_notify_full_impl(const char* title, const char* body,
+                                const char* icon_path, const char* tag,
+                                void* boxed_click) {
+    return aether_ui_notify_register_full(title, body, icon_path, tag, boxed_click);
+}
+int aether_ui_notify_request_permission_impl(void) {
+    // Real macOS: UNUserNotificationCenter requestAuthorization. Until
+    // then return granted so app code doesn't deadlock waiting for a
+    // permission decision that never arrives.
+    return aether_ui_notify_request_permission();
 }
 
 #endif // __APPLE__

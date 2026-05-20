@@ -5,11 +5,16 @@
 //   ae build app.ae --extra aether_ui_gtk4.c $(pkg-config --cflags --libs gtk4)
 
 #include "aether_ui_backend.h"
+#include "aether_ui_system_extras.h"
 #include <gtk/gtk.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+
+#ifdef AEUI_HAVE_LIBNOTIFY
+#include <libnotify/notify.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Closure struct — must match Aether codegen's _AeClosure layout.
@@ -1886,6 +1891,165 @@ static void handle_test_request(int client_fd) {
         }
     }
 
+    // --- AetherUIDriver: tray + notifications ---
+    //
+    // Introspection GETs read the registry directly from the HTTP
+    // thread — records are append-only and read-only after creation,
+    // so a concurrent read sees a coherent snapshot.
+    //
+    // POST dispatch fires the registered Aether closure synchronously
+    // on the HTTP thread. This is intentional: tray-only / headless
+    // apps have no GTK main loop draining g_idle_add, so a thread-
+    // marshalling dispatch would silently never fire under
+    // app_run_headless(). The trade-off is that tray callbacks must
+    // not touch GtkWidgets directly — they should mutate reactive
+    // state cells or schedule work (consistent with the AvnSync v2
+    // shape from the asks). When a real native tray backend lands
+    // and runs inside a GTK main loop, the native callback itself
+    // already runs on the GTK thread, so the dispatch model still
+    // works without code change.
+
+    // GET /tray
+    if (method == 0 && strcmp(path, "/tray") == 0) {
+        int n = aether_ui_tray_count();
+        char* body = (char*)malloc((size_t)n * 512 + 64);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= n; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 512,
+                "{\"id\":%d,\"name\":\"%s\",\"tooltip\":\"%s\","
+                "\"menu_handle\":%d,\"icon\":\"%s\",\"template\":%s,"
+                "\"sealed\":%s}",
+                i, aether_ui_tray_name(i), aether_ui_tray_tooltip(i),
+                aether_ui_tray_menu_handle(i),
+                aether_ui_tray_current_icon(i),
+                aether_ui_tray_is_template(i) ? "true" : "false",
+                aether_ui_tray_is_sealed(i)   ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_response(client_fd, 200, "OK", "application/json", body);
+        free(body);
+        close(client_fd);
+        return;
+    }
+
+    // GET /tray/{id}/icon — current icon (resolves reactive state cell)
+    if (method == 0 && strncmp(path, "/tray/", 6) == 0 && strstr(path, "/icon")) {
+        int id = atoi(path + 6);
+        const char* icon = aether_ui_tray_current_icon(id);
+        send_response(client_fd, 200, "OK", "text/plain", icon);
+        close(client_fd);
+        return;
+    }
+
+    // GET /tray/{id}
+    if (method == 0 && strncmp(path, "/tray/", 6) == 0 && strchr(path + 6, '/') == NULL) {
+        int id = atoi(path + 6);
+        if (id < 1 || id > aether_ui_tray_count()) {
+            send_response(client_fd, 404, "Not Found", "application/json",
+                          "{\"error\":\"tray not found\"}");
+        } else {
+            char body[1024];
+            snprintf(body, sizeof(body),
+                "{\"id\":%d,\"name\":\"%s\",\"tooltip\":\"%s\","
+                "\"menu_handle\":%d,\"icon\":\"%s\",\"template\":%s,"
+                "\"sealed\":%s}",
+                id, aether_ui_tray_name(id), aether_ui_tray_tooltip(id),
+                aether_ui_tray_menu_handle(id),
+                aether_ui_tray_current_icon(id),
+                aether_ui_tray_is_template(id) ? "true" : "false",
+                aether_ui_tray_is_sealed(id)   ? "true" : "false");
+            send_response(client_fd, 200, "OK", "application/json", body);
+        }
+        close(client_fd);
+        return;
+    }
+
+    // POST /tray/{id}/click | /menu/activate?label=... | /set_tooltip?v=...
+    if (method == 1 && strncmp(path, "/tray/", 6) == 0) {
+        int id = atoi(path + 6);
+        if (strstr(path, "/click")) {
+            int r = aether_ui_tray_emit_click(id);
+            if (r == 0)      send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            else if (r == 1) send_response(client_fd, 403, "Forbidden", "application/json", "{\"error\":\"sealed\"}");
+            else if (r == 4) send_response(client_fd, 204, "No Content", "application/json", "");
+            else             send_response(client_fd, 404, "Not Found", "application/json", "{\"error\":\"tray not found\"}");
+            close(client_fd);
+            return;
+        }
+        if (strstr(path, "/menu/activate")) {
+            const char* v = extract_query_param(path, "label");
+            char label[256] = "";
+            if (v) {
+                strncpy(label, v, sizeof(label) - 1);
+                char* amp = strchr(label, '&'); if (amp) *amp = '\0';
+                // Minimal URL-decode for spaces (most tests need this).
+                for (char* p = label; *p; p++) if (*p == '+') *p = ' ';
+            }
+            int r = aether_ui_tray_menu_activate(id, label);
+            if (r == 0)      send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            else if (r == 1) send_response(client_fd, 403, "Forbidden", "application/json", "{\"error\":\"sealed\"}");
+            else if (r == 4) send_response(client_fd, 204, "No Content", "application/json", "");
+            else             send_response(client_fd, 404, "Not Found", "application/json", "{\"error\":\"item not found\"}");
+            close(client_fd);
+            return;
+        }
+        if (strstr(path, "/set_tooltip")) {
+            const char* v = extract_query_param(path, "v");
+            char text[256] = "";
+            if (v) {
+                strncpy(text, v, sizeof(text) - 1);
+                char* amp = strchr(text, '&'); if (amp) *amp = '\0';
+                for (char* p = text; *p; p++) if (*p == '+') *p = ' ';
+            }
+            aether_ui_tray_set_tooltip_reg(id, text);
+            send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            close(client_fd);
+            return;
+        }
+    }
+
+    // GET /notifications
+    if (method == 0 && strcmp(path, "/notifications") == 0) {
+        int n = aether_ui_notif_count();
+        char* body = (char*)malloc((size_t)n * 1536 + 64);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= n; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 1536,
+                "{\"id\":%d,\"title\":\"%s\",\"body\":\"%s\","
+                "\"icon\":\"%s\",\"tag\":\"%s\",\"dismissed\":%s}",
+                i, aether_ui_notif_title(i), aether_ui_notif_body(i),
+                aether_ui_notif_icon(i), aether_ui_notif_tag(i),
+                aether_ui_notif_dismissed(i) ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_response(client_fd, 200, "OK", "application/json", body);
+        free(body);
+        close(client_fd);
+        return;
+    }
+
+    // POST /notifications/{id}/click | /dismiss
+    if (method == 1 && strncmp(path, "/notifications/", 15) == 0) {
+        int id = atoi(path + 15);
+        if (strstr(path, "/click")) {
+            int r = aether_ui_notif_emit_click(id);
+            if (r == 0)      send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            else if (r == 4) send_response(client_fd, 204, "No Content", "application/json", "");
+            else             send_response(client_fd, 404, "Not Found", "application/json", "{\"error\":\"notification not found\"}");
+            close(client_fd);
+            return;
+        }
+        if (strstr(path, "/dismiss")) {
+            int r = aether_ui_notif_mark_dismissed(id);
+            if (r == 0) send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            else        send_response(client_fd, 404, "Not Found", "application/json", "{\"error\":\"notification not found\"}");
+            close(client_fd);
+            return;
+        }
+    }
+
     send_response(client_fd, 404, "Not Found", "text/plain", "Not found");
     close(client_fd);
 }
@@ -2037,7 +2201,12 @@ int aether_ui_menu_create(const char* label) {
 
 void aether_ui_menu_add_item(int menu_handle, const char* label,
                              void* boxed_closure) {
-    (void)menu_handle; (void)label; (void)boxed_closure;
+    // Record into the cross-backend side-store so the AetherUIDriver
+    // /tray/{id}/menu/activate route (and any future menu_popup test
+    // route) can invoke the closure by label. The real GTK4 menu wiring
+    // (GMenuModel + GActionGroup) is still TODO — see the stub header
+    // comment above — but the closure is reachable from the driver today.
+    aether_ui_menu_item_record(menu_handle, label, boxed_closure);
 }
 
 void aether_ui_menu_add_separator(int menu_handle) { (void)menu_handle; }
@@ -2088,4 +2257,153 @@ int aether_ui_handle_for_widget(void* widget) {
         if (widgets[i] == widget) return i + 1;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// System tray (Group 7).
+//
+// Registry-only on GTK4 today. The platform options for a real native
+// tray in 2026 are:
+//
+//   - libayatana-appindicator (-1 / -3 packages): hard-wired to GTK3.
+//     The header pulls in <gtk/gtk.h> at the GTK3 search path, which
+//     conflicts with the GTK4 typedefs already in this file. Mixing
+//     GTK3 and GTK4 in the same process is the original menu-stubbing
+//     reason — same trap here.
+//
+//   - StatusNotifierItem (KDE freedesktop spec) over GDBus. The
+//     GTK-version-agnostic path forward; ~400 LOC of GIO D-Bus code to
+//     register an SNI on the bus + a DBusMenu for the popup. Adopted
+//     by GNOME (via gnome-shell-extension-appindicator), KDE,
+//     Cinnamon, Budgie. The right answer for an actual Linux tray.
+//
+// Phase 1 (this ask) ships the DSL + registry + AetherUIDriver routes
+// so AvnSync v2 can wire its callbacks against a stable surface and
+// validate them in CI via /tray/{id}/click and
+// /tray/{id}/menu/activate. When the SNI implementation lands, it
+// only needs to call aether_ui_tray_emit_click() / _menu_activate()
+// on dbus events; the DSL contract stays unchanged.
+//
+// AETHER_UI_HEADLESS does not gate anything here because there's no
+// native call to suppress yet. The flag still matters for app_run_
+// headless's logging.
+// ---------------------------------------------------------------------------
+int aether_ui_tray_create_impl(const char* name, void* boxed_left_click) {
+    return aether_ui_tray_register(name, boxed_left_click);
+}
+
+void aether_ui_tray_set_tooltip_impl(int tray_id, const char* text) {
+    aether_ui_tray_set_tooltip_reg(tray_id, text);
+}
+
+void aether_ui_tray_set_menu_impl(int tray_id, int menu_handle) {
+    aether_ui_tray_set_menu_reg(tray_id, menu_handle);
+}
+
+void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
+                                             const char* icon_clean,
+                                             const char* icon_busy,
+                                             const char* icon_alert) {
+    aether_ui_tray_set_icon_for_state_reg(tray_id, state_handle,
+                                          icon_clean, icon_busy, icon_alert);
+}
+
+void aether_ui_tray_set_icon_template_impl(int tray_id, int is_template) {
+    aether_ui_tray_set_icon_template_reg(tray_id, is_template);
+}
+
+void aether_ui_tray_seal_impl(int tray_id) {
+    aether_ui_tray_seal_reg(tray_id);
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (Group 7b).
+//
+// libnotify is GTK-version-agnostic — depends only on glib/gobject/
+// gdk-pixbuf — so the real native path ships on GTK4 today. When
+// libnotify is missing (AEUI_HAVE_LIBNOTIFY undefined), the build
+// falls through to registry-only, matching the tray story.
+//
+// Click callback: NotifyNotification emits "action-invoked" on the
+// glib main loop, so the callback already runs on the right thread.
+// We close over the boxed closure via g_object_set_data + the action
+// handler invokes the registry's dispatch helper.
+//
+// AETHER_UI_HEADLESS suppresses the OS-level notify_notification_show
+// call; the record still lands in the registry so driver tests can
+// exercise click/dismiss.
+// ---------------------------------------------------------------------------
+
+#ifdef AEUI_HAVE_LIBNOTIFY
+static int gtk_libnotify_init = 0;
+
+static void ensure_libnotify_init(void) {
+    if (!gtk_libnotify_init) {
+        notify_init("aether-ui");
+        gtk_libnotify_init = 1;
+    }
+}
+
+// glib action handler: when the user clicks the notification, dispatch
+// through the shared registry so the registered Aether closure fires.
+static void on_libnotify_action(NotifyNotification* n, char* action,
+                                 gpointer user_data) {
+    (void)n; (void)action;
+    int notif_id = GPOINTER_TO_INT(user_data);
+    aether_ui_notif_emit_click(notif_id);
+}
+
+static void on_libnotify_closed(NotifyNotification* n, gpointer user_data) {
+    (void)n;
+    int notif_id = GPOINTER_TO_INT(user_data);
+    aether_ui_notif_mark_dismissed(notif_id);
+}
+
+static void show_libnotify(int notif_id, const char* title, const char* body,
+                            const char* icon_path, int with_click) {
+    if (aeui_is_headless()) return;
+    ensure_libnotify_init();
+    const char* icon = (icon_path && icon_path[0]) ? icon_path : "dialog-information";
+    NotifyNotification* n = notify_notification_new(
+        title ? title : "", body ? body : "", icon);
+    if (with_click) {
+        // "default" is the freedesktop spec's reserved action key for
+        // "user clicked the bubble (not a specific button)".
+        notify_notification_add_action(n, "default", "Default",
+            on_libnotify_action, GINT_TO_POINTER(notif_id), NULL);
+    }
+    g_signal_connect(n, "closed", G_CALLBACK(on_libnotify_closed),
+                     GINT_TO_POINTER(notif_id));
+    GError* err = NULL;
+    if (!notify_notification_show(n, &err)) {
+        // D-Bus notifier daemon may not be running (headless test
+        // env, minimal WMs). Silently drop — the registry record
+        // still exists for the driver to act on.
+        if (err) g_error_free(err);
+    }
+}
+#endif
+
+int aether_ui_notify_impl(const char* title, const char* body) {
+    int id = aether_ui_notify_register(title, body);
+#ifdef AEUI_HAVE_LIBNOTIFY
+    show_libnotify(id, title, body, NULL, 0);
+#endif
+    return id;
+}
+
+int aether_ui_notify_full_impl(const char* title, const char* body,
+                                const char* icon_path, const char* tag,
+                                void* boxed_click) {
+    int id = aether_ui_notify_register_full(title, body, icon_path, tag, boxed_click);
+#ifdef AEUI_HAVE_LIBNOTIFY
+    show_libnotify(id, title, body, icon_path, boxed_click ? 1 : 0);
+#endif
+    return id;
+}
+
+int aether_ui_notify_request_permission_impl(void) {
+    // Linux: always granted (libnotify just talks to the running
+    // notification daemon over D-Bus; nothing to prompt for).
+    return aether_ui_notify_request_permission();
 }

@@ -25,6 +25,7 @@ case "$OS" in
         clang -O0 -g -fobjc-arc \
             $AETHER_INCLUDES \
             "$C_FILE" "$SCRIPT_DIR/aether_ui_macos.m" \
+            "$SCRIPT_DIR/aether_ui_system_extras.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$OUTPUT" \
             -framework AppKit -framework Foundation -framework QuartzCore -pthread -lm
@@ -35,13 +36,24 @@ case "$OS" in
             exit 1
         fi
         echo "Platform: Linux (GTK4)"
+        # libnotify is optional — if present, the GTK4 backend wires real
+        # OS notifications via NotifyNotification; otherwise notify*()
+        # land in the registry only (still drivable via AetherUIDriver).
+        LIBNOTIFY_CFLAGS=""
+        LIBNOTIFY_LIBS=""
+        if pkg-config --exists libnotify 2>/dev/null; then
+            LIBNOTIFY_CFLAGS="-DAEUI_HAVE_LIBNOTIFY=1 $(pkg-config --cflags libnotify)"
+            LIBNOTIFY_LIBS="$(pkg-config --libs libnotify)"
+        fi
         gcc -O0 -g -pipe \
             $(pkg-config --cflags gtk4) \
             $AETHER_INCLUDES \
+            $LIBNOTIFY_CFLAGS \
             "$C_FILE" "$SCRIPT_DIR/aether_ui_gtk4.c" \
+            "$SCRIPT_DIR/aether_ui_system_extras.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$OUTPUT" \
-            -pthread -lm $(pkg-config --libs gtk4)
+            -pthread -lm $(pkg-config --libs gtk4) $LIBNOTIFY_LIBS
         ;;
     MINGW*|MSYS*|CYGWIN*)
         echo "Platform: Windows (native Win32)"
@@ -51,6 +63,7 @@ case "$OS" in
             $AETHER_INCLUDES \
             "$C_FILE" "$SCRIPT_DIR/aether_ui_win32.c" \
             "$SCRIPT_DIR/aether_ui_test_server.c" \
+            "$SCRIPT_DIR/aether_ui_system_extras.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$ACTUAL_OUT" \
             -luser32 -lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 \

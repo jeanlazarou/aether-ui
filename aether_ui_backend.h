@@ -173,6 +173,31 @@ void aether_ui_enable_test_server_impl(int port, int root_handle);
 void aether_ui_seal_widget_impl(int handle);
 void aether_ui_seal_subtree_impl(int handle);
 
+// System tray (Group 7) — OS-level status-area icon with optional
+// tooltip, popup menu, and reactive icon swap. Phase 1 unblocks
+// tray-only apps (AvnSync v2 etc). Backend storage + driver
+// dispatch live in aether_ui_system_extras.c; per-backend native
+// wiring (libayatana-appindicator / NSStatusItem / Shell_NotifyIcon)
+// calls into the shared registry on click/menu-activate events.
+int  aether_ui_tray_create_impl(const char* name, void* boxed_left_click);
+void aether_ui_tray_set_tooltip_impl(int tray_id, const char* text);
+void aether_ui_tray_set_menu_impl(int tray_id, int menu_handle);
+void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
+                                             const char* icon_clean,
+                                             const char* icon_busy,
+                                             const char* icon_alert);
+void aether_ui_tray_set_icon_template_impl(int tray_id, int is_template);
+void aether_ui_tray_seal_impl(int tray_id);
+
+// Desktop notifications (Group 7b) — fire-and-forget OS notifications.
+// Click callback (notify_full) marshals back to the main thread before
+// firing the Aether closure.
+int  aether_ui_notify_impl(const char* title, const char* body);
+int  aether_ui_notify_full_impl(const char* title, const char* body,
+                                 const char* icon_path, const char* tag,
+                                 void* boxed_click);
+int  aether_ui_notify_request_permission_impl(void);
+
 // Widget tree
 void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle);
 void aether_ui_widget_set_hidden(int handle, int hidden);

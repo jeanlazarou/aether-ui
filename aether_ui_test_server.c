@@ -20,6 +20,7 @@
 
 #include "aether_ui_test_server.h"
 #include "aether_ui_backend.h"
+#include "aether_ui_system_extras.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -392,6 +393,124 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         if (v) ctx.dval = atof(v);
         h->dispatch_action(&ctx);
         send_http(client_fd, 200, "OK", "text/plain", "set");
+
+    // --- /tray ---
+    // GET  /tray              → list of all registered tray records
+    // GET  /tray/{id}         → single tray record (tooltip, menu_handle,
+    //                            current_icon, sealed)
+    // GET  /tray/{id}/icon    → current icon path (resolves state cell)
+    // POST /tray/{id}/click   → fire the left-click closure
+    // POST /tray/{id}/menu/activate?label=Foo → invoke item by label
+    // POST /tray/{id}/set_tooltip?v=Text     → update tooltip
+    } else if (method == 0 && strcmp(path, "/tray") == 0) {
+        int n = aether_ui_tray_count();
+        char* body = (char*)malloc((size_t)n * 512 + 64);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= n; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 512,
+                "{\"id\":%d,\"name\":\"%s\",\"tooltip\":\"%s\","
+                "\"menu_handle\":%d,\"icon\":\"%s\",\"template\":%s,"
+                "\"sealed\":%s}",
+                i, aether_ui_tray_name(i), aether_ui_tray_tooltip(i),
+                aether_ui_tray_menu_handle(i),
+                aether_ui_tray_current_icon(i),
+                aether_ui_tray_is_template(i) ? "true" : "false",
+                aether_ui_tray_is_sealed(i)   ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_http(client_fd, 200, "OK", "application/json", body);
+        free(body);
+    } else if (method == 0 && strncmp(path, "/tray/", 6) == 0
+               && strstr(path, "/icon")) {
+        int id = extract_id_from_path(path, "/tray/");
+        const char* icon = aether_ui_tray_current_icon(id);
+        send_http(client_fd, 200, "OK", "text/plain", icon);
+    } else if (method == 0 && strncmp(path, "/tray/", 6) == 0) {
+        int id = extract_id_from_path(path, "/tray/");
+        if (id < 1 || id > aether_ui_tray_count()) {
+            send_http(client_fd, 404, "Not Found", "text/plain", "tray not found");
+        } else {
+            char body[1024];
+            snprintf(body, sizeof(body),
+                "{\"id\":%d,\"name\":\"%s\",\"tooltip\":\"%s\","
+                "\"menu_handle\":%d,\"icon\":\"%s\",\"template\":%s,"
+                "\"sealed\":%s}",
+                id, aether_ui_tray_name(id), aether_ui_tray_tooltip(id),
+                aether_ui_tray_menu_handle(id),
+                aether_ui_tray_current_icon(id),
+                aether_ui_tray_is_template(id) ? "true" : "false",
+                aether_ui_tray_is_sealed(id)   ? "true" : "false");
+            send_http(client_fd, 200, "OK", "application/json", body);
+        }
+    } else if (method == 1 && strncmp(path, "/tray/", 6) == 0
+               && strstr(path, "/click")) {
+        int id = extract_id_from_path(path, "/tray/");
+        int r = aether_ui_tray_emit_click(id);
+        if (r == 0) send_http(client_fd, 200, "OK", "text/plain", "clicked");
+        else if (r == 1) send_http(client_fd, 403, "Forbidden", "text/plain",
+                                    "tray is sealed");
+        else if (r == 4) send_http(client_fd, 204, "No Content", "text/plain", "");
+        else send_http(client_fd, 404, "Not Found", "text/plain", "tray not found");
+    } else if (method == 1 && strncmp(path, "/tray/", 6) == 0
+               && strstr(path, "/menu/activate")) {
+        int id = extract_id_from_path(path, "/tray/");
+        const char* v = extract_query_param(path, "label");
+        char label[256] = "";
+        if (v) {
+            strncpy(label, v, sizeof(label) - 1);
+            char* amp = strchr(label, '&'); if (amp) *amp = '\0';
+            url_decode(label);
+        }
+        int r = aether_ui_tray_menu_activate(id, label);
+        if (r == 0) send_http(client_fd, 200, "OK", "text/plain", "activated");
+        else if (r == 1) send_http(client_fd, 403, "Forbidden", "text/plain",
+                                    "tray is sealed");
+        else if (r == 4) send_http(client_fd, 204, "No Content", "text/plain", "");
+        else send_http(client_fd, 404, "Not Found", "text/plain", "item not found");
+    } else if (method == 1 && strncmp(path, "/tray/", 6) == 0
+               && strstr(path, "/set_tooltip")) {
+        int id = extract_id_from_path(path, "/tray/");
+        const char* v = extract_query_param(path, "v");
+        char text[256] = "";
+        if (v) {
+            strncpy(text, v, sizeof(text) - 1);
+            char* amp = strchr(text, '&'); if (amp) *amp = '\0';
+            url_decode(text);
+        }
+        aether_ui_tray_set_tooltip_reg(id, text);
+        send_http(client_fd, 200, "OK", "text/plain", "set");
+
+    // --- /notifications ---
+    } else if (method == 0 && strcmp(path, "/notifications") == 0) {
+        int n = aether_ui_notif_count();
+        char* body = (char*)malloc((size_t)n * 1536 + 64);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= n; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 1536,
+                "{\"id\":%d,\"title\":\"%s\",\"body\":\"%s\","
+                "\"icon\":\"%s\",\"tag\":\"%s\",\"dismissed\":%s}",
+                i, aether_ui_notif_title(i), aether_ui_notif_body(i),
+                aether_ui_notif_icon(i), aether_ui_notif_tag(i),
+                aether_ui_notif_dismissed(i) ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_http(client_fd, 200, "OK", "application/json", body);
+        free(body);
+    } else if (method == 1 && strncmp(path, "/notifications/", 15) == 0
+               && strstr(path, "/click")) {
+        int id = extract_id_from_path(path, "/notifications/");
+        int r = aether_ui_notif_emit_click(id);
+        if (r == 0) send_http(client_fd, 200, "OK", "text/plain", "clicked");
+        else if (r == 4) send_http(client_fd, 204, "No Content", "text/plain", "");
+        else send_http(client_fd, 404, "Not Found", "text/plain", "notification not found");
+    } else if (method == 1 && strncmp(path, "/notifications/", 15) == 0
+               && strstr(path, "/dismiss")) {
+        int id = extract_id_from_path(path, "/notifications/");
+        int r = aether_ui_notif_mark_dismissed(id);
+        if (r == 0) send_http(client_fd, 200, "OK", "text/plain", "dismissed");
+        else send_http(client_fd, 404, "Not Found", "text/plain", "notification not found");
     } else {
         send_http(client_fd, 404, "Not Found", "text/plain",
                   "unknown endpoint");

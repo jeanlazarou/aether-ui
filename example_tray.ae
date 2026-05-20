@@ -1,0 +1,79 @@
+// example_tray.ae — system-tray + desktop-notifications demo.
+//
+// Build and run (interactive, will sit in the tray):
+//   ./build.sh example_tray.ae build/example_tray
+//   ./build/example_tray
+//
+// Headless smoke (used by tests/test_tray_notif_driver.sh):
+//   AETHER_UI_HEADLESS=1 AETHER_UI_TEST_PORT=9233 ./build/example_tray
+//
+// Phase 1 surface: tray_icon, tray_set_tooltip, tray_set_menu,
+// app_run_headless, notify, notify_full. Real native tray on
+// Linux is blocked on a GTK4-compatible status-notifier
+// implementation (see aether_ui_gtk4.c System tray section);
+// libnotify lights up notifications today when available.
+
+import aether_ui
+import std.os (os_getenv)
+
+extern println(s: string)
+
+main() {
+    // Reactive state: 0=clean, 1=syncing, 2=conflict.
+    sync_status = aether_ui.ui_state(0)
+
+    // Popup menu — reused as the tray's right-click target.
+    m = aether_ui.menu("AvnSync")
+    aether_ui.menu_item(m, "Sync now") callback {
+        println("Sync now clicked")
+        aether_ui.ui_set(sync_status, 1.0)
+        aether_ui.notify("AvnSync", "Sync started")
+    }
+    aether_ui.menu_item(m, "Open folder") callback {
+        println("Open folder clicked")
+    }
+    aether_ui.menu_separator(m)
+    aether_ui.menu_item(m, "Quit") callback {
+        println("Quit clicked")
+        // app_run_headless's main loop would exit here in a real
+        // backend; for this demo we just log.
+    }
+
+    // Tray icon — register with an optional left-click handler.
+    tray = aether_ui.tray_icon("avnsync") callback {
+        println("Tray left-clicked")
+        aether_ui.notify("AvnSync", "Status check requested")
+    }
+    aether_ui.tray_set_tooltip(tray, "AvnSync — synced")
+    aether_ui.tray_set_menu(tray, m)
+    aether_ui.tray_set_icon_for_state(tray, sync_status,
+        "/usr/share/icons/hicolor/scalable/apps/clean.svg",
+        "/usr/share/icons/hicolor/scalable/apps/sync.svg",
+        "/usr/share/icons/hicolor/scalable/apps/alert.svg")
+
+    // Optional driver. Set AETHER_UI_TEST_PORT to enable. The port
+    // is currently hard-coded in matched apps (mirror of the
+    // example_calculator pattern); tests/test_tray_notif_driver.sh
+    // passes 9234 here.
+    test_port = os_getenv("AETHER_UI_TEST_PORT")
+    if test_port != null {
+        // Tray-only apps have no root widget; enable_test_server still
+        // needs SOMETHING to anchor the banner. Hand it a dummy
+        // root_vstack and let the driver enumerate /tray + /notifications
+        // independently. The banner is invisible in headless mode.
+        dummy = aether_ui.root_vstack(0)
+        aether_ui.enable_test_server(9234, dummy)
+        println("AetherUIDriver listening for tray + notifications")
+    }
+
+    // Fire a couple of notifications so the test has something to dismiss.
+    n1 = aether_ui.notify("AvnSync", "Ready")
+    n2 = aether_ui.notify_full("AvnSync",
+                                "Push rejected — conflict in README.md",
+                                "",
+                                "avnsync-conflict-README.md") callback {
+        println("Notification clicked")
+    }
+
+    aether_ui.app_run_headless()
+}

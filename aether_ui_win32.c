@@ -13,6 +13,7 @@
 // (module.ae) declares matching externs.
 
 #include "aether_ui_backend.h"
+#include "aether_ui_system_extras.h"
 
 #ifndef UNICODE
 #define UNICODE
@@ -1975,6 +1976,8 @@ void aether_ui_menu_add_item(int menu_handle, const char* label,
     menu_commands[menu_command_count].id = id;
     menu_commands[menu_command_count].closure = (AeClosure*)boxed_closure;
     menu_command_count++;
+    // Side-store for the AetherUIDriver /tray/{id}/menu/activate route.
+    aether_ui_menu_item_record(menu_handle, label, boxed_closure);
 }
 
 void aether_ui_menu_add_separator(int menu_handle) {
@@ -2747,4 +2750,63 @@ void aether_ui_enable_test_server_impl(int port, int root_handle) {
         0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
 
     aether_ui_test_server_start(port, &win32_driver_hooks);
+}
+
+// ---------------------------------------------------------------------------
+// System tray (Group 7) — registry-only stub.
+//
+// Real implementation should use Shell_NotifyIcon(NIM_ADD,
+// NIF_ICON | NIF_TIP | NIF_MESSAGE) with a hidden message-only window
+// that handles WM_LBUTTONUP / WM_RBUTTONUP via the callback message
+// id. Right-click should TrackPopupMenu against the menu_handle's
+// HMENU; left-click should dispatch through
+// aether_ui_tray_emit_click(id). Icon-template flag is a no-op on
+// Win32 (icons are full-colour .ico resources).
+//
+// Cannot be authored here without a Windows host to test against;
+// the registry + driver routes still validate the callback wiring.
+// ---------------------------------------------------------------------------
+int aether_ui_tray_create_impl(const char* name, void* boxed_left_click) {
+    return aether_ui_tray_register(name, boxed_left_click);
+}
+void aether_ui_tray_set_tooltip_impl(int tray_id, const char* text) {
+    aether_ui_tray_set_tooltip_reg(tray_id, text);
+}
+void aether_ui_tray_set_menu_impl(int tray_id, int menu_handle) {
+    aether_ui_tray_set_menu_reg(tray_id, menu_handle);
+}
+void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
+                                             const char* icon_clean,
+                                             const char* icon_busy,
+                                             const char* icon_alert) {
+    aether_ui_tray_set_icon_for_state_reg(tray_id, state_handle,
+                                          icon_clean, icon_busy, icon_alert);
+}
+void aether_ui_tray_set_icon_template_impl(int tray_id, int is_template) {
+    aether_ui_tray_set_icon_template_reg(tray_id, is_template);
+}
+void aether_ui_tray_seal_impl(int tray_id) {
+    aether_ui_tray_seal_reg(tray_id);
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (Group 7b) — registry-only stub.
+//
+// Real implementation should use Windows.UI.Notifications.
+// ToastNotificationManager via the WinRT C ABI: build Toast XML, set
+// an AUMID via SetCurrentProcessExplicitAppUserModelID, then
+// CreateToastNotificationManagerForApplication(aumid).ShowToast(xml).
+// Activation handler routes back through
+// aether_ui_notif_emit_click(id) via the IToastActivatedEventArgs.
+// ---------------------------------------------------------------------------
+int aether_ui_notify_impl(const char* title, const char* body) {
+    return aether_ui_notify_register(title, body);
+}
+int aether_ui_notify_full_impl(const char* title, const char* body,
+                                const char* icon_path, const char* tag,
+                                void* boxed_click) {
+    return aether_ui_notify_register_full(title, body, icon_path, tag, boxed_click);
+}
+int aether_ui_notify_request_permission_impl(void) {
+    return aether_ui_notify_request_permission();
 }

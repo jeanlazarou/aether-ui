@@ -1,0 +1,352 @@
+// Aether UI — system tray + desktop-notification registry.
+// See aether_ui_system_extras.h for the contract + design notes.
+
+#include "aether_ui_system_extras.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <pthread.h>
+#endif
+
+// Backend-supplied: read a reactive-state cell. Used by tray_current_icon
+// to resolve which of (clean / busy / alert) the tray is on. Every backend
+// already defines this — see aether_ui_state_get in the per-backend file.
+extern double aether_ui_state_get(int handle);
+
+// Closure layout: the box_closure() return contract is `{fn, env}`. We
+// only need to invoke it, so a thin local mirror works for both 32- and
+// 64-bit pointers.
+typedef struct { void* fn; void* env; } AeClosureLocal;
+static void invoke_closure(void* boxed) {
+    if (!boxed) return;
+    AeClosureLocal* c = (AeClosureLocal*)boxed;
+    if (!c->fn) return;
+    ((void(*)(void*))c->fn)(c->env);
+}
+
+// ---------------------------------------------------------------------------
+// Tray registry
+// ---------------------------------------------------------------------------
+
+#define TRAY_MAX 64
+#define NOTIF_MAX 256
+#define MENU_ITEM_MAX 512
+
+typedef struct {
+    int  in_use;
+    char name[64];
+    char tooltip[256];
+    int  menu_handle;
+    int  state_handle;
+    char icon_clean[256];
+    char icon_busy[256];
+    char icon_alert[256];
+    int  is_template;
+    int  sealed;
+    void* left_click_boxed;
+} TrayRec;
+
+static TrayRec g_tray[TRAY_MAX];
+static int     g_tray_count = 0;
+
+static void copy_str(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+int aether_ui_tray_register(const char* name, void* boxed_left_click) {
+    if (g_tray_count >= TRAY_MAX) return 0;
+    int idx = g_tray_count++;
+    TrayRec* t = &g_tray[idx];
+    memset(t, 0, sizeof(*t));
+    t->in_use = 1;
+    copy_str(t->name, sizeof(t->name), name ? name : "");
+    t->left_click_boxed = boxed_left_click;
+    return idx + 1; // 1-based
+}
+
+static TrayRec* tray_lookup(int tray_id) {
+    if (tray_id < 1 || tray_id > g_tray_count) return NULL;
+    TrayRec* t = &g_tray[tray_id - 1];
+    return t->in_use ? t : NULL;
+}
+
+void aether_ui_tray_set_tooltip_reg(int tray_id, const char* text) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return;
+    copy_str(t->tooltip, sizeof(t->tooltip), text);
+}
+
+void aether_ui_tray_set_menu_reg(int tray_id, int menu_handle) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return;
+    t->menu_handle = menu_handle;
+}
+
+void aether_ui_tray_set_icon_for_state_reg(int tray_id, int state_handle,
+                                            const char* icon_clean,
+                                            const char* icon_busy,
+                                            const char* icon_alert) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return;
+    t->state_handle = state_handle;
+    copy_str(t->icon_clean, sizeof(t->icon_clean), icon_clean);
+    copy_str(t->icon_busy,  sizeof(t->icon_busy),  icon_busy);
+    copy_str(t->icon_alert, sizeof(t->icon_alert), icon_alert);
+}
+
+void aether_ui_tray_set_icon_template_reg(int tray_id, int is_template) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return;
+    t->is_template = is_template ? 1 : 0;
+}
+
+void aether_ui_tray_seal_reg(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return;
+    t->sealed = 1;
+}
+
+int aether_ui_tray_count(void) { return g_tray_count; }
+
+const char* aether_ui_tray_name(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    return t ? t->name : "";
+}
+
+const char* aether_ui_tray_tooltip(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    return t ? t->tooltip : "";
+}
+
+int aether_ui_tray_menu_handle(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    return t ? t->menu_handle : 0;
+}
+
+// Convention from the ask: 0=clean, 1=busy/syncing, 2=conflict/alert.
+const char* aether_ui_tray_current_icon(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return "";
+    if (t->state_handle <= 0) return t->icon_clean;
+    int s = (int)aether_ui_state_get(t->state_handle);
+    if (s <= 0) return t->icon_clean;
+    if (s == 1) return t->icon_busy;
+    return t->icon_alert;
+}
+
+int aether_ui_tray_is_template(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    return t ? t->is_template : 0;
+}
+
+int aether_ui_tray_is_sealed(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    return t ? t->sealed : 0;
+}
+
+int aether_ui_tray_emit_click(int tray_id) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return 3;
+    if (t->sealed) return 1;
+    if (!t->left_click_boxed) return 4;
+    invoke_closure(t->left_click_boxed);
+    return 0;
+}
+
+int aether_ui_tray_menu_activate(int tray_id, const char* item_label) {
+    TrayRec* t = tray_lookup(tray_id);
+    if (!t) return 3;
+    if (t->sealed) return 1;
+    if (t->menu_handle <= 0) return 3;
+    return aether_ui_menu_item_invoke(t->menu_handle, item_label);
+}
+
+// ---------------------------------------------------------------------------
+// Notification registry
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    int  in_use;
+    char title[256];
+    char body[1024];
+    char icon[256];
+    char tag[128];
+    int  dismissed;
+    void* click_boxed;
+} NotifRec;
+
+static NotifRec g_notif[NOTIF_MAX];
+static int      g_notif_count = 0;
+
+// Tag-replace: if a new notification matches an existing record's tag,
+// reuse its slot (mirroring libnotify replaces_id / UN identifier / Toast
+// tag+group semantics). Empty tag never replaces.
+static int notif_slot_for_tag(const char* tag) {
+    if (!tag || !*tag) return -1;
+    for (int i = 0; i < g_notif_count; i++) {
+        if (g_notif[i].in_use && strcmp(g_notif[i].tag, tag) == 0) return i;
+    }
+    return -1;
+}
+
+static int notif_alloc_slot(void) {
+    if (g_notif_count >= NOTIF_MAX) return -1;
+    return g_notif_count++;
+}
+
+int aether_ui_notify_register(const char* title, const char* body) {
+    return aether_ui_notify_register_full(title, body, "", "", NULL);
+}
+
+int aether_ui_notify_register_full(const char* title, const char* body,
+                                    const char* icon_path, const char* tag,
+                                    void* boxed_click) {
+    int slot = notif_slot_for_tag(tag);
+    if (slot < 0) {
+        slot = notif_alloc_slot();
+        if (slot < 0) return 0;
+    }
+    NotifRec* n = &g_notif[slot];
+    memset(n, 0, sizeof(*n));
+    n->in_use = 1;
+    copy_str(n->title, sizeof(n->title), title);
+    copy_str(n->body,  sizeof(n->body),  body);
+    copy_str(n->icon,  sizeof(n->icon),  icon_path);
+    copy_str(n->tag,   sizeof(n->tag),   tag);
+    n->click_boxed = boxed_click;
+    return slot + 1;
+}
+
+int aether_ui_notify_request_permission(void) {
+    // Linux + Win: always granted. macOS would call
+    // UNUserNotificationCenter requestAuthorizationWithOptions here
+    // when the real backend lands.
+    return 1;
+}
+
+int aether_ui_notif_count(void) { return g_notif_count; }
+
+static NotifRec* notif_lookup(int notif_id) {
+    if (notif_id < 1 || notif_id > g_notif_count) return NULL;
+    NotifRec* n = &g_notif[notif_id - 1];
+    return n->in_use ? n : NULL;
+}
+
+const char* aether_ui_notif_title(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    return n ? n->title : "";
+}
+const char* aether_ui_notif_body(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    return n ? n->body : "";
+}
+const char* aether_ui_notif_icon(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    return n ? n->icon : "";
+}
+const char* aether_ui_notif_tag(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    return n ? n->tag : "";
+}
+int aether_ui_notif_dismissed(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    return n ? n->dismissed : 0;
+}
+
+int aether_ui_notif_emit_click(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    if (!n) return 3;
+    if (!n->click_boxed) return 4;
+    invoke_closure(n->click_boxed);
+    return 0;
+}
+
+int aether_ui_notif_mark_dismissed(int notif_id) {
+    NotifRec* n = notif_lookup(notif_id);
+    if (!n) return 3;
+    n->dismissed = 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Menu-item side-store
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    int   in_use;
+    int   menu_handle;
+    char  label[128];
+    void* boxed;
+} MenuItemRec;
+
+static MenuItemRec g_menu_items[MENU_ITEM_MAX];
+static int         g_menu_item_count = 0;
+
+void aether_ui_menu_item_record(int menu_handle, const char* label,
+                                 void* boxed_closure) {
+    if (g_menu_item_count >= MENU_ITEM_MAX) return;
+    MenuItemRec* m = &g_menu_items[g_menu_item_count++];
+    m->in_use = 1;
+    m->menu_handle = menu_handle;
+    copy_str(m->label, sizeof(m->label), label);
+    m->boxed = boxed_closure;
+}
+
+int aether_ui_menu_item_invoke(int menu_handle, const char* label) {
+    if (!label) return 3;
+    for (int i = 0; i < g_menu_item_count; i++) {
+        MenuItemRec* m = &g_menu_items[i];
+        if (!m->in_use) continue;
+        if (m->menu_handle != menu_handle) continue;
+        if (strcmp(m->label, label) != 0) continue;
+        if (!m->boxed) return 4;
+        invoke_closure(m->boxed);
+        return 0;
+    }
+    return 3;
+}
+
+// ---------------------------------------------------------------------------
+// app_run_headless
+// ---------------------------------------------------------------------------
+
+// In headless mode (CI / driver-only tests), the calling thread parks
+// here so the AetherUIDriver server thread (already spawned by
+// enable_test_server) can keep serving requests. Without parking, the
+// process would exit right after `main()` returns.
+//
+// AETHER_UI_HEADLESS=1 → park indefinitely; the test runner kills the
+//   process when it's done.
+// AETHER_UI_HEADLESS unset → also park, but log a hint: a tray-only app
+//   without a real native tray (current state — see ask) just sits idle.
+//   Future native-backend work will plug a real main loop in here.
+void aether_ui_app_run_headless_impl(void) {
+    const char* hl = getenv("AETHER_UI_HEADLESS");
+    int headless = hl && hl[0] && hl[0] != '0';
+
+    if (!headless) {
+        fprintf(stderr,
+            "aether_ui: app_run_headless() — native tray integration is "
+            "stubbed in this build; the process will idle. Set "
+            "AETHER_UI_HEADLESS=1 to suppress this notice.\n");
+    }
+
+    // Park. A future native-backend pass should pump the platform main
+    // loop here (g_main_loop_run / [NSApp run] / GetMessage loop).
+#ifdef _WIN32
+    for (;;) Sleep(60000);
+#else
+    for (;;) sleep(60);
+#endif
+}
