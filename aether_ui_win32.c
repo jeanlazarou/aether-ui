@@ -2810,3 +2810,11 @@ int aether_ui_notify_full_impl(const char* title, const char* body,
 int aether_ui_notify_request_permission_impl(void) {
     return aether_ui_notify_request_permission();
 }
+
+// app_run_headless on Win32: park until killed. A future native
+// Shell_NotifyIcon implementation should run a GetMessage loop
+// here so the message-only window receives the tray callback
+// messages from the OS.
+void aether_ui_app_run_headless_impl(void) {
+    aether_ui_park_until_killed();
+}

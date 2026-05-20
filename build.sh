@@ -45,12 +45,15 @@ case "$OS" in
             LIBNOTIFY_CFLAGS="-DAEUI_HAVE_LIBNOTIFY=1 $(pkg-config --cflags libnotify)"
             LIBNOTIFY_LIBS="$(pkg-config --libs libnotify)"
         fi
+        # GDBus for StatusNotifierItem + DBusMenu is part of GIO, which
+        # is a transitive dep of GTK4 — no extra pkg-config probe needed.
         gcc -O0 -g -pipe \
             $(pkg-config --cflags gtk4) \
             $AETHER_INCLUDES \
             $LIBNOTIFY_CFLAGS \
             "$C_FILE" "$SCRIPT_DIR/aether_ui_gtk4.c" \
             "$SCRIPT_DIR/aether_ui_system_extras.c" \
+            "$SCRIPT_DIR/aether_ui_sni.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$OUTPUT" \
             -pthread -lm $(pkg-config --libs gtk4) $LIBNOTIFY_LIBS

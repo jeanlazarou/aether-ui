@@ -317,33 +317,36 @@ int aether_ui_menu_item_invoke(int menu_handle, const char* label) {
     return 3;
 }
 
-// ---------------------------------------------------------------------------
-// app_run_headless
-// ---------------------------------------------------------------------------
-
-// In headless mode (CI / driver-only tests), the calling thread parks
-// here so the AetherUIDriver server thread (already spawned by
-// enable_test_server) can keep serving requests. Without parking, the
-// process would exit right after `main()` returns.
-//
-// AETHER_UI_HEADLESS=1 → park indefinitely; the test runner kills the
-//   process when it's done.
-// AETHER_UI_HEADLESS unset → also park, but log a hint: a tray-only app
-//   without a real native tray (current state — see ask) just sits idle.
-//   Future native-backend work will plug a real main loop in here.
-void aether_ui_app_run_headless_impl(void) {
-    const char* hl = getenv("AETHER_UI_HEADLESS");
-    int headless = hl && hl[0] && hl[0] != '0';
-
-    if (!headless) {
-        fprintf(stderr,
-            "aether_ui: app_run_headless() — native tray integration is "
-            "stubbed in this build; the process will idle. Set "
-            "AETHER_UI_HEADLESS=1 to suppress this notice.\n");
+int aether_ui_menu_item_count_for(int menu_handle) {
+    int n = 0;
+    for (int i = 0; i < g_menu_item_count; i++) {
+        if (g_menu_items[i].in_use && g_menu_items[i].menu_handle == menu_handle)
+            n++;
     }
+    return n;
+}
 
-    // Park. A future native-backend pass should pump the platform main
-    // loop here (g_main_loop_run / [NSApp run] / GetMessage loop).
+const char* aether_ui_menu_item_label_at(int menu_handle, int index) {
+    int seen = 0;
+    for (int i = 0; i < g_menu_item_count; i++) {
+        MenuItemRec* m = &g_menu_items[i];
+        if (!m->in_use || m->menu_handle != menu_handle) continue;
+        if (seen == index) return m->label;
+        seen++;
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Cross-backend headless park fallback.
+//
+// `aether_ui_app_run_headless_impl` lives in each backend file because
+// the GTK4 backend wants to run a real GMainLoop (so SNI/DBusMenu
+// signals get delivered), while macOS/Win32 need their own equivalents
+// when those backends gain native tray support. This sleep loop is the
+// shared no-op the backends fall through to when they can't or don't
+// want to pump a real loop.
+void aether_ui_park_until_killed(void) {
 #ifdef _WIN32
     for (;;) Sleep(60000);
 #else

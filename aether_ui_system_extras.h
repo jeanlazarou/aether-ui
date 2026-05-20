@@ -108,16 +108,23 @@ void aether_ui_menu_item_record(int menu_handle, const char* label,
                                  void* boxed_closure);
 // Returns 0 ok, 3 not-found, 4 no closure.
 int  aether_ui_menu_item_invoke(int menu_handle, const char* label);
+// Enumerate items belonging to a given menu_handle in declaration
+// order. Used by the SNI/DBusMenu backend to project the menu over
+// D-Bus; the registry only stores labels (no separators) — passing a
+// separator-aware view would require extending menu_add_separator to
+// also call _record, which Phase 1 doesn't do.
+int          aether_ui_menu_item_count_for(int menu_handle);
+const char*  aether_ui_menu_item_label_at(int menu_handle, int index);
 
 // ---------------------------------------------------------------------------
 // Headless
 // ---------------------------------------------------------------------------
 
-// app_run_headless — runs a backend-appropriate main loop without opening
-// a window. Used by tray-only apps. Honours AETHER_UI_HEADLESS=1 by
-// returning immediately (the registry stays valid for driver queries from
-// the test thread spawned by enable_test_server).
-void aether_ui_app_run_headless_impl(void);
+// Shared park-forever helper used by backends as the no-op fallback in
+// `aether_ui_app_run_headless_impl`. Each backend defines that entry
+// point itself (GTK4 → g_main_loop_run for SNI/DBusMenu signal
+// delivery; macOS/Win32 → still park, pending native tray work).
+void aether_ui_park_until_killed(void);
 
 #ifdef __cplusplus
 }

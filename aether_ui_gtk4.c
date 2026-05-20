@@ -6,6 +6,7 @@
 
 #include "aether_ui_backend.h"
 #include "aether_ui_system_extras.h"
+#include "aether_ui_sni.h"
 #include <gtk/gtk.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2289,15 +2290,19 @@ int aether_ui_handle_for_widget(void* widget) {
 // headless's logging.
 // ---------------------------------------------------------------------------
 int aether_ui_tray_create_impl(const char* name, void* boxed_left_click) {
-    return aether_ui_tray_register(name, boxed_left_click);
+    int id = aether_ui_tray_register(name, boxed_left_click);
+    if (!aeui_is_headless()) aether_ui_sni_register(id);
+    return id;
 }
 
 void aether_ui_tray_set_tooltip_impl(int tray_id, const char* text) {
     aether_ui_tray_set_tooltip_reg(tray_id, text);
+    aether_ui_sni_invalidate_tooltip(tray_id);
 }
 
 void aether_ui_tray_set_menu_impl(int tray_id, int menu_handle) {
     aether_ui_tray_set_menu_reg(tray_id, menu_handle);
+    aether_ui_sni_invalidate_menu(tray_id);
 }
 
 void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
@@ -2306,6 +2311,7 @@ void aether_ui_tray_set_icon_for_state_impl(int tray_id, int state_handle,
                                              const char* icon_alert) {
     aether_ui_tray_set_icon_for_state_reg(tray_id, state_handle,
                                           icon_clean, icon_busy, icon_alert);
+    aether_ui_sni_invalidate_icon(tray_id);
 }
 
 void aether_ui_tray_set_icon_template_impl(int tray_id, int is_template) {
@@ -2406,4 +2412,25 @@ int aether_ui_notify_request_permission_impl(void) {
     // Linux: always granted (libnotify just talks to the running
     // notification daemon over D-Bus; nothing to prompt for).
     return aether_ui_notify_request_permission();
+}
+
+// app_run_headless on Linux: pump a GMainLoop so D-Bus signals
+// (SNI Activate/ContextMenu, DBusMenu Event/AboutToShow) get
+// delivered. Without a running loop the tray icon would never
+// register and menu clicks would never fire — the bus connection
+// would be inert.
+//
+// AETHER_UI_HEADLESS=1: skip the loop (CI doesn't need D-Bus
+// signal delivery — the AetherUIDriver routes drive everything
+// directly through the registry). Fall through to the shared park
+// helper so the process stays alive for the HTTP server thread.
+void aether_ui_app_run_headless_impl(void) {
+    if (aeui_is_headless()) {
+        aether_ui_park_until_killed();
+        return;
+    }
+    ensure_gtk_init();
+    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    g_main_loop_run(loop);
+    g_main_loop_unref(loop);
 }

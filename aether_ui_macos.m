@@ -2263,4 +2263,12 @@ int aether_ui_notify_request_permission_impl(void) {
     return aether_ui_notify_request_permission();
 }
 
+// app_run_headless on macOS: park until killed. A future native
+// NSStatusItem implementation should call [NSApp run] here when
+// the tray is registered, since AppKit needs the main runloop to
+// deliver click events to the status item.
+void aether_ui_app_run_headless_impl(void) {
+    aether_ui_park_until_killed();
+}
+
 #endif // __APPLE__
