@@ -10,8 +10,8 @@
 // Both run over the session bus via GDBus (part of GIO, which is a
 // transitive dep of GTK4 — so no new packages on any distro).
 //
-// Distro-agnostic — see ../asks/system-tray-status-icon-needed.md
-// for why this beats the GTK3-only libayatana-appindicator path.
+// Distro-agnostic — this beats the GTK3-only
+// libayatana-appindicator path, which doesn't work under GTK4.
 //
 // All exposed state lives in aether_ui_system_extras.c's tray
 // registry; this file is the "render the registry as an SNI on the
