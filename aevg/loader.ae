@@ -33,10 +33,13 @@ exports ( load_svg, load_svg_default )
 import std.string
 import std.map
 import parser
+import grammar_context
 import grammar_factories
 import grammar_shapes
 import grammar_utils
 import grammar_defs
+import grammar_style
+import grammar_rendering
 
 extern malloc(size: int) -> ptr
 
@@ -139,12 +142,24 @@ walk_node(ctx: ptr, backend: ptr, node_h: ptr) {
         return
     }
 
-    // ─── Deferred (need more of grammar_defs): skip but walk
-    //     children where appropriate.
-    if string.equals(tag, "defs") == 1 { walk_children(ctx, backend, node_h); return }
+    // ─── <use> — look up referenced node, push translate, walk ────
+    if string.equals(tag, "use") == 1 {
+        walk_use(ctx, backend, node_h, attrs)
+        return
+    }
+
+    // ─── <defs>: walk children for gradient/filter/clipPath
+    //     registration only. Per W3C SVG spec, drawable shapes
+    //     inside <defs> are NOT rendered directly — they're
+    //     definitions that other elements (e.g. <use>) reference.
+    //     So we walk only the "definition-style" children.
+    if string.equals(tag, "defs") == 1 {
+        walk_defs_children(ctx, backend, node_h)
+        return
+    }
+
     if string.equals(tag, "style") == 1 { return }
     if string.equals(tag, "text") == 1 { return }
-    if string.equals(tag, "use") == 1 { return }
     if string.equals(tag, "ellipse") == 1 { return }
 
     // ─── Default: unknown element → walk children ────────────────
@@ -157,6 +172,128 @@ walk_children(ctx: ptr, backend: ptr, node_h: ptr) {
     while i < n {
         child = parser.node_child_at(node_h, i)
         walk_node(ctx, backend, child)
+        i = i + 1
+    }
+}
+
+// <defs> walks only definition-style children (gradients, filters,
+// clipPaths, nested <defs>). Drawable shapes inside <defs> are
+// definitions per the SVG spec and don't render directly; they're
+// available via id for <use>. They're already indexed in
+// nodes_by_id during the first-pass index_nodes walk.
+walk_defs_children(ctx: ptr, backend: ptr, node_h: ptr) {
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        child = parser.node_child_at(node_h, i)
+        ctag = parser.node_tag(child)
+        is_def = 0
+        if string.equals(ctag, "linearGradient") == 1 { is_def = 1 }
+        if string.equals(ctag, "radialGradient") == 1 { is_def = 1 }
+        if string.equals(ctag, "filter") == 1 { is_def = 1 }
+        if string.equals(ctag, "clipPath") == 1 { is_def = 1 }
+        if string.equals(ctag, "defs") == 1 { is_def = 1 }
+        if is_def == 1 { walk_node(ctx, backend, child) }
+        i = i + 1
+    }
+}
+
+// ─── <use href="#id" x=".." y=".."> ──────────────────────────────
+//
+// Look up the referenced node by id (from ctx.nodes_by_id, which
+// index_nodes populates before the walk). If found, push a
+// translate(x, y) onto the transform stack, push the use's style
+// attrs, walk the referenced node, then pop. Matches TS source's
+// behaviour; the implicit translate from x/y is composed with any
+// existing transform attr.
+walk_use(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr) {
+    // Get href (try xlink:href first, then plain href).
+    href, _ = map.get(attrs, "xlink:href")
+    if href == null {
+        href, _ = map.get(attrs, "href")
+    }
+    if href == null { return }
+    // Strip leading '#'.
+    ref_id = href
+    if string.starts_with(href, "#") == 1 {
+        ref_id = string.substring(href, 1, string.length(href))
+    }
+
+    ref_node = grammar_context.get_node(ctx, ref_id)
+    if ref_node == null { return }
+
+    // Build the composed transform string: if use has both x/y and
+    // transform=, prepend "translate(x y) ". If only x/y, emit
+    // "translate(x y)". If only transform, use it as-is.
+    ux = 0.0
+    uy = 0.0
+    has_xy = 0
+    if map.has(attrs, "x") == 1 {
+        xv, _ = map.get(attrs, "x")
+        ux = grammar_utils.parse_length_to_px(xv)
+        if ux != 0.0 { has_xy = 1 }
+    }
+    if map.has(attrs, "y") == 1 {
+        yv, _ = map.get(attrs, "y")
+        uy = grammar_utils.parse_length_to_px(yv)
+        if uy != 0.0 { has_xy = 1 }
+    }
+    existing_xform, _ = map.get(attrs, "transform")
+
+    composed_xform = ""
+    if has_xy == 1 {
+        // Build "translate(ux uy)" string and prepend.
+        composed_xform = string.concat("translate(",
+                            string.concat(string.from_float(ux),
+                                string.concat(" ",
+                                    string.concat(string.from_float(uy), ")"))))
+        if existing_xform != null {
+            composed_xform = string.concat(composed_xform,
+                                string.concat(" ", existing_xform))
+        }
+    } else {
+        if existing_xform != null {
+            composed_xform = existing_xform
+        }
+    }
+
+    // Synthesise a small attrs map for shape_group-style push:
+    // copy style-relevant attrs and replace `transform` with our
+    // composed value. Style + transform stacks get pushed/popped
+    // by the transitive shape_group / shape_* calls inside the
+    // recursive walk_node on ref_node.
+    //
+    // Simplest implementation: emulate the TS pushStyle / pushTransform
+    // / walk / popTransform / popStyle pattern explicitly using
+    // grammar_style + grammar_rendering directly.
+    grammar_style.push_style(ctx, attrs, "use", "")
+    if string.length(composed_xform) > 0 {
+        grammar_rendering.push_transform_str(ctx, composed_xform)
+    } else {
+        grammar_rendering.push_transform_none(ctx)
+    }
+
+    walk_node(ctx, backend, ref_node)
+
+    grammar_rendering.pop_transform(ctx)
+    grammar_style.pop_style(ctx)
+}
+
+// ─── index_nodes: build the nodes_by_id registry ─────────────────
+//
+// Walks the tree once before rendering, capturing every node that
+// has an `id` attribute into ctx.nodes_by_id. Needed for <use>
+// element resolution. Matches TS source's `proto.indexNodes`.
+
+index_nodes(ctx: ptr, node_h: ptr) {
+    if parser.node_has_attr(node_h, "id") == 1 {
+        id = parser.node_attr(node_h, "id")
+        grammar_context.register_node(ctx, id, node_h)
+    }
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        index_nodes(ctx, parser.node_child_at(node_h, i))
         i = i + 1
     }
 }
@@ -250,8 +387,13 @@ load_svg(backend: ptr, svg_string: string, canvas_w: float, canvas_h: float) -> 
 
     ctx = grammar_factories.create_aevg_context(opts)
 
-    // Walk the root's children. The root <svg> itself isn't dispatched
-    // as a shape — it's already represented by the context's mapping.
+    // First pass: index every node with an id into ctx.nodes_by_id.
+    // <use> elements look here for their href target.
+    index_nodes(ctx, root)
+
+    // Second pass: walk the root's children. The root <svg> itself
+    // isn't dispatched as a shape — it's already represented by the
+    // context's mapping.
     n = parser.node_child_count(root)
     i = 0
     while i < n {
