@@ -36,6 +36,17 @@ assert_eq_int(label: string, got: int, want: int) {
     }
 }
 
+import std.string
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 {
+        println("  PASS: ${label} ('${got}')")
+    } else {
+        println("  FAIL: ${label}: got '${got}' want '${want}'")
+        exit(1)
+    }
+}
+
 main() {
     println("=== test_easing ===")
 
@@ -125,5 +136,22 @@ main() {
     assert_eq_int("ff00ff .g", easing.rgb_g(rgb5), 0)
     assert_eq_int("ff00ff .b", easing.rgb_b(rgb5), 255)
 
-    println("=== test_easing passed ===")
-}
+    // ─── lerp_color (now possible after from_int_radix + pad_start) ─
+
+    // Endpoints
+    c0 = easing.lerp_color("#ff0000", "#0000ff", 0.0)
+    assert_eq_str("lerp_color t=0", c0, "#ff0000")
+    c1 = easing.lerp_color("#ff0000", "#0000ff", 1.0)
+    assert_eq_str("lerp_color t=1", c1, "#0000ff")
+
+    // Midpoint: black → white = #808080
+    chalf = easing.lerp_color("#000000", "#ffffff", 0.5)
+    assert_eq_str("lerp_color black→white t=0.5", chalf, "#808080")
+
+    // Red → blue at 0.5 = purple #800080
+    cpurple = easing.lerp_color("#ff0000", "#0000ff", 0.5)
+    assert_eq_str("lerp_color red→blue t=0.5", cpurple, "#800080")
+
+    // Confirms zero-pad: 0x05 → "05" not "5"
+    cpad = easing.lerp_color("#000000", "#0a0b0c", 1.0)
+    assert_eq_str("lerp_color zero-pad", cpad, "#0a0b0c")

@@ -10,16 +10,13 @@
 // `types.ae` would be useless.
 //
 // Out of scope here:
-//   - lerp_color(c1, c2, t) — needs string.from_int_radix with
-//     zero-padding for `#RRGGBB` emit. Filed as aether/cvg_asked_for.md.
-//     parse_hex_color is in scope (uses the v0.193 to_int_radix).
 //   - resolve_easing(name) — name→fn dispatch lands when Tier C wires
 //     up animation transitions (consumer-side concern).
 
 exports (
     linear, ease_in, ease_out, ease_in_out,
     ease_in_cubic, ease_out_cubic, ease_in_out_cubic,
-    lerp,
+    lerp, lerp_color,
     parse_hex_color
 )
 
@@ -27,6 +24,7 @@ import std.string
 import std.math
 
 extern malloc(size: int) -> ptr
+extern lrint(x: float) -> long
 
 // ─── Easing functions ────────────────────────────────────────────
 //
@@ -135,4 +133,29 @@ parse_hex_color(color: string) -> *RGB {
     out.g = hex2(hex, 2)
     out.b = hex2(hex, 4)
     return out
+}
+
+// ─── lerp_color ──────────────────────────────────────────────────
+//
+// Interpolate between two hex colors by t in [0, 1]. Returns a
+// `#RRGGBB` string. Uses the v0.193 std.string.to_int_radix for
+// parse and the `[current]` from_int_radix + pad_start for emit.
+
+// Emit one channel byte as a two-digit, zero-padded hex string.
+hex_byte(v: int) -> string {
+    // pad_char = 48 == '0'
+    return string.pad_start(string.from_int_radix(v, 16), 2, 48)
+}
+
+lerp_color(from: string, to: string, t: float) -> string {
+    a = parse_hex_color(from)
+    b = parse_hex_color(to)
+    // Mixed-arithmetic int→float promotion; lrint rounds to nearest.
+    r = lrint(a.r + (b.r - a.r) * t)
+    g = lrint(a.g + (b.g - a.g) * t)
+    bl = lrint(a.b + (b.b - a.b) * t)
+    rh = hex_byte(r)
+    gh = hex_byte(g)
+    bh = hex_byte(bl)
+    return string.concat("#", string.concat(rh, string.concat(gh, bh)))
 }
