@@ -131,14 +131,11 @@ run_smoke_test() {
 # on the first failed assertion. Append new modules' tests here as they land.
 CVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox test_blur test_rasterize test_grammar_utils test_grammar_context)
 
-# `ae cflags` doesn't currently emit transitive link flags for stdlib's
-# optional deps (libpcre2-8 / openssl / zlib / nghttp2). Modules that
-# import std.regex (parser.ae, normalizer.ae, rasterize.ae, etc.) and
-# std.cryptography (grammar_utils.ae base64 encode) need these libs
-# appended explicitly. Filed upstream as aether/regex-lib-fix.md;
-# remove this once `ae cflags` is fixed.
-PCRE2_LIBS="$(pkg-config --libs libpcre2-8 2>/dev/null || true)"
-OPENSSL_LIBS="$(pkg-config --libs openssl 2>/dev/null || true)"
+# `ae cflags --libs` emits the transitive deps that libaether.a was
+# built with (PCRE2 / OpenSSL / zlib / nghttp2 — see Aether CHANGELOG
+# [current], the cmd_cflags fix). So `$(ae cflags)` alone is enough
+# for any module that imports std.regex / std.cryptography / std.http
+# / std.zlib. The earlier per-dep workaround is no longer needed.
 
 echo "=== Phase 0: CVG unit tests (pure Aether) ==="
 for t in "${CVG_TESTS[@]}"; do
@@ -151,7 +148,7 @@ for t in "${CVG_TESTS[@]}"; do
         FAIL=$((FAIL + 1))
         continue
     fi
-    if ! gcc "$cfile" $(ae cflags) $PCRE2_LIBS $OPENSSL_LIBS -o "$bin" >> "/tmp/ci_cvg_${t}.log" 2>&1; then
+    if ! gcc "$cfile" $(ae cflags) -o "$bin" >> "/tmp/ci_cvg_${t}.log" 2>&1; then
         echo "  FAIL $t (link)"
         tail -15 "/tmp/ci_cvg_${t}.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))

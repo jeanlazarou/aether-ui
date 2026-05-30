@@ -301,16 +301,13 @@ transform_top(c: ptr) -> ptr {
     return v
 }
 
-// When stack: each entry is a function-pointer stored as `ptr`.
-// Used for conditional rendering — `s.g({ when: () => state.toggle })`.
-//
-// Aether quirk: a *named function* coerces to ptr at a call site (so
-// callers pass `when_push(ctx, my_pred)` directly), but an `fn`-typed
-// *local variable* does NOT coerce. To keep the public surface clean,
-// we declare the param as `ptr` — call sites still pass bare function
-// names, the compiler does the right thing, and we avoid the coercion
-// hazard for any caller that's storing the predicate in a variable.
-when_push(c: ptr, pred: ptr) {
+// When stack: each entry is a predicate closure. Aether's
+// fn ↔ ptr coercion (resolved 2026-05-29 in `[current]` of
+// CHANGELOG, see aether/fn_ptr_coercion.md) means `fn`-typed
+// params now forward correctly into ptr-typed slots — captured-
+// state closures survive the round-trip via _aether_box_closure.
+// Used for conditional rendering: `s.g({ when: () => state.toggle })`.
+when_push(c: ptr, pred: fn) {
     x = c as *CvgContext
     _ = list.add(x.when_stack, pred)
 }

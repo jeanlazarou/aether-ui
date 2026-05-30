@@ -162,18 +162,16 @@ reference. Capturing them here so the next module doesn't rediscover them.
   struct-with-`string`-field auto-destructor described in the Aether
   LLM.md is for *stack* structs; malloc'd structs have no destructor,
   so retains are the caller's responsibility.)
-- **`std.cryptography` (OpenSSL-backed base64, hashes) needs
-  `pkg-config --libs openssl` on the link line** — same gap as
-  `std.regex` needing `-lpcre2-8`. Both filed in
-  `aether/regex-lib-fix.md`. CI's Phase-0 block adds both.
-- **Named functions coerce to `ptr`; `fn`-typed *locals* don't.**
-  `list.add(l, my_func)` works (bare function-name is treated as
-  a value that the param's `ptr` slot accepts). But
-  ```aether
-  fn_local: fn = some_callback
-  list.add(l, fn_local)   // ERROR: incompatible types
-  ```
-  fails. Workaround: declare the consuming function's parameter as
-  `ptr` instead of `fn` (`when_push(c: ptr, pred: ptr)` in
-  `grammar_context.ae`). Callers still pass bare function names —
-  the compiler does the coercion at the call site.
+- **`$(ae cflags)` emits all transitive deps** — including
+  `-lpcre2-8`, `-lssl -lcrypto`, `-lz`, `-lnghttp2` for whichever
+  of those `libaether.a` was built with. (Earlier in the port this
+  was a downstream paper cut; resolved in CHANGELOG `[current]` via
+  the `cmd_cflags` fix. Filed as `aether/regex-lib-fix.md`.)
+- **`fn` and `ptr` coerce in both directions at coercion sites.**
+  Storing a `fn` value in a `ptr`-typed slot (`list.add`, `map.put`,
+  struct fields) boxes it as an `_AeClosure`. Reading back from a
+  `ptr` slot and passing into a `fn`-typed param unboxes. Captured-
+  state closures survive the round-trip — `bindFill` / animation
+  tick / `whenStack` patterns can store any closure (with or without
+  captures) and invoke later. Resolved in CHANGELOG `[current]` via
+  Option B1 of `aether/fn_ptr_coercion.md`.
