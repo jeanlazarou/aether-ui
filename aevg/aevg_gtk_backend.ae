@@ -43,6 +43,7 @@ import aether_ui
 import rasterize
 import backend_dispatch
 import std.cryptography
+import std.floatarr
 
 extern malloc(size: int) -> ptr
 
@@ -269,12 +270,20 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
 
     fill = opt_s(opts, "fillColor")
     stroke = opt_s(opts, "strokeColor")
+    grad_type = opt_s(opts, "gradType")
     sw = opt_f(opts, "strokeWidth", 1.0)
 
-    if string.length(fill) > 0 {
+    // Gradient fill (if a gradType opt was emitted) takes precedence
+    // over a solid fill color.
+    if string.length(grad_type) > 0 {
         replay_path(cid, pts)
-        aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
-                                   color_b01(fill), color_a01(fill))
+        apply_gradient(cid, opts, grad_type)
+    } else {
+        if string.length(fill) > 0 {
+            replay_path(cid, pts)
+            aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+                                       color_b01(fill), color_a01(fill))
+        }
     }
     if string.length(stroke) > 0 {
         replay_path(cid, pts)
@@ -282,6 +291,59 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
                                      color_b01(stroke), color_a01(stroke), sw)
     }
     return fresh_handle()
+}
+
+// Parse the gradStops opt + geometry and invoke the canvas gradient
+// primitive. The current path must already be on the canvas (the
+// caller replays it first). gradStops is "off,r,g,b,a ..." with rgba
+// in 0..255; we build floatarrs of offsets (0..1) + colours (0..1).
+apply_gradient(cid: int, opts: ptr, grad_type: string) {
+    stops_s = opt_s(opts, "gradStops")
+    if string.length(stops_s) == 0 { return }
+    toks = string_split(stops_s, " ")
+    n = string_array_size(toks)
+    if n == 0 { return }
+
+    offsets, _ = floatarr.new(n)
+    rgba, _ = floatarr.new(n * 4)
+    valid = 0
+    i = 0
+    while i < n {
+        tok = string_array_get(toks, i)
+        if string.length(tok) > 0 {
+            parts = string_split(tok, ",")
+            if string_array_size(parts) >= 5 {
+                off, _  = string.to_double(string_array_get(parts, 0))
+                rr, _   = string.to_double(string_array_get(parts, 1))
+                gg, _   = string.to_double(string_array_get(parts, 2))
+                bb, _   = string.to_double(string_array_get(parts, 3))
+                aa, _   = string.to_double(string_array_get(parts, 4))
+                floatarr.set_unchecked(offsets, valid, off)
+                floatarr.set_unchecked(rgba, valid * 4 + 0, rr / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 1, gg / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 2, bb / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 3, aa / 255.0)
+                valid = valid + 1
+            }
+        }
+        i = i + 1
+    }
+    if valid == 0 { return }
+
+    if string.equals(grad_type, "radial") == 1 {
+        cx = opt_f(opts, "gradCX", 0.0)
+        cy = opt_f(opts, "gradCY", 0.0)
+        r  = opt_f(opts, "gradR",  0.0)
+        fx = opt_f(opts, "gradFX", cx)
+        fy = opt_f(opts, "gradFY", cy)
+        aether_ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba)
+    } else {
+        x1 = opt_f(opts, "gradX1", 0.0)
+        y1 = opt_f(opts, "gradY1", 0.0)
+        x2 = opt_f(opts, "gradX2", 0.0)
+        y2 = opt_f(opts, "gradY2", 0.0)
+        aether_ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba)
+    }
 }
 
 // Replay a polyline token stream into the canvas as a path (no

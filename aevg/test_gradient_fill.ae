@@ -1,0 +1,137 @@
+// aevg/test_gradient_fill.ae — gradient fill descriptor emission.
+//
+// Verifies that shape_path, when its fill references a registered
+// gradient (fill=url(#id)), emits a gradient descriptor into the
+// backend opts (gradType + geometry + gradStops) instead of a solid
+// fillColor — and that plain fills still emit fillColor. Mirrors the
+// TS resolveGradientFill + buildFillGradient path.
+
+import std.string
+import std.map
+import grammar_shapes
+import grammar_context
+import grammar_defs
+import aevg_backend
+import parser
+import transform
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_opt_near(label: string, b: ptr, i: int, key: string, want: float) {
+    s = aevg_backend.backend_opt_get(b, i, key)
+    got, e = string.to_double(s)
+    if e != "" { println("  FAIL: ${label}: parse '${s}'"); exit(1) }
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 0.5 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_nonempty(label: string, b: ptr, i: int, key: string) {
+    s = aevg_backend.backend_opt_get(b, i, key)
+    if string.length(s) > 0 { println("  PASS: ${label} ('${s}')") }
+    else { println("  FAIL: ${label}: empty"); exit(1) }
+}
+
+assert_empty(label: string, b: ptr, i: int, key: string) {
+    s = aevg_backend.backend_opt_get(b, i, key)
+    if string.length(s) == 0 { println("  PASS: ${label} (empty)") }
+    else { println("  FAIL: ${label}: got '${s}'"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(
+        0.0, 0.0, 100.0, 100.0,
+        100.0, 100.0,
+        1.0, 0.0, 0.0,
+        id
+    )
+    return grammar_context.new_context(m)
+}
+
+// Register a linear gradient (objectBoundingBox, 0,0→1,0) with two
+// stops red→blue.
+register_linear(ctx: ptr, id: string) {
+    a = string.concat("<svg><defs><linearGradient id='", id)
+    a = string.concat(a, "' x1='0' y1='0' x2='1' y2='0'>")
+    a = string.concat(a, "<stop offset='0' stop-color='#ff0000'/>")
+    a = string.concat(a, "<stop offset='1' stop-color='#0000ff'/>")
+    a = string.concat(a, "</linearGradient></defs></svg>")
+    root = parser.parse_svg(a)
+    defs_node = parser.node_child_at(root, 0)
+    grad_node = parser.node_child_at(defs_node, 0)
+    _ = grammar_defs.parse_gradient(ctx, grad_node)
+}
+
+// Register a radial gradient (objectBoundingBox).
+register_radial(ctx: ptr, id: string) {
+    a = string.concat("<svg><defs><radialGradient id='", id)
+    a = string.concat(a, "' cx='0.5' cy='0.5' r='0.5'>")
+    a = string.concat(a, "<stop offset='0' stop-color='#ffffff'/>")
+    a = string.concat(a, "<stop offset='1' stop-color='#000000'/>")
+    a = string.concat(a, "</radialGradient></defs></svg>")
+    root = parser.parse_svg(a)
+    defs_node = parser.node_child_at(root, 0)
+    grad_node = parser.node_child_at(defs_node, 0)
+    _ = grammar_defs.parse_gradient(ctx, grad_node)
+}
+
+mk_path_attrs(d: string, fill: string) -> ptr {
+    m = map.new()
+    _ = map.put(m, "d", d)
+    _ = map.put(m, "fill", fill)
+    return m
+}
+
+main() {
+    println("=== test_gradient_fill ===")
+
+    // ─── Plain fill → fillColor, no gradType ──────────────────
+    ctx1 = mk_ctx()
+    bk1 = aevg_backend.backend_new()
+    a1 = mk_path_attrs("M 0 0 L 100 0 L 100 100 Z", "yellow")
+    _ = grammar_shapes.shape_path(ctx1, bk1, a1)
+    assert_nonempty("plain: fillColor present", bk1, 0, "fillColor")
+    assert_empty("plain: no gradType", bk1, 0, "gradType")
+
+    // ─── Linear gradient fill → gradType=linear, stops, no fill ─
+    ctx2 = mk_ctx()
+    bk2 = aevg_backend.backend_new()
+    register_linear(ctx2, "g1")
+    a2 = mk_path_attrs("M 0 0 L 100 0 L 100 100 Z", "url(#g1)")
+    _ = grammar_shapes.shape_path(ctx2, bk2, a2)
+    assert_eq_str("linear: gradType", aevg_backend.backend_kind(bk2, 0), "path")
+    assert_eq_str("linear: gradType=linear",
+                  aevg_backend.backend_opt_get(bk2, 0, "gradType"), "linear")
+    assert_empty("linear: fillColor omitted", bk2, 0, "fillColor")
+    assert_nonempty("linear: gradStops present", bk2, 0, "gradStops")
+    // objectBoundingBox 0,0→1,0 over bbox (0,0,100,100): X1=0, X2=100.
+    assert_opt_near("linear: gradX1=0",   bk2, 0, "gradX1", 0.0)
+    assert_opt_near("linear: gradX2=100", bk2, 0, "gradX2", 100.0)
+    assert_opt_near("linear: gradY1=0",   bk2, 0, "gradY1", 0.0)
+    // Stops string: "0,255,0,0,255 1,0,0,255,255"
+    assert_eq_str("linear: gradStops value",
+                  aevg_backend.backend_opt_get(bk2, 0, "gradStops"),
+                  "0,255,0,0,255 1,0,0,255,255")
+
+    // ─── Radial gradient fill → gradType=radial ───────────────
+    ctx3 = mk_ctx()
+    bk3 = aevg_backend.backend_new()
+    register_radial(ctx3, "g2")
+    a3 = mk_path_attrs("M 0 0 L 100 0 L 100 100 Z", "url(#g2)")
+    _ = grammar_shapes.shape_path(ctx3, bk3, a3)
+    assert_eq_str("radial: gradType=radial",
+                  aevg_backend.backend_opt_get(bk3, 0, "gradType"), "radial")
+    // cx/cy 0.5 over bbox (0,0,100,100): 50,50; r 0.5*100 = 50.
+    assert_opt_near("radial: gradCX=50", bk3, 0, "gradCX", 50.0)
+    assert_opt_near("radial: gradCY=50", bk3, 0, "gradCY", 50.0)
+    assert_opt_near("radial: gradR=50",  bk3, 0, "gradR",  50.0)
+
+    println("=== test_gradient_fill passed ===")
+}

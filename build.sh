@@ -75,7 +75,7 @@ case "$OS" in
             "$SCRIPT_DIR/aether_ui_system_extras.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$ACTUAL_OUT" \
-            -luser32 -lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 \
+            -luser32 -lgdi32 -lgdiplus -lmsimg32 -lcomctl32 -lcomdlg32 \
             -lshell32 -lole32 -luuid -ldwmapi -luxtheme \
             -lws2_32 -pthread -lm
         OUTPUT="$ACTUAL_OUT"

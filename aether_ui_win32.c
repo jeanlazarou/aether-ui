@@ -2159,7 +2159,8 @@ void aether_ui_grid_place(int grid_handle, int child_handle,
 // ---------------------------------------------------------------------------
 typedef enum {
     CV_BEGIN, CV_MOVE, CV_LINE, CV_STROKE, CV_FILL_RECT, CV_CLEAR,
-    CV_ARC, CV_CLOSE, CV_FILL, CV_FILL_TEXT, CV_DRAW_IMAGE
+    CV_ARC, CV_CLOSE, CV_FILL, CV_FILL_TEXT, CV_DRAW_IMAGE,
+    CV_FILL_LINEAR, CV_FILL_RADIAL
 } CanvasCmdKind;
 
 typedef struct {
@@ -2173,6 +2174,11 @@ typedef struct {
     char* text;            // FILL_TEXT string (owned)
     unsigned char* pixels; // DRAW_IMAGE RGBA8888 buffer (owned)
     int iw, ih;            // DRAW_IMAGE pixel dims
+    // Gradient: linear (gx1,gy1)→(gx2,gy2); radial center (gx1,gy1) r gr.
+    float gx1, gy1, gx2, gy2, gr, gfx, gfy;
+    int n_stops;
+    double* stop_off;      // owned
+    double* stop_rgba;     // owned: n_stops*4
 } CanvasCmd;
 
 typedef struct {
@@ -2330,19 +2336,57 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
     canvas_add_cmd(canvas_id, c);
 }
 
-// Free owned per-command buffers (FILL_TEXT strings + DRAW_IMAGE
-// pixels) before a cmd-buffer reset.
+extern double floatarr_get_unchecked(void* arr, int i);
+
+static void win32_copy_stops(CanvasCmd* c, int n_stops,
+                              void* offsets, void* rgba) {
+    c->n_stops = n_stops;
+    c->stop_off = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops : 1));
+    c->stop_rgba = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops*4 : 1));
+    for (int i = 0; i < n_stops; i++) {
+        c->stop_off[i] = floatarr_get_unchecked(offsets, i);
+        c->stop_rgba[i*4+0] = floatarr_get_unchecked(rgba, i*4+0);
+        c->stop_rgba[i*4+1] = floatarr_get_unchecked(rgba, i*4+1);
+        c->stop_rgba[i*4+2] = floatarr_get_unchecked(rgba, i*4+2);
+        c->stop_rgba[i*4+3] = floatarr_get_unchecked(rgba, i*4+3);
+    }
+}
+
+void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
+        float x1, float y1, float x2, float y2,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd c = {0};
+    c.k = CV_FILL_LINEAR; c.gx1 = x1; c.gy1 = y1; c.gx2 = x2; c.gy2 = y2;
+    win32_copy_stops(&c, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, c);
+}
+
+void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
+        float cx, float cy, float radius, float fx, float fy,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd c = {0};
+    c.k = CV_FILL_RADIAL; c.gx1 = cx; c.gy1 = cy; c.gr = radius;
+    c.gfx = fx; c.gfy = fy;
+    win32_copy_stops(&c, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, c);
+}
+
+// Free owned per-command buffers (FILL_TEXT strings, DRAW_IMAGE
+// pixels, gradient stop arrays) before a cmd-buffer reset.
 static void canvas_free_text(int canvas_id) {
     if (canvas_id < 1 || canvas_id > canvas_count) return;
     Canvas* cv = &canvases[canvas_id - 1];
     for (int i = 0; i < cv->cmd_count; i++) {
-        if (cv->cmds[i].k == CV_FILL_TEXT && cv->cmds[i].text) {
-            free(cv->cmds[i].text);
-            cv->cmds[i].text = NULL;
+        CanvasCmd* c = &cv->cmds[i];
+        if (c->k == CV_FILL_TEXT && c->text) {
+            free(c->text); c->text = NULL;
         }
-        if (cv->cmds[i].k == CV_DRAW_IMAGE && cv->cmds[i].pixels) {
-            free(cv->cmds[i].pixels);
-            cv->cmds[i].pixels = NULL;
+        if (c->k == CV_DRAW_IMAGE && c->pixels) {
+            free(c->pixels); c->pixels = NULL;
+        }
+        if (c->k == CV_FILL_LINEAR || c->k == CV_FILL_RADIAL) {
+            free(c->stop_off);  c->stop_off = NULL;
+            free(c->stop_rgba); c->stop_rgba = NULL;
         }
     }
 }
@@ -2442,6 +2486,47 @@ static void canvas_paint(HWND hwnd, HDC hdc, int width, int height) {
                     Polygon(mem, pts, np);
                     SelectObject(mem, oldbr);
                     DeleteObject(br);
+                }
+                break;
+            }
+            case CV_FILL_LINEAR:
+            case CV_FILL_RADIAL: {
+                // Plain GDI has no multi-stop gradient. Approximate:
+                // fill the path's region with a 2-stop GradientFill
+                // (first → last stop) across the path bounding box,
+                // clipped to the accumulated path. Radial degrades to
+                // the same axis-aligned approximation. Good enough for
+                // a first pass; GDI+ would be needed for true fidelity.
+                if (cmd->n_stops >= 1) {
+                    // Bounding box from the points accumulated since BEGIN.
+                    int have = 0, mnx = 0, mny = 0, mxx = 0, mxy = 0;
+                    for (int j = i - 1; j >= 0; j--) {
+                        CanvasCmdKind k = cv->cmds[j].k;
+                        if (k == CV_BEGIN) break;
+                        int qx, qy, ok = 0;
+                        if (k == CV_MOVE) { qx=(int)cv->cmds[j].p0; qy=(int)cv->cmds[j].p1; ok=1; }
+                        else if (k == CV_LINE) { qx=(int)cv->cmds[j].p2; qy=(int)cv->cmds[j].p3; ok=1; }
+                        if (ok) {
+                            if (!have) { mnx=mxx=qx; mny=mxy=qy; have=1; }
+                            else { if(qx<mnx)mnx=qx; if(qx>mxx)mxx=qx; if(qy<mny)mny=qy; if(qy>mxy)mxy=qy; }
+                        }
+                    }
+                    if (have && mxx > mnx && mxy > mny) {
+                        int s0 = 0, s1 = cmd->n_stops - 1;
+                        TRIVERTEX v[2];
+                        v[0].x = mnx; v[0].y = mny;
+                        v[0].Red   = (COLOR16)(cmd->stop_rgba[s0*4+0]*65535);
+                        v[0].Green = (COLOR16)(cmd->stop_rgba[s0*4+1]*65535);
+                        v[0].Blue  = (COLOR16)(cmd->stop_rgba[s0*4+2]*65535);
+                        v[0].Alpha = 0;
+                        v[1].x = mxx; v[1].y = mxy;
+                        v[1].Red   = (COLOR16)(cmd->stop_rgba[s1*4+0]*65535);
+                        v[1].Green = (COLOR16)(cmd->stop_rgba[s1*4+1]*65535);
+                        v[1].Blue  = (COLOR16)(cmd->stop_rgba[s1*4+2]*65535);
+                        v[1].Alpha = 0;
+                        GRADIENT_RECT gr = { 0, 1 };
+                        GradientFill(mem, v, 2, &gr, 1, GRADIENT_FILL_RECT_H);
+                    }
                 }
                 break;
             }

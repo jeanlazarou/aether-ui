@@ -1158,7 +1158,9 @@ typedef enum {
     CANVAS_CLOSE_PATH,
     CANVAS_FILL,
     CANVAS_FILL_TEXT,
-    CANVAS_DRAW_IMAGE
+    CANVAS_DRAW_IMAGE,
+    CANVAS_FILL_LINEAR,
+    CANVAS_FILL_RADIAL
 } CanvasCmdType;
 
 typedef struct {
@@ -1170,6 +1172,10 @@ typedef struct {
     char* text;     // FILL_TEXT string (owned)
     unsigned char* pixels;  // DRAW_IMAGE RGBA8888 buffer (owned)
     int iw, ih;     // DRAW_IMAGE pixel dims
+    double gx1, gy1, gx2, gy2, gr, gfx, gfy;  // gradient geometry
+    int n_stops;
+    double* stop_off;   // owned: offsets
+    double* stop_rgba;  // owned: n_stops*4 colour comps
 } CanvasCmd;
 
 typedef struct {
@@ -1294,6 +1300,47 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                 }
                 break;
             }
+            case CANVAS_FILL_LINEAR:
+            case CANVAS_FILL_RADIAL: {
+                if (c->n_stops > 0) {
+                    CGColorSpaceRef gcs = CGColorSpaceCreateDeviceRGB();
+                    CGFloat* comps = (CGFloat*)malloc(sizeof(CGFloat) * c->n_stops * 4);
+                    CGFloat* locs  = (CGFloat*)malloc(sizeof(CGFloat) * c->n_stops);
+                    for (int si = 0; si < c->n_stops; si++) {
+                        comps[si*4+0] = c->stop_rgba[si*4+0];
+                        comps[si*4+1] = c->stop_rgba[si*4+1];
+                        comps[si*4+2] = c->stop_rgba[si*4+2];
+                        comps[si*4+3] = c->stop_rgba[si*4+3];
+                        locs[si] = c->stop_off[si];
+                    }
+                    CGGradientRef grad = CGGradientCreateWithColorComponents(
+                        gcs, comps, locs, c->n_stops);
+                    if (grad) {
+                        // Clip to the current path, then draw the gradient.
+                        CGContextSaveGState(cg);
+                        CGContextClip(cg);  // uses current path as clip
+                        if (c->type == CANVAS_FILL_LINEAR) {
+                            CGContextDrawLinearGradient(cg, grad,
+                                CGPointMake(c->gx1, c->gy1),
+                                CGPointMake(c->gx2, c->gy2),
+                                kCGGradientDrawsBeforeStartLocation |
+                                kCGGradientDrawsAfterEndLocation);
+                        } else {
+                            CGContextDrawRadialGradient(cg, grad,
+                                CGPointMake(c->gfx, c->gfy), 0,
+                                CGPointMake(c->gx1, c->gy1), c->gr,
+                                kCGGradientDrawsBeforeStartLocation |
+                                kCGGradientDrawsAfterEndLocation);
+                        }
+                        CGContextRestoreGState(cg);
+                        CGGradientRelease(grad);
+                    }
+                    free(comps);
+                    free(locs);
+                    CGColorSpaceRelease(gcs);
+                }
+                break;
+            }
             case CANVAS_CLEAR:
                 break;
         }
@@ -1398,17 +1445,54 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
     });
 }
 
+extern double floatarr_get_unchecked(void* arr, int i);
+
+static void macos_copy_stops(CanvasCmd* c, int n_stops,
+                              void* offsets, void* rgba) {
+    c->n_stops = n_stops;
+    c->stop_off = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops : 1));
+    c->stop_rgba = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops*4 : 1));
+    for (int i = 0; i < n_stops; i++) {
+        c->stop_off[i] = floatarr_get_unchecked(offsets, i);
+        c->stop_rgba[i*4+0] = floatarr_get_unchecked(rgba, i*4+0);
+        c->stop_rgba[i*4+1] = floatarr_get_unchecked(rgba, i*4+1);
+        c->stop_rgba[i*4+2] = floatarr_get_unchecked(rgba, i*4+2);
+        c->stop_rgba[i*4+3] = floatarr_get_unchecked(rgba, i*4+3);
+    }
+}
+
+void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
+        float x1, float y1, float x2, float y2,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd cmd = { .type = CANVAS_FILL_LINEAR,
+                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2 };
+    macos_copy_stops(&cmd, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, cmd);
+}
+
+void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
+        float cx, float cy, float radius, float fx, float fy,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd cmd = { .type = CANVAS_FILL_RADIAL,
+                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy };
+    macos_copy_stops(&cmd, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, cmd);
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (!cs) return;
     for (int i = 0; i < cs->count; i++) {
-        if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
-            free(cs->cmds[i].text);
-            cs->cmds[i].text = NULL;
+        CanvasCmd* c = &cs->cmds[i];
+        if (c->type == CANVAS_FILL_TEXT && c->text) {
+            free(c->text); c->text = NULL;
         }
-        if (cs->cmds[i].type == CANVAS_DRAW_IMAGE && cs->cmds[i].pixels) {
-            free(cs->cmds[i].pixels);
-            cs->cmds[i].pixels = NULL;
+        if (c->type == CANVAS_DRAW_IMAGE && c->pixels) {
+            free(c->pixels); c->pixels = NULL;
+        }
+        if (c->type == CANVAS_FILL_LINEAR || c->type == CANVAS_FILL_RADIAL) {
+            free(c->stop_off);  c->stop_off = NULL;
+            free(c->stop_rgba); c->stop_rgba = NULL;
         }
     }
     cs->count = 0;

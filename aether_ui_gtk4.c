@@ -1129,7 +1129,9 @@ typedef enum {
     CANVAS_CLOSE_PATH,  // close the current sub-path
     CANVAS_FILL,        // fill the current path with a color
     CANVAS_FILL_TEXT,   // draw text at (x, y), size in w
-    CANVAS_DRAW_IMAGE   // blit an RGBA buffer at (x, y), size w×h
+    CANVAS_DRAW_IMAGE,  // blit an RGBA buffer at (x, y), size w×h
+    CANVAS_FILL_LINEAR, // fill current path with a linear gradient
+    CANVAS_FILL_RADIAL  // fill current path with a radial gradient
 } CanvasCmdType;
 
 typedef struct {
@@ -1144,6 +1146,13 @@ typedef struct {
     char* text;              // FILL_TEXT string (owned, freed on clear/destroy)
     unsigned char* pixels;   // DRAW_IMAGE RGBA8888 buffer (owned), iw*ih*4 bytes
     int iw, ih;              // DRAW_IMAGE pixel width/height
+    // Gradient (FILL_LINEAR / FILL_RADIAL): geometry in x,y..(see impls),
+    // plus owned stop arrays. FILL_LINEAR uses (gx1,gy1)→(gx2,gy2);
+    // FILL_RADIAL uses center (gx1,gy1) radius gr + focal (gfx,gfy).
+    double gx1, gy1, gx2, gy2, gr, gfx, gfy;
+    int n_stops;
+    double* stop_off;        // owned: n_stops offsets (0..1)
+    double* stop_rgba;       // owned: n_stops*4 colour comps (0..1)
 } CanvasCmd;
 
 typedef struct {
@@ -1257,6 +1266,28 @@ static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
                     }
                 }
                 break;
+            case CANVAS_FILL_LINEAR:
+            case CANVAS_FILL_RADIAL: {
+                cairo_pattern_t* pat;
+                if (c->type == CANVAS_FILL_LINEAR) {
+                    pat = cairo_pattern_create_linear(c->gx1, c->gy1, c->gx2, c->gy2);
+                } else {
+                    // Radial: inner circle at the focal point (radius 0),
+                    // outer circle at the center with radius gr.
+                    pat = cairo_pattern_create_radial(c->gfx, c->gfy, 0.0,
+                                                      c->gx1, c->gy1, c->gr);
+                }
+                for (int si = 0; si < c->n_stops; si++) {
+                    cairo_pattern_add_color_stop_rgba(pat, c->stop_off[si],
+                        c->stop_rgba[si*4+0], c->stop_rgba[si*4+1],
+                        c->stop_rgba[si*4+2], c->stop_rgba[si*4+3]);
+                }
+                cairo_set_source(cr, pat);
+                cairo_fill(cr);
+                cairo_pattern_destroy(pat);
+                cairo_set_source_rgba(cr, 0, 0, 0, 1); // reset source
+                break;
+            }
             case CANVAS_CLEAR:
                 break;
         }
@@ -1363,18 +1394,60 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
     });
 }
 
+// std.collections FloatArray accessor (libaether) — read gradient
+// stop arrays handed over as opaque FloatArray* from Aether.
+extern double floatarr_get_unchecked(void* arr, int i);
+extern int floatarr_size(void* arr);
+
+// Copy n_stops offsets + n_stops*4 rgba comps out of the Aether
+// FloatArray handles into freshly-owned C arrays on the command.
+static void canvas_copy_stops(CanvasCmd* c, int n_stops,
+                               void* offsets, void* rgba) {
+    c->n_stops = n_stops;
+    c->stop_off = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops : 1));
+    c->stop_rgba = (double*)malloc(sizeof(double) * (n_stops > 0 ? n_stops*4 : 1));
+    for (int i = 0; i < n_stops; i++) {
+        c->stop_off[i] = floatarr_get_unchecked(offsets, i);
+        c->stop_rgba[i*4+0] = floatarr_get_unchecked(rgba, i*4+0);
+        c->stop_rgba[i*4+1] = floatarr_get_unchecked(rgba, i*4+1);
+        c->stop_rgba[i*4+2] = floatarr_get_unchecked(rgba, i*4+2);
+        c->stop_rgba[i*4+3] = floatarr_get_unchecked(rgba, i*4+3);
+    }
+}
+
+void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
+        float x1, float y1, float x2, float y2,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd cmd = { .type = CANVAS_FILL_LINEAR,
+                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2 };
+    canvas_copy_stops(&cmd, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, cmd);
+}
+
+void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
+        float cx, float cy, float radius, float fx, float fy,
+        int n_stops, void* offsets, void* rgba) {
+    CanvasCmd cmd = { .type = CANVAS_FILL_RADIAL,
+                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy };
+    canvas_copy_stops(&cmd, n_stops, offsets, rgba);
+    canvas_add_cmd(canvas_id, cmd);
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (cs) {
-        // Free any owned text strings / image buffers before resetting.
+        // Free any owned text strings / image buffers / gradient stops.
         for (int i = 0; i < cs->count; i++) {
-            if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
-                free(cs->cmds[i].text);
-                cs->cmds[i].text = NULL;
+            CanvasCmd* c = &cs->cmds[i];
+            if (c->type == CANVAS_FILL_TEXT && c->text) {
+                free(c->text); c->text = NULL;
             }
-            if (cs->cmds[i].type == CANVAS_DRAW_IMAGE && cs->cmds[i].pixels) {
-                free(cs->cmds[i].pixels);
-                cs->cmds[i].pixels = NULL;
+            if (c->type == CANVAS_DRAW_IMAGE && c->pixels) {
+                free(c->pixels); c->pixels = NULL;
+            }
+            if (c->type == CANVAS_FILL_LINEAR || c->type == CANVAS_FILL_RADIAL) {
+                free(c->stop_off);  c->stop_off = NULL;
+                free(c->stop_rgba); c->stop_rgba = NULL;
             }
         }
         cs->count = 0;
