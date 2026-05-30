@@ -30,6 +30,7 @@ are wired into `ci.sh` as **Phase 0** (runs even with no display).
 | cvg_backend | (new) | `cvg_backend.ae` | tested via `test_grammar_shapes` | ✅ Recording backend stub for Phase-0 testing. Seven entry points (`canvas_circle`, `canvas_rectangle`, `canvas_line`, `canvas_path`, `canvas_text`, `canvas_raster`, `canvas_tappable_raster`); each records the call kind + opts (as `std.map`) and returns a fresh handle. Tests inspect via `backend_kind(b, i)` and `backend_opt_get(b, i, key)`. Real backend wiring (to `aether_ui.canvas_*`) lives behind this same interface; the swap is one file. |
 | grammar_shapes | `grammar-shapes.ts` (525 LoC, happy-path subset) | `grammar_shapes.ae` | `test_grammar_shapes.ae` (34 asserts) | ✅ Shape factories: `shape_circle`, `shape_rectangle`, `shape_line`, `shape_path`, `shape_group`. End-to-end pipeline per call: maybe-push-transform → resolve_style → map_point + parse_len_x/y → resolve_fill/stroke_color → map_stroke_width → backend dispatch → wrap in *CvgElement with bounds → maybe-pop-transform. Path bounds computed by walking normalize_commands output. Group is unique (no backend call) — pushes style+transform, runs the body closure, pops. Projective-transform, raster-fallback, gradient, rounded-corner branches all deferred (need grammar_defs / projective glue). |
 | grammar_utils | (additions this commit) | `grammar_utils.ae` | (existing test still 49) | ✅ Adds `resolve_fill_color`, `resolve_stroke_color`, `effective_alpha`, `effective_stroke_alpha`, `style_num_default`. `url(#id)` gradient lookup deferred (needs grammar_defs); falls back to trailing color or "black". |
+| grammar_factories | `grammar-factories.ts` (223 LoC, kernel subset) | `grammar_factories.ae` | `test_grammar_factories.ae` (31 asserts) | ✅ `create_cvg_context(opts)` — the meat: parses viewBox, computes the two-step `viewBox → viewport → canvas` affine via `preserveAspectRatio` (xMidYMid meet default; Min/Max alignment; meet/slice scaling), constructs a `*CvgContext` ready for shape calls. `cvg(backend, opts, body)` convenience wraps it. `CvgOptions` struct with width/height/viewBox/PAR setters. Letterbox/pillarbox math verified end-to-end: vb 100×50 + canvas 200×200 + meet → scale 2, offset_y 50. The TS `CvgBuilder` class doesn't port (no classes); callers use `shape_*` factories directly. `app.clip`/`app.canvasStack` widget machinery is real-backend territory (Phase 1). |
 
 Also landed: **`parse_transform`** (deferred since the first commit; ~22
 extra assertions in `test_transform.ae`, total 52) + cross-module
@@ -56,12 +57,20 @@ Tier C breakdown (per inventory):
   - ✅ `grammar_style.ae` (style cascade)
   - ✅ `cvg_backend.ae` (recording stub; real backend wiring deferred)
   - ✅ `grammar_shapes.ae` (circle/rect/line/path/group factories)
+  - ✅ `grammar_factories.ae` (`create_cvg_context`, viewBox → canvas
+    mapping with preserveAspectRatio)
   - ⬜ CSS class system (registerCssStyle/getCssProps)
   - ⬜ Event tracking & dispatch (context-side)
   - ⬜ Animation manager
   - ⬜ Binding regions
   - ⬜ `grammar-defs` (gradient/filter/clipPath/text/use construction)
-  - ⬜ `grammar-factories` (cvg() builder entry points)
+
+**End-to-end smoke now works**: `create_cvg_context(opts)` → `shape_*(ctx,
+backend, attrs)` runs the full pipeline (viewBox-mapping → style cascade
+→ map_point → fill/stroke resolution → backend dispatch → element
+wrapping) and the recording backend confirms every opt is computed
+correctly. See `test_grammar_factories.ae`'s "e2e" block for the
+canonical "build an SVG, inspect the backend" pattern.
 
 Then Tier D: `loader.ae`, `transpiler.ae`.
 
