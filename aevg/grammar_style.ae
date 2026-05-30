@@ -1,4 +1,4 @@
-// cvg/grammar_style.ae — style cascade (Tier C).
+// aevg/grammar_style.ae — style cascade (Tier C).
 //
 // Follow-up to grammar_rendering.ae's coordinate-mapping subset.
 // Lands the style-stack push/pop + resolve, which is the other
@@ -105,7 +105,7 @@ get_css_props(ctx: ptr, tag: string, class_name: string) -> ptr {
 // ─── push_style + pop_style + current_style ──────────────────────
 
 // Inputs:
-//   ctx        — *CvgContext handle
+//   ctx        — *AevgContext handle
 //   attrs      — std.map of the element's attributes (e.g. {fill:red,
 //                stroke:blue, style:"opacity:0.5"})
 //   tag        — element tag name, e.g. "rect" (used for CSS lookup)

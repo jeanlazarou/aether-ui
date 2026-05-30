@@ -1,4 +1,4 @@
-// cvg/test_blur.ae — regression test for blur.ae.
+// aevg/test_blur.ae — regression test for blur.ae.
 //
 // Property-based: instead of pinning exact RGBA bytes (which would
 // be brittle across kernel-implementation variations), check

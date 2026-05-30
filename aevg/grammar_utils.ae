@@ -1,4 +1,4 @@
-// cvg/grammar_utils.ae — Tier B helpers: parsing, geometry,
+// aevg/grammar_utils.ae — Tier B helpers: parsing, geometry,
 // color emit. Port of cosyne/src/cvg/grammar-utils.ts.
 //
 // Tier-B subset (in scope here):
@@ -18,7 +18,7 @@
 //   normalize_color: rgb(r,g,b) → #RRGGBB needs from_int_radix +
 //     pad_start, both still pending in aether/cvg_asked_for.md.
 //   resolve_gradient_fill / resolve_gradient_stroke /
-//   transform_path_to_buffer: all need full CvgContext gradient
+//   transform_path_to_buffer: all need full AevgContext gradient
 //   storage (lands with grammar_defs).
 //
 // Added in this Tier C commit:
@@ -438,7 +438,7 @@ base64_encode_bytes(buf: ptr, len: int) -> string {
 // derived from opacity×fill-opacity (or stroke-opacity).
 //
 // Gradient registry lookup is NOT done here — that needs
-// CvgContext.gradients, which lands with grammar_defs. For now, a
+// AevgContext.gradients, which lands with grammar_defs. For now, a
 // `url(#id)` reference falls back to its optional trailing color
 // (per TS source's `fill.replace(/url\([^)]*\)\s*/, '').trim()`)
 // or `"black"` if no fallback. When the full gradient lookup lands

@@ -1,27 +1,27 @@
-// cvg/grammar_factories.ae — public entry point (Tier C).
+// aevg/grammar_factories.ae — public entry point (Tier C).
 //
 // Port of cosyne/src/cvg/grammar-factories.ts. The TS file has two
-// pieces of value: createCvgContext (the meat — builds the viewBox
-// mapping and constructs a CvgContext) and a thin cvg() wrapper that
+// pieces of value: createAevgContext (the meat — builds the viewBox
+// mapping and constructs a AevgContext) and a thin aevg() wrapper that
 // adds backend clip/stack machinery. The CvgBuilder class is TS-only
 // ergonomic sugar; callers in Aether just call shape_circle/etc.
 // directly (no `this.circle(...)` delegation possible without
 // classes).
 //
 // In scope:
-//   create_cvg_context(opts) -> *CvgContext
+//   create_aevg_context(opts) -> *AevgContext
 //     — builds the two-step viewBox→viewport→canvas affine mapping
 //       per SVG spec (preserveAspectRatio + uniform-scale-to-fit),
 //       then constructs the context. The kernel of the TS file.
 //
-//   cvg(backend, opts, body)
+//   aevg(backend, opts, body)
 //     — convenience: create context, set its backend (via setter on
-//       CvgOptions; we pass through directly here), call body with
+//       AevgOptions; we pass through directly here), call body with
 //       the context, return it. Mirrors the TS standalone factory
 //       minus the app.clip / app.canvasStack widget plumbing
 //       (which lives in Phase 1 — real backend wiring).
 //
-// CvgOptions is a small struct rather than std.map because the field
+// AevgOptions is a small struct rather than std.map because the field
 // set is fixed and the order of resolution matters (width before
 // height before viewBox).
 //
@@ -33,9 +33,9 @@
 //     an empty style stack)
 
 exports (
-    CvgOptions, opts_new, opts_set_view_box, opts_set_width,
+    AevgOptions, opts_new, opts_set_view_box, opts_set_width,
     opts_set_height, opts_set_preserve_aspect_ratio,
-    create_cvg_context, cvg
+    create_aevg_context, aevg
 )
 
 import std.string
@@ -46,13 +46,13 @@ import transform
 
 extern malloc(size: int) -> ptr
 
-// ─── CvgOptions struct ───────────────────────────────────────────
+// ─── AevgOptions struct ───────────────────────────────────────────
 //
 // Mutable bag — callers build incrementally via setters before
-// passing to create_cvg_context. Strings default to ""; numerics
+// passing to create_aevg_context. Strings default to ""; numerics
 // default to 0 (interpreted as "use canvas default" downstream).
 
-struct CvgOptions {
+struct AevgOptions {
     view_box: string
     width: float
     height: float
@@ -60,7 +60,7 @@ struct CvgOptions {
 }
 
 opts_new() -> ptr {
-    o = malloc(40) as *CvgOptions
+    o = malloc(40) as *AevgOptions
     o.view_box = ""
     o.width = 0.0
     o.height = 0.0
@@ -69,22 +69,22 @@ opts_new() -> ptr {
 }
 
 opts_set_view_box(p: ptr, vb: string) {
-    o = p as *CvgOptions
+    o = p as *AevgOptions
     o.view_box = vb
 }
 
 opts_set_width(p: ptr, w: float) {
-    o = p as *CvgOptions
+    o = p as *AevgOptions
     o.width = w
 }
 
 opts_set_height(p: ptr, h: float) {
-    o = p as *CvgOptions
+    o = p as *AevgOptions
     o.height = h
 }
 
 opts_set_preserve_aspect_ratio(p: ptr, par: string) {
-    o = p as *CvgOptions
+    o = p as *AevgOptions
     o.preserve_aspect_ratio = par
 }
 
@@ -146,7 +146,7 @@ parse_view_box(s: string) -> *ViewBox4 {
     return mk_vb4(v0, v1, v2, v3)
 }
 
-// ─── create_cvg_context ──────────────────────────────────────────
+// ─── create_aevg_context ──────────────────────────────────────────
 //
 // Mirrors the TS source: two-step viewBox → viewport → canvas
 // transform via preserveAspectRatio (xMidYMid meet by default).
@@ -162,8 +162,8 @@ parse_view_box(s: string) -> *ViewBox4 {
 // scaleVB + alignment T_VB. The two-step is kept for future
 // rootAttrs support.
 
-create_cvg_context(opts: ptr) -> ptr {
-    o = opts as *CvgOptions
+create_aevg_context(opts: ptr) -> ptr {
+    o = opts as *AevgOptions
 
     // Canvas dims with sensible defaults.
     cw = o.width
@@ -239,7 +239,7 @@ create_cvg_context(opts: ptr) -> ptr {
     return grammar_context.new_context(mapping)
 }
 
-// ─── cvg(backend, opts, body) — entry-point convenience ──────────
+// ─── aevg(backend, opts, body) — entry-point convenience ──────────
 //
 // Creates a context, runs the user-supplied body callback that
 // emits shape factory calls, returns the context. Real backend
@@ -250,8 +250,8 @@ create_cvg_context(opts: ptr) -> ptr {
 // landed) makes the call shape work cleanly even when body is a
 // `callback { … }` capturing ctx/backend by reference.
 
-cvg(backend: ptr, opts: ptr, body: fn) -> ptr {
-    ctx = create_cvg_context(opts)
+aevg(backend: ptr, opts: ptr, body: fn) -> ptr {
+    ctx = create_aevg_context(opts)
     body()
     return ctx
 }

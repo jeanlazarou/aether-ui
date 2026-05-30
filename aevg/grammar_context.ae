@@ -1,4 +1,4 @@
-// cvg/grammar_context.ae — CvgContext core: state holder + registries.
+// aevg/grammar_context.ae — AevgContext core: state holder + registries.
 //
 // Port of cosyne/src/cvg/grammar-context.ts, kicking off Tier C.
 // This commit lands ONLY the core context and its registries — the
@@ -13,7 +13,7 @@
 // the README stay honest about what's actually working.
 //
 // Cross-module shape: callers receive an opaque `ctx: ptr` handle and
-// use the exported `ctx_*` accessor functions. The CvgContext struct
+// use the exported `ctx_*` accessor functions. The AevgContext struct
 // itself stays file-local (the cross-module-types-don't-work idiom).
 //
 // Data model:
@@ -22,7 +22,7 @@
 //   clip_paths: std.map  string→*ClipPathDef
 //   nodes_by_id: std.map  string→*SvgNode  (the parser's nodes)
 //   css_rules:  std.map  string→ptr (each value is itself a std.map of property→value)
-//   tracked_elements: std.list of *CvgElement handles (Tier C, future)
+//   tracked_elements: std.list of *AevgElement handles (Tier C, future)
 //   style_stack, transform_stack, when_stack: std.list of ptrs
 //   mapping: *ViewBoxMapping (its own struct)
 
@@ -117,16 +117,16 @@ mapping_vb_width(m: ptr) -> float      { v = m as *ViewBoxMapping; return v.vb_w
 mapping_vb_height(m: ptr) -> float     { v = m as *ViewBoxMapping; return v.vb_height }
 mapping_transform(m: ptr) -> ptr       { v = m as *ViewBoxMapping; return v.transform_handle }
 
-// ─── CvgContext ──────────────────────────────────────────────────
+// ─── AevgContext ──────────────────────────────────────────────────
 
-struct CvgContext {
+struct AevgContext {
     mapping: ptr            // *ViewBoxMapping
     gradients: ptr          // std.map string→*GradientDef
     filters: ptr            // std.map string→*FilterDef
     clip_paths: ptr         // std.map string→*ClipPathDef
     nodes_by_id: ptr        // std.map string→*SvgNode
     css_rules: ptr          // std.map string→ptr(*style-map)
-    tracked_elements: ptr   // std.list of *CvgElement (Tier C, future)
+    tracked_elements: ptr   // std.list of *AevgElement (Tier C, future)
     style_stack: ptr        // std.list of *style-map (each entry is a std.map ptr)
     transform_stack: ptr    // std.list of *Affine ptrs
     when_stack: ptr         // std.list of `fn` predicates (closures)
@@ -135,7 +135,7 @@ struct CvgContext {
 // Construct a context with empty registries and a single identity
 // transform on the transform stack (mirrors the TS constructor).
 new_context(mapping_handle: ptr) -> ptr {
-    c = malloc(80) as *CvgContext
+    c = malloc(80) as *AevgContext
     c.mapping = mapping_handle
     c.gradients = map.new()
     c.filters = map.new()
@@ -155,7 +155,7 @@ new_context(mapping_handle: ptr) -> ptr {
     return c
 }
 
-ctx_mapping(c: ptr) -> ptr { x = c as *CvgContext; return x.mapping }
+ctx_mapping(c: ptr) -> ptr { x = c as *AevgContext; return x.mapping }
 
 // ─── Gradient / Filter / ClipPath / Node / CSS registries ────────
 //
@@ -165,83 +165,83 @@ ctx_mapping(c: ptr) -> ptr { x = c as *CvgContext; return x.mapping }
 // shape of what they store).
 
 register_gradient(c: ptr, id: string, def: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = map.put(x.gradients, id, def)
 }
 
 get_gradient(c: ptr, id: string) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     v, _ = map.get(x.gradients, id)
     return v
 }
 
 has_gradient(c: ptr, id: string) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return map.has(x.gradients, id)
 }
 
 register_filter(c: ptr, id: string, def: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = map.put(x.filters, id, def)
 }
 
 get_filter(c: ptr, id: string) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     v, _ = map.get(x.filters, id)
     return v
 }
 
 has_filter(c: ptr, id: string) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return map.has(x.filters, id)
 }
 
 register_clip_path(c: ptr, id: string, def: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = map.put(x.clip_paths, id, def)
 }
 
 get_clip_path(c: ptr, id: string) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     v, _ = map.get(x.clip_paths, id)
     return v
 }
 
 has_clip_path(c: ptr, id: string) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return map.has(x.clip_paths, id)
 }
 
 register_node(c: ptr, id: string, node: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = map.put(x.nodes_by_id, id, node)
 }
 
 get_node(c: ptr, id: string) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     v, _ = map.get(x.nodes_by_id, id)
     return v
 }
 
 has_node(c: ptr, id: string) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return map.has(x.nodes_by_id, id)
 }
 
 // CSS-rule values are themselves a property-value map (ptr handle).
 register_css_rule(c: ptr, selector: string, props_map: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = map.put(x.css_rules, selector, props_map)
 }
 
 get_css_rule(c: ptr, selector: string) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     v, _ = map.get(x.css_rules, selector)
     return v
 }
 
 has_css_rule(c: ptr, selector: string) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return map.has(x.css_rules, selector)
 }
 
@@ -253,23 +253,23 @@ has_css_rule(c: ptr, selector: string) -> int {
 
 // Style stack: each entry is a std.map string→string ("style cascade").
 style_push(c: ptr, style_map: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = list.add(x.style_stack, style_map)
 }
 
 style_pop(c: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.style_stack)
     if n > 0 { list.remove(x.style_stack, n - 1) }
 }
 
 style_depth(c: ptr) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return list.size(x.style_stack)
 }
 
 style_top(c: ptr) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.style_stack)
     if n == 0 { return null }
     v, _ = list.get(x.style_stack, n - 1)
@@ -278,23 +278,23 @@ style_top(c: ptr) -> ptr {
 
 // Transform stack: each entry is a *Affine handle.
 transform_push(c: ptr, xform: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = list.add(x.transform_stack, xform)
 }
 
 transform_pop(c: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.transform_stack)
     if n > 0 { list.remove(x.transform_stack, n - 1) }
 }
 
 transform_depth(c: ptr) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return list.size(x.transform_stack)
 }
 
 transform_top(c: ptr) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.transform_stack)
     if n == 0 { return null }
     v, _ = list.get(x.transform_stack, n - 1)
@@ -308,23 +308,23 @@ transform_top(c: ptr) -> ptr {
 // state closures survive the round-trip via _aether_box_closure.
 // Used for conditional rendering: `s.g({ when: () => state.toggle })`.
 when_push(c: ptr, pred: fn) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     _ = list.add(x.when_stack, pred)
 }
 
 when_pop(c: ptr) {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.when_stack)
     if n > 0 { list.remove(x.when_stack, n - 1) }
 }
 
 when_depth(c: ptr) -> int {
-    x = c as *CvgContext
+    x = c as *AevgContext
     return list.size(x.when_stack)
 }
 
 when_top(c: ptr) -> ptr {
-    x = c as *CvgContext
+    x = c as *AevgContext
     n = list.size(x.when_stack)
     if n == 0 { return null }
     v, _ = list.get(x.when_stack, n - 1)

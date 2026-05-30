@@ -126,10 +126,10 @@ run_smoke_test() {
     return 1
 }
 
-# CVG port unit tests — pure Aether (no GTK/display), so they run even
+# AeVG port unit tests — pure Aether (no GTK/display), so they run even
 # under SKIP_RUNTIME. Each is a self-contained `main()` that exits non-zero
 # on the first failed assertion. Append new modules' tests here as they land.
-CVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox test_blur test_rasterize test_grammar_utils test_grammar_context test_grammar_element test_grammar_rendering test_grammar_style test_grammar_shapes test_grammar_factories)
+AEVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox test_blur test_rasterize test_grammar_utils test_grammar_context test_grammar_element test_grammar_rendering test_grammar_style test_grammar_shapes test_grammar_factories)
 
 # `ae cflags --libs` emits the transitive deps that libaether.a was
 # built with (PCRE2 / OpenSSL / zlib / nghttp2 — see Aether CHANGELOG
@@ -137,28 +137,28 @@ CVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox test
 # for any module that imports std.regex / std.cryptography / std.http
 # / std.zlib. The earlier per-dep workaround is no longer needed.
 
-echo "=== Phase 0: CVG unit tests (pure Aether) ==="
-for t in "${CVG_TESTS[@]}"; do
-    src="cvg/${t}.ae"
-    cfile="build/cvg_${t}.c"
-    bin="build/cvg_${t}"
-    if ! aetherc "$src" "$cfile" > "/tmp/ci_cvg_${t}.log" 2>&1; then
+echo "=== Phase 0: AeVG unit tests (pure Aether) ==="
+for t in "${AEVG_TESTS[@]}"; do
+    src="aevg/${t}.ae"
+    cfile="build/aevg_${t}.c"
+    bin="build/aevg_${t}"
+    if ! aetherc "$src" "$cfile" > "/tmp/ci_aevg_${t}.log" 2>&1; then
         echo "  FAIL $t (compile)"
-        tail -15 "/tmp/ci_cvg_${t}.log" | sed 's/^/       /'
+        tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))
         continue
     fi
-    if ! gcc "$cfile" $(ae cflags) -o "$bin" >> "/tmp/ci_cvg_${t}.log" 2>&1; then
+    if ! gcc "$cfile" $(ae cflags) -o "$bin" >> "/tmp/ci_aevg_${t}.log" 2>&1; then
         echo "  FAIL $t (link)"
-        tail -15 "/tmp/ci_cvg_${t}.log" | sed 's/^/       /'
+        tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))
         continue
     fi
-    if "$bin" > "/tmp/ci_cvg_${t}_run.log" 2>&1; then
+    if "$bin" > "/tmp/ci_aevg_${t}_run.log" 2>&1; then
         echo "  OK   $t"
     else
         echo "  FAIL $t (run)"
-        tail -15 "/tmp/ci_cvg_${t}_run.log" | sed 's/^/       /'
+        tail -15 "/tmp/ci_aevg_${t}_run.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
 done

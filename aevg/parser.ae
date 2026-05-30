@@ -1,4 +1,4 @@
-// cvg/parser.ae — lightweight SVG XML parser (TS port).
+// aevg/parser.ae — lightweight SVG XML parser (TS port).
 //
 // Port of cosyne/src/cvg/parser.ts (Tier A). Tokenizes SVG strings
 // then assembles a node tree. Index-based scanning for tag boundaries

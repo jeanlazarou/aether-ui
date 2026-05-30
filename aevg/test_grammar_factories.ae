@@ -1,6 +1,6 @@
-// cvg/test_grammar_factories.ae — regression test for grammar_factories.ae.
+// aevg/test_grammar_factories.ae — regression test for grammar_factories.ae.
 //
-// Covers create_cvg_context for the canonical viewBox-mapping cases:
+// Covers create_aevg_context for the canonical viewBox-mapping cases:
 //   - Default options (no viewBox, no width/height) → canvas
 //     defaults to 400×400; viewBox 0,0,400,400; identity mapping
 //   - viewBox "0 0 100 100" with canvas 100×100 (1:1)
@@ -18,7 +18,7 @@ import grammar_factories
 import grammar_context
 import grammar_rendering
 import grammar_shapes
-import cvg_backend
+import aevg_backend
 import transform
 import std.string
 import std.map
@@ -43,7 +43,7 @@ assert_near(label: string, got: float, want: float) {
 }
 
 assert_opt_near(label: string, b: ptr, i: int, key: string, want: float) {
-    s = cvg_backend.backend_opt_get(b, i, key)
+    s = aevg_backend.backend_opt_get(b, i, key)
     got, e = string.to_double(s)
     if e != "" { println("  FAIL: ${label}: parse '${s}' → ${e}"); exit(1) }
     if math.abs_float(got - want) < 0.01 { println("  PASS: ${label} (${got})") }
@@ -66,7 +66,7 @@ main() {
 
     // ─── Default options: 400×400 canvas, viewBox = canvas ───────
     o1 = grammar_factories.opts_new()
-    ctx1 = grammar_factories.create_cvg_context(o1)
+    ctx1 = grammar_factories.create_aevg_context(o1)
     m1 = grammar_context.ctx_mapping(ctx1)
     assert_near("default canvas_width",  grammar_context.mapping_canvas_width(m1), 400.0)
     assert_near("default canvas_height", grammar_context.mapping_canvas_height(m1), 400.0)
@@ -84,7 +84,7 @@ main() {
     grammar_factories.opts_set_view_box(o2, "0 0 100 100")
     grammar_factories.opts_set_width(o2, 100.0)
     grammar_factories.opts_set_height(o2, 100.0)
-    ctx2 = grammar_factories.create_cvg_context(o2)
+    ctx2 = grammar_factories.create_aevg_context(o2)
     assert_near("1:1 map_x(0)",   grammar_rendering.map_x(ctx2, 0.0),   0.0)
     assert_near("1:1 map_x(50)",  grammar_rendering.map_x(ctx2, 50.0),  50.0)
     assert_near("1:1 map_y(100)", grammar_rendering.map_y(ctx2, 100.0), 100.0)
@@ -96,7 +96,7 @@ main() {
     grammar_factories.opts_set_view_box(o3, "0 0 100 50")
     grammar_factories.opts_set_width(o3, 200.0)
     grammar_factories.opts_set_height(o3, 200.0)
-    ctx3 = grammar_factories.create_cvg_context(o3)
+    ctx3 = grammar_factories.create_aevg_context(o3)
     m3 = grammar_context.ctx_mapping(ctx3)
     // scale_x = 200/100 = 2; scale_y = 200/50 = 4. Meet → min = 2.
     assert_near("letterbox scale", grammar_context.mapping_scale(m3), 2.0)
@@ -114,7 +114,7 @@ main() {
     grammar_factories.opts_set_view_box(o4, "-10 -5 100 50")
     grammar_factories.opts_set_width(o4, 100.0)
     grammar_factories.opts_set_height(o4, 50.0)
-    ctx4 = grammar_factories.create_cvg_context(o4)
+    ctx4 = grammar_factories.create_aevg_context(o4)
     // map_x(-10) = 0 (the viewBox origin lands at canvas origin)
     assert_near("origin-vb map_x(-10)", grammar_rendering.map_x(ctx4, 0.0 - 10.0), 0.0)
     assert_near("origin-vb map_y(-5)",  grammar_rendering.map_y(ctx4, 0.0 - 5.0), 0.0)
@@ -127,7 +127,7 @@ main() {
     grammar_factories.opts_set_width(o5, 200.0)
     grammar_factories.opts_set_height(o5, 200.0)
     grammar_factories.opts_set_preserve_aspect_ratio(o5, "xMinYMin meet")
-    ctx5 = grammar_factories.create_cvg_context(o5)
+    ctx5 = grammar_factories.create_aevg_context(o5)
     m5 = grammar_context.ctx_mapping(ctx5)
     // Same uniform-scale-to-meet (2.0) but no offset.
     assert_near("xMinYMin scale",    grammar_context.mapping_scale(m5),    2.0)
@@ -142,8 +142,8 @@ main() {
     grammar_factories.opts_set_view_box(o_e2e, "0 0 100 100")
     grammar_factories.opts_set_width(o_e2e, 100.0)
     grammar_factories.opts_set_height(o_e2e, 100.0)
-    ctx_e2e = grammar_factories.create_cvg_context(o_e2e)
-    bk = cvg_backend.backend_new()
+    ctx_e2e = grammar_factories.create_aevg_context(o_e2e)
+    bk = aevg_backend.backend_new()
 
     a_circle = mk_attrs4("cx", "50", "cy", "50", "r", "25", "fill", "red")
     a_rect   = mk_attrs4("x", "10", "y", "10", "width", "30", "height", "30")
@@ -155,10 +155,10 @@ main() {
     _r = grammar_shapes.shape_rectangle(ctx_e2e, bk, a_rect)
     _l = grammar_shapes.shape_line(ctx_e2e, bk, a_line)
 
-    assert_eq_int("e2e: 3 backend calls", cvg_backend.backend_call_count(bk), 3)
-    assert_eq_str("e2e: call 0 = circle",  cvg_backend.backend_kind(bk, 0), "circle")
-    assert_eq_str("e2e: call 1 = rect",    cvg_backend.backend_kind(bk, 1), "rectangle")
-    assert_eq_str("e2e: call 2 = line",    cvg_backend.backend_kind(bk, 2), "line")
+    assert_eq_int("e2e: 3 backend calls", aevg_backend.backend_call_count(bk), 3)
+    assert_eq_str("e2e: call 0 = circle",  aevg_backend.backend_kind(bk, 0), "circle")
+    assert_eq_str("e2e: call 1 = rect",    aevg_backend.backend_kind(bk, 1), "rectangle")
+    assert_eq_str("e2e: call 2 = line",    aevg_backend.backend_kind(bk, 2), "line")
     assert_opt_near("e2e: circle.x",  bk, 0, "x",  25.0)
     assert_opt_near("e2e: circle.x2", bk, 0, "x2", 75.0)
     assert_opt_near("e2e: rect.x",    bk, 1, "x",  10.0)

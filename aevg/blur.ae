@@ -1,4 +1,4 @@
-// cvg/blur.ae — separable Gaussian blur on RGBA pixel buffers.
+// aevg/blur.ae — separable Gaussian blur on RGBA pixel buffers.
 //
 // Port of cosyne/src/cvg/blur.ts (Tier B, the start of the pixel
 // pipeline). Two-pass separable kernel: horizontal pass writes

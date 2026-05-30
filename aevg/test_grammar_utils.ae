@@ -1,8 +1,8 @@
-// cvg/test_grammar_utils.ae — regression test for grammar_utils.ae.
+// aevg/test_grammar_utils.ae — regression test for grammar_utils.ae.
 //
 // Covers the Tier-B-scope subset of grammar-utils.ts: parsing helpers,
 // geometry conversions, and color emit. Skips the resolve_* /
-// transform_path_to_buffer functions (Tier C — need CvgContextLike).
+// transform_path_to_buffer functions (Tier C — need AevgContextLike).
 
 import grammar_utils
 import std.map

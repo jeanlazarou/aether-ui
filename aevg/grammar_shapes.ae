@@ -1,4 +1,4 @@
-// cvg/grammar_shapes.ae — shape factories (Tier C).
+// aevg/grammar_shapes.ae — shape factories (Tier C).
 //
 // Port of the *happy path* of cosyne/src/cvg/grammar-shapes.ts's
 // shape methods. Each factory:
@@ -8,7 +8,7 @@
 //   4. Resolves fill/stroke colors with opacity bake-in.
 //   5. Computes mapped stroke-width with sub-pixel opacity factor.
 //   6. Dispatches to the backend's canvas_* with computed opts.
-//   7. Wraps the underlying handle in a *CvgElement, sets bounds.
+//   7. Wraps the underlying handle in a *AevgElement, sets bounds.
 //   8. Pops the optional transform.
 //
 // Five factories this commit: circle, rectangle, line, path, group (g).
@@ -47,7 +47,7 @@ import grammar_style
 import grammar_utils
 import grammar_element
 import transform
-import cvg_backend
+import aevg_backend
 import normalizer
 
 extern malloc(size: int) -> ptr
@@ -141,7 +141,7 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = cvg_backend.canvas_circle(backend, opts)
+    underlying = aevg_backend.canvas_circle(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -210,7 +210,7 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = cvg_backend.canvas_rectangle(backend, opts)
+    underlying = aevg_backend.canvas_rectangle(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -256,7 +256,7 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = cvg_backend.canvas_line(backend, opts)
+    underlying = aevg_backend.canvas_line(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -278,7 +278,7 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
 shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     d, _ = map.get(attrs, "d")
     if d == null {
-        // No d → return an empty CvgElement (no backend call).
+        // No d → return an empty AevgElement (no backend call).
         return grammar_element.element_new(null)
     }
     did_push = maybe_push_transform(ctx, attrs)
@@ -340,7 +340,7 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = cvg_backend.canvas_path(backend, opts)
+    underlying = aevg_backend.canvas_path(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 

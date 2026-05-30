@@ -1,4 +1,4 @@
-// cvg/rasterize.ae — software rasterizer for shapes → RGBA buffers.
+// aevg/rasterize.ae — software rasterizer for shapes → RGBA buffers.
 //
 // Port of cosyne/src/cvg/rasterize.ts (Tier B). Five public entry
 // points:

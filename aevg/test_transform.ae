@@ -1,4 +1,4 @@
-// cvg/test_transform.ae — regression test for transform.ae.
+// aevg/test_transform.ae — regression test for transform.ae.
 //
 // Mirrors cosyne/test/svg-transform.test.ts (the AffineMatrix /
 // ProjectiveMatrix / fromSpec unit groups). parseTransform string
@@ -6,7 +6,7 @@
 // no regex in Aether), so it's not exercised here.
 //
 // Headless, pure Aether. Build + run:
-//   aetherc cvg/test_transform.ae /tmp/t.c && gcc /tmp/t.c $(ae cflags) -o /tmp/t && /tmp/t
+//   aetherc aevg/test_transform.ae /tmp/t.c && gcc /tmp/t.c $(ae cflags) -o /tmp/t && /tmp/t
 
 import transform
 import std.math

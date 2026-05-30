@@ -1,4 +1,4 @@
-// cvg/easing.ae — animation easing functions, lerp, color parsing.
+// aevg/easing.ae — animation easing functions, lerp, color parsing.
 //
 // Extracted from cosyne/src/cvg/grammar-types.ts. That file in TS is a
 // mixed-concern bag (type declarations + easing fns + lerp + color

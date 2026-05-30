@@ -1,4 +1,4 @@
-// cvg/test_parser.ae — regression test for parser.ae.
+// aevg/test_parser.ae — regression test for parser.ae.
 //
 // Mirrors the structural assertions implicit in
 // cosyne/src/cvg/parser.ts plus what its consumers (loader.ts,

@@ -1,4 +1,4 @@
-// cvg/normalizer.ae — SVG path data → absolute M/L/C/Z normalizer.
+// aevg/normalizer.ae — SVG path data → absolute M/L/C/Z normalizer.
 //
 // Port of cosyne/src/cvg/normalizer.ts (Tier A, pure — depends on
 // std.regex + std.floatarr + std.math, no host coupling).

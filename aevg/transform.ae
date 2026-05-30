@@ -1,4 +1,4 @@
-// cvg/transform.ae — SVG 2D transforms (affine + projective).
+// aevg/transform.ae — SVG 2D transforms (affine + projective).
 //
 // Port of cosyne/src/cvg/transform.ts (Tier A, pure math — no host
 // coupling). See PORT_INVENTORY.md §1 row 5.

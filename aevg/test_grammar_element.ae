@@ -1,4 +1,4 @@
-// cvg/test_grammar_element.ae — regression test for grammar_element.ae.
+// aevg/test_grammar_element.ae — regression test for grammar_element.ae.
 //
 // Covers: construction with default flags, all setter/getter round-
 // trips for name/tooltip/cursor, visibility & destroyed flags,

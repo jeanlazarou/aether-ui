@@ -1,4 +1,4 @@
-// cvg/test_bbox.ae — regression test for bbox.ae.
+// aevg/test_bbox.ae — regression test for bbox.ae.
 //
 // Validates compute_content_bounds end-to-end: feeds raw SVG strings
 // through parser.parse_svg → bbox.compute_content_bounds and asserts

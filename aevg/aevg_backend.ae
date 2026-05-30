@@ -1,4 +1,4 @@
-// cvg/cvg_backend.ae — recording backend stub for Tier C testing.
+// aevg/aevg_backend.ae — recording backend stub for Tier C testing.
 //
 // CVG's shape factories (grammar_shapes) need a backend with seven
 // entry points: canvas_circle, canvas_rectangle, canvas_line,
@@ -33,7 +33,7 @@
 // when callers need numbers).
 //
 // Each canvas_* returns a fresh ptr that uniquely identifies the
-// call's recorded entry — CvgElement.underlying gets this handle.
+// call's recorded entry — AevgElement.underlying gets this handle.
 // Real backends would return a widget handle; tests don't care, they
 // only inspect through backend_kind/opt_get.
 

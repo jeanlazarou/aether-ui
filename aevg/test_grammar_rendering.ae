@@ -1,4 +1,4 @@
-// cvg/test_grammar_rendering.ae — regression test for grammar_rendering.ae.
+// aevg/test_grammar_rendering.ae — regression test for grammar_rendering.ae.
 //
 // Covers the coordinate-mapping subset: transform-stack push/pop with
 // composition, map_x/map_y/map_length, map_point (currentTransform ∘

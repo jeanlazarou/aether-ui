@@ -1,7 +1,7 @@
-// cvg/grammar_rendering.ae — context coordinate mapping (Tier C).
+// aevg/grammar_rendering.ae — context coordinate mapping (Tier C).
 //
 // Port of cosyne/src/cvg/grammar-rendering.ts, coordinate-mapping
-// subset. The TS file prototype-augments CvgContext with many
+// subset. The TS file prototype-augments AevgContext with many
 // concerns; this commit lands the pure-math coordinate piece. The
 // style-cascade subset (pushStyle/popStyle/currentStyle/resolveStyle)
 // is a separate follow-up since it needs the full SvgStyle struct

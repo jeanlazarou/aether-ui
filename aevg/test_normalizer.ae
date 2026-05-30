@@ -1,4 +1,4 @@
-// cvg/test_normalizer.ae — regression test for normalizer.ae.
+// aevg/test_normalizer.ae — regression test for normalizer.ae.
 //
 // Mirrors a high-value subset of cosyne/test/svg-normalizer.test.ts.
 // Covers parse_path tokenization (separators, implicits, scientific

@@ -1,4 +1,4 @@
-// cvg/test_easing.ae — regression test for easing.ae.
+// aevg/test_easing.ae — regression test for easing.ae.
 //
 // Mirrors the math assertions implicit in the TS source's easing
 // table (cosyne/src/cvg/grammar-types.ts, the `Easing` object) and

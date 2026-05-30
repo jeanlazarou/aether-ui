@@ -1,4 +1,4 @@
-// cvg/test_rasterize.ae — regression test for rasterize.ae.
+// aevg/test_rasterize.ae — regression test for rasterize.ae.
 //
 // Covers:
 //   - parse_color_to_rgba: hex (3/6/8-char), rgb()/rgba(), named,

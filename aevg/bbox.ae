@@ -1,4 +1,4 @@
-// cvg/bbox.ae — axis-aligned content bounding box of an SVG tree.
+// aevg/bbox.ae — axis-aligned content bounding box of an SVG tree.
 //
 // Port of cosyne/src/cvg/bbox.ts (Tier A). Walks a parsed *SvgNode
 // tree (from parser.ae) and accumulates the AABB of all rendered

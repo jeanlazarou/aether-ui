@@ -1,4 +1,4 @@
-// cvg/test_grammar_style.ae — regression test for grammar_style.ae.
+// aevg/test_grammar_style.ae — regression test for grammar_style.ae.
 //
 // Covers the four-way cascade (attrs → inline style → CSS class →
 // parent), push/pop semantics, and the convenience accessors.

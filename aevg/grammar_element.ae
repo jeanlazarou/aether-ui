@@ -1,6 +1,6 @@
-// cvg/grammar_element.ae — CvgElement wrapper (Tier C).
+// aevg/grammar_element.ae — AevgElement wrapper (Tier C).
 //
-// Port of cosyne/src/cvg/grammar-element.ts. CvgElement is the
+// Port of cosyne/src/cvg/grammar-element.ts. AevgElement is the
 // per-shape wrapper returned by element factory methods (s.circle,
 // s.rect, s.path, …). It holds:
 //
@@ -14,9 +14,9 @@
 //   - a tooltip + cursor preference
 //   - a bounds rectangle for hit-testing
 //   - visibility + destroyed flags
-//   - a back-pointer to the CvgContext that owns it
+//   - a back-pointer to the AevgContext that owns it
 //
-// Aether port shape: TS class → flat *CvgElement struct with all
+// Aether port shape: TS class → flat *AevgElement struct with all
 // fields, plus exported setter/getter free functions. The TS fluent
 // `return this` chaining loses its meaning in a no-classes language;
 // call sites become explicit sequences:
@@ -95,7 +95,7 @@ import std.string
 
 extern malloc(size: int) -> ptr
 
-// ─── CvgElement struct ───────────────────────────────────────────
+// ─── AevgElement struct ───────────────────────────────────────────
 //
 // 17 ptr/int fields. ptr fields default to null (malloc zeroes — no:
 // malloc doesn't zero; new_context's pattern is to set them
@@ -103,9 +103,9 @@ extern malloc(size: int) -> ptr
 // as four floats + a `has_bounds` flag (no nullable Bounds struct
 // across ptr boundary needed).
 
-struct CvgElement {
+struct AevgElement {
     underlying: ptr         // backend widget handle (Tier C, opaque)
-    context: ptr            // *CvgContext back-pointer
+    context: ptr            // *AevgContext back-pointer
 
     name_str: string
 
@@ -156,7 +156,7 @@ element_new(underlying: ptr) -> ptr {
     //   3 int fields (visible, destroyed, has_bounds) × 4 + pad = 24
     //   4 float (bounds_x/y/w/h) × 8 = 32
     // Sum ≈ 208 with padding. malloc(256) is the safe margin.
-    e = malloc(256) as *CvgElement
+    e = malloc(256) as *AevgElement
     e.underlying = underlying
     e.context = null
     e.name_str = ""
@@ -188,29 +188,29 @@ element_new(underlying: ptr) -> ptr {
 // ─── Identity / name ─────────────────────────────────────────────
 
 element_set_name(p: ptr, n: string) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.name_str = n
 }
 
 element_name(p: ptr) -> string {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.name_str
 }
 
 // ─── Underlying widget / context ────────────────────────────────
 
 element_underlying(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.underlying
 }
 
 element_set_context(p: ptr, ctx: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.context = ctx
 }
 
 element_context(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.context
 }
 
@@ -222,183 +222,183 @@ element_context(p: ptr) -> ptr {
 // via a `fn`-typed param auto-unboxes at that call site.
 
 element_on_click(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.click_handler = h
 }
 
 element_click_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.click_handler
 }
 
 element_on_hover(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.hover_handler = h
 }
 
 element_hover_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.hover_handler
 }
 
 element_on_drag(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.drag_handler = h
 }
 
 element_drag_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.drag_handler
 }
 
 element_on_drag_end(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.drag_end_handler = h
 }
 
 element_drag_end_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.drag_end_handler
 }
 
 element_on_scroll(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.scroll_handler = h
 }
 
 element_scroll_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.scroll_handler
 }
 
 element_on_double_click(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.double_click_handler = h
 }
 
 element_double_click_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.double_click_handler
 }
 
 element_on_right_click(p: ptr, h: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.right_click_handler = h
 }
 
 element_right_click_handler(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.right_click_handler
 }
 
 // ─── Tooltip / cursor / when / visibility / destroyed ────────────
 
 element_set_tooltip(p: ptr, t: string) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.tooltip_str = t
 }
 
 element_tooltip(p: ptr) -> string {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.tooltip_str
 }
 
 element_set_cursor(p: ptr, c: string) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.cursor_str = c
 }
 
 element_cursor(p: ptr) -> string {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.cursor_str
 }
 
 element_set_when(p: ptr, pred: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.when_predicate = pred
 }
 
 element_when_predicate(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.when_predicate
 }
 
 element_set_visible(p: ptr, v: int) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.visible = v
 }
 
 element_is_visible(p: ptr) -> int {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.visible
 }
 
 element_set_destroyed(p: ptr, d: int) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.destroyed = d
 }
 
 element_is_destroyed(p: ptr) -> int {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.destroyed
 }
 
 // ─── Reactive bindings ───────────────────────────────────────────
 
 element_bind_fill(p: ptr, f: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.fill_binding = f
 }
 
 element_fill_binding(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.fill_binding
 }
 
 element_bind_stroke(p: ptr, f: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.stroke_binding = f
 }
 
 element_stroke_binding(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.stroke_binding
 }
 
 element_bind_opacity(p: ptr, f: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.opacity_binding = f
 }
 
 element_opacity_binding(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.opacity_binding
 }
 
 element_bind_text(p: ptr, f: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.text_binding = f
 }
 
 element_text_binding(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.text_binding
 }
 
 element_bind_pos(p: ptr, f: ptr) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.pos_binding = f
 }
 
 element_pos_binding(p: ptr) -> ptr {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.pos_binding
 }
 
 // ─── Bounds + hit-test ───────────────────────────────────────────
 
 element_set_bounds(p: ptr, x: float, y: float, w: float, h: float) {
-    e = p as *CvgElement
+    e = p as *AevgElement
     e.has_bounds = 1
     e.bounds_x = x
     e.bounds_y = y
@@ -407,19 +407,19 @@ element_set_bounds(p: ptr, x: float, y: float, w: float, h: float) {
 }
 
 element_has_bounds(p: ptr) -> int {
-    e = p as *CvgElement
+    e = p as *AevgElement
     return e.has_bounds
 }
 
-element_bounds_x(p: ptr) -> float      { e = p as *CvgElement; return e.bounds_x }
-element_bounds_y(p: ptr) -> float      { e = p as *CvgElement; return e.bounds_y }
-element_bounds_width(p: ptr) -> float  { e = p as *CvgElement; return e.bounds_w }
-element_bounds_height(p: ptr) -> float { e = p as *CvgElement; return e.bounds_h }
+element_bounds_x(p: ptr) -> float      { e = p as *AevgElement; return e.bounds_x }
+element_bounds_y(p: ptr) -> float      { e = p as *AevgElement; return e.bounds_y }
+element_bounds_width(p: ptr) -> float  { e = p as *AevgElement; return e.bounds_w }
+element_bounds_height(p: ptr) -> float { e = p as *AevgElement; return e.bounds_h }
 
 // Hit-test: returns 1 if (px, py) is inside the element's bounds.
 // Mirrors TS: false if destroyed, invisible, or no bounds set.
 element_hit_test(p: ptr, px: float, py: float) -> int {
-    e = p as *CvgElement
+    e = p as *AevgElement
     if e.destroyed == 1 { return 0 }
     if e.visible == 0 { return 0 }
     if e.has_bounds == 0 { return 0 }

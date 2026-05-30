@@ -1,4 +1,4 @@
-// cvg/test_grammar_context.ae — regression test for grammar_context.ae.
+// aevg/test_grammar_context.ae — regression test for grammar_context.ae.
 //
 // Covers the core Tier-C context surface: ViewBoxMapping construction,
 // the five registries (gradient/filter/clipPath/node/cssRule), and the
