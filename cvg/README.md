@@ -20,6 +20,7 @@ are wired into `ci.sh` as **Phase 0** (runs even with no display).
 | bbox | `bbox.ts` (281 LoC) | `bbox.ae` | `test_bbox.ae` (60 asserts) | ✅ AABB walker for circle/ellipse/rect/line/polyline/polygon/path/text + group recursion. Stroke-width margin from `style="stroke-width:…"` or attribute. CSS length units (cm/mm/in/pt/pc/px). Transform cascade via `parse_transform` (also landed this batch). SKIP_TAGS (defs, filter, …) honoured. |
 | **— Tier B —** | | | | |
 | blur | `blur.ts` (101 LoC) | `blur.ae` | `test_blur.ae` (25 asserts, property-based) | ✅ Two-pass separable Gaussian on RGBA `std.bytes` buffers. First downstream consumer of v0.192's `bytes.copy_from_bytes` (σ=0 fall-through). Uses libm `lrint` extern for fast float→int (no `as int` cast available). |
+| rasterize | `rasterize.ts` (307 LoC) | `rasterize.ae` | `test_rasterize.ae` (33 asserts) | ✅ Software rasterizer. `parse_color_to_rgba` handles hex (3/6/8-char), `rgb()`/`rgba()`, and a 40-entry named-color table. `fill_rect`, `fill_circle` (distance test), and `fill_path` with full scanline rendering: tokenize → cubic Bezier flattening (recursive subdivision, 0.5px tolerance) → edge collection → per-scanline x-crossings → insertion-sort → nonzero/evenodd span fill. `apply_clip_mask` for alpha multiplication. |
 
 Also landed: **`parse_transform`** (deferred since the first commit; ~22
 extra assertions in `test_transform.ae`, total 52) + cross-module
@@ -33,8 +34,9 @@ boundaries, so a shared `types.ae` would be dead weight; each
 consumer declares the structs it uses locally and exposes accessor
 functions for cross-module reads.
 
-**Tier A complete.** **Tier B started**: `blur.ae` landed. Next:
-`rasterize.ae`, `grammar-utils.ae`.
+**Tier A complete.** **Tier B mostly done**: `blur.ae` + `rasterize.ae`
+landed. The rendering core is operational. Next: `grammar-utils.ae`
+(bridges into Tier C).
 
 ## Running a test by hand
 

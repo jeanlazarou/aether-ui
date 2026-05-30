@@ -1,0 +1,614 @@
+// cvg/rasterize.ae — software rasterizer for shapes → RGBA buffers.
+//
+// Port of cosyne/src/cvg/rasterize.ts (Tier B). Five public entry
+// points:
+//   parse_color_to_rgba(s) -> *RGBA   (hex / rgb()/rgba() / named)
+//   fill_rect_in_buffer(buf, w, h, x, y, w, h, r, g, b, a)
+//   fill_circle_in_buffer(buf, w, h, cx, cy, radius, r, g, b, a)
+//   fill_path_in_buffer(buf, w, h, path_str, off_x, off_y, r, g, b, a, fill_rule)
+//   apply_clip_mask(target, mask, pixel_count)
+//
+// Plus utility: build_named_color_map() (cached via single-call
+// lazy init via a top-level constant function — see notes below).
+//
+// Data model:
+//   *RGBA struct for return type from parse_color_to_rgba.
+//   Edges: *FloatArray packed as [x1,y1,x2,y2, x1,y1,x2,y2, ...].
+//   Crossings: *FloatArray packed as [x0,dir0, x1,dir1, ...].
+//   Both flat (no per-edge/crossing box) — same shape the rasterizer
+//   would emit in C, no allocation overhead per scanline.
+
+exports (
+    RGBA,
+    parse_color_to_rgba,
+    rgba_r, rgba_g, rgba_b, rgba_a,
+    fill_rect_in_buffer,
+    fill_circle_in_buffer,
+    fill_path_in_buffer,
+    apply_clip_mask,
+    FILL_NONZERO, FILL_EVENODD
+)
+
+import std.bytes
+import std.floatarr
+import std.string
+import std.math
+import std.regex
+
+extern malloc(size: int) -> ptr
+extern lrint(x: float) -> long
+
+// Fill-rule sentinels (matches the TS string literals).
+FILL_NONZERO() -> int { return 0 }
+FILL_EVENODD() -> int { return 1 }
+
+// ─── RGBA struct + accessors ─────────────────────────────────────
+
+struct RGBA {
+    r: int
+    g: int
+    b: int
+    a: int
+}
+
+mk_rgba(r: int, g: int, b: int, a: int) -> *RGBA {
+    p = malloc(32) as *RGBA
+    p.r = r
+    p.g = g
+    p.b = b
+    p.a = a
+    return p
+}
+
+rgba_r(p: ptr) -> int { v = p as *RGBA; return v.r }
+rgba_g(p: ptr) -> int { v = p as *RGBA; return v.g }
+rgba_b(p: ptr) -> int { v = p as *RGBA; return v.b }
+rgba_a(p: ptr) -> int { v = p as *RGBA; return v.a }
+
+// ─── Hex byte parse helper ───────────────────────────────────────
+//
+// Read a 2-char hex byte from `hex` at offset `i`. Returns 0 on
+// parse failure (consistent with TS parseInt semantics for the
+// rasterizer's well-formed-input contract).
+hex2(hex: string, i: int) -> int {
+    pair = string.substring(hex, i, i + 2)
+    v, e = string.to_int_radix(pair, 16)
+    if e != "" { return 0 }
+    return v
+}
+
+// ─── Named colour lookup ─────────────────────────────────────────
+//
+// 40+ entries. Long if-chain because Aether has no module-level
+// mutable state for memoizing a map and no string→table dispatch.
+// One comparison per name; the whole chain runs once per element
+// rasterized, not per pixel.
+
+lookup_named(c: string) -> *RGBA {
+    if string.equals(c, "black")     == 1 { return mk_rgba(0, 0, 0, 255) }
+    if string.equals(c, "white")     == 1 { return mk_rgba(255, 255, 255, 255) }
+    if string.equals(c, "red")       == 1 { return mk_rgba(255, 0, 0, 255) }
+    if string.equals(c, "green")     == 1 { return mk_rgba(0, 128, 0, 255) }
+    if string.equals(c, "blue")      == 1 { return mk_rgba(0, 0, 255, 255) }
+    if string.equals(c, "yellow")    == 1 { return mk_rgba(255, 255, 0, 255) }
+    if string.equals(c, "cyan")      == 1 { return mk_rgba(0, 255, 255, 255) }
+    if string.equals(c, "magenta")   == 1 { return mk_rgba(255, 0, 255, 255) }
+    if string.equals(c, "orange")    == 1 { return mk_rgba(255, 165, 0, 255) }
+    if string.equals(c, "gray")      == 1 { return mk_rgba(128, 128, 128, 255) }
+    if string.equals(c, "grey")      == 1 { return mk_rgba(128, 128, 128, 255) }
+    if string.equals(c, "silver")    == 1 { return mk_rgba(192, 192, 192, 255) }
+    if string.equals(c, "maroon")    == 1 { return mk_rgba(128, 0, 0, 255) }
+    if string.equals(c, "olive")     == 1 { return mk_rgba(128, 128, 0, 255) }
+    if string.equals(c, "lime")      == 1 { return mk_rgba(0, 255, 0, 255) }
+    if string.equals(c, "aqua")      == 1 { return mk_rgba(0, 255, 255, 255) }
+    if string.equals(c, "teal")      == 1 { return mk_rgba(0, 128, 128, 255) }
+    if string.equals(c, "navy")      == 1 { return mk_rgba(0, 0, 128, 255) }
+    if string.equals(c, "fuchsia")   == 1 { return mk_rgba(255, 0, 255, 255) }
+    if string.equals(c, "purple")    == 1 { return mk_rgba(128, 0, 128, 255) }
+    if string.equals(c, "darkred")   == 1 { return mk_rgba(139, 0, 0, 255) }
+    if string.equals(c, "darkgreen") == 1 { return mk_rgba(0, 100, 0, 255) }
+    if string.equals(c, "darkblue")  == 1 { return mk_rgba(0, 0, 139, 255) }
+    if string.equals(c, "lightgray") == 1 { return mk_rgba(211, 211, 211, 255) }
+    if string.equals(c, "lightgrey") == 1 { return mk_rgba(211, 211, 211, 255) }
+    if string.equals(c, "dimgray")   == 1 { return mk_rgba(105, 105, 105, 255) }
+    if string.equals(c, "dimgrey")   == 1 { return mk_rgba(105, 105, 105, 255) }
+    if string.equals(c, "coral")     == 1 { return mk_rgba(255, 127, 80, 255) }
+    if string.equals(c, "crimson")   == 1 { return mk_rgba(220, 20, 60, 255) }
+    if string.equals(c, "gold")      == 1 { return mk_rgba(255, 215, 0, 255) }
+    if string.equals(c, "indigo")    == 1 { return mk_rgba(75, 0, 130, 255) }
+    if string.equals(c, "khaki")     == 1 { return mk_rgba(240, 230, 140, 255) }
+    if string.equals(c, "lavender")  == 1 { return mk_rgba(230, 230, 250, 255) }
+    if string.equals(c, "pink")      == 1 { return mk_rgba(255, 192, 203, 255) }
+    if string.equals(c, "plum")      == 1 { return mk_rgba(221, 160, 221, 255) }
+    if string.equals(c, "salmon")    == 1 { return mk_rgba(250, 128, 114, 255) }
+    if string.equals(c, "sienna")    == 1 { return mk_rgba(160, 82, 45, 255) }
+    if string.equals(c, "tan")       == 1 { return mk_rgba(210, 180, 140, 255) }
+    if string.equals(c, "tomato")    == 1 { return mk_rgba(255, 99, 71, 255) }
+    if string.equals(c, "turquoise") == 1 { return mk_rgba(64, 224, 208, 255) }
+    if string.equals(c, "violet")    == 1 { return mk_rgba(238, 130, 238, 255) }
+    if string.equals(c, "wheat")     == 1 { return mk_rgba(245, 222, 179, 255) }
+    return null
+}
+
+// ─── parse_color_to_rgba ─────────────────────────────────────────
+
+parse_color_to_rgba(css_color: string) -> *RGBA {
+    c = string.to_lower(string.trim(css_color))
+
+    // Hex: #rgb, #rrggbb, #rrggbbaa
+    if string.starts_with(c, "#") == 1 {
+        hex = string.substring(c, 1, string.length(c))
+        n = string.length(hex)
+        if n == 3 {
+            // Expand each char to two.
+            h0 = string.substring(hex, 0, 1)
+            h1 = string.substring(hex, 1, 2)
+            h2 = string.substring(hex, 2, 3)
+            r_hex = string.concat(h0, h0)
+            g_hex = string.concat(h1, h1)
+            b_hex = string.concat(h2, h2)
+            r, _ = string.to_int_radix(r_hex, 16)
+            g, _ = string.to_int_radix(g_hex, 16)
+            b, _ = string.to_int_radix(b_hex, 16)
+            return mk_rgba(r, g, b, 255)
+        }
+        if n == 6 {
+            return mk_rgba(hex2(hex, 0), hex2(hex, 2), hex2(hex, 4), 255)
+        }
+        if n == 8 {
+            return mk_rgba(hex2(hex, 0), hex2(hex, 2), hex2(hex, 4), hex2(hex, 6))
+        }
+    }
+
+    // rgb(r,g,b) or rgba(r,g,b,a). Use regex.find_all to extract the
+    // numeric components (1..4 floats).
+    if string.starts_with(c, "rgb") == 1 {
+        re, e = regex.compile("[+-]?(?:\\d+\\.?\\d*|\\.\\d+)")
+        if e == "" {
+            fa, fe = regex.find_all(re, c)
+            if fe == "" {
+                ncomp = regex.find_all_count(fa)
+                if ncomp >= 3 {
+                    s0 = regex.find_all_start(fa, 0); e0 = regex.find_all_end(fa, 0)
+                    s1 = regex.find_all_start(fa, 1); e1 = regex.find_all_end(fa, 1)
+                    s2 = regex.find_all_start(fa, 2); e2 = regex.find_all_end(fa, 2)
+                    r_v, _ = string.to_double(string.substring(c, s0, e0))
+                    g_v, _ = string.to_double(string.substring(c, s1, e1))
+                    b_v, _ = string.to_double(string.substring(c, s2, e2))
+                    a_v = 1.0
+                    if ncomp >= 4 {
+                        s3 = regex.find_all_start(fa, 3); e3 = regex.find_all_end(fa, 3)
+                        a_v, _ = string.to_double(string.substring(c, s3, e3))
+                    }
+                    regex.find_all_free(fa)
+                    regex.free(re)
+                    return mk_rgba(lrint(r_v), lrint(g_v), lrint(b_v), lrint(a_v * 255.0))
+                }
+                regex.find_all_free(fa)
+            }
+            regex.free(re)
+        }
+    }
+
+    // Named color
+    named = lookup_named(c)
+    if named != null { return named }
+
+    // Fallback: black, opaque.
+    return mk_rgba(0, 0, 0, 255)
+}
+
+// ─── Pixel write helper ──────────────────────────────────────────
+
+write_px(buf: ptr, w: int, x: int, y: int, r: int, g: int, b: int, a: int) {
+    idx = (y * w + x) * 4
+    bytes.set(buf, idx,     r)
+    bytes.set(buf, idx + 1, g)
+    bytes.set(buf, idx + 2, b)
+    bytes.set(buf, idx + 3, a)
+}
+
+clamp_int(x: int, lo: int, hi: int) -> int {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+// Round float to int (libm lrint, then narrow long → int).
+fround(f: float) -> int {
+    v = lrint(f)
+    return math.clamp_int(v, 0 - 1000000000, 1000000000)
+}
+
+// ─── fill_rect_in_buffer ─────────────────────────────────────────
+
+fill_rect_in_buffer(buf: ptr, buf_w: int, buf_h: int,
+                    x: float, y: float, w: float, h: float,
+                    r: int, g: int, b: int, a: int) {
+    x0 = clamp_int(fround(x), 0, buf_w)
+    y0 = clamp_int(fround(y), 0, buf_h)
+    x1 = clamp_int(fround(x + w), 0, buf_w)
+    y1 = clamp_int(fround(y + h), 0, buf_h)
+    py = y0
+    while py < y1 {
+        px = x0
+        while px < x1 {
+            write_px(buf, buf_w, px, py, r, g, b, a)
+            px = px + 1
+        }
+        py = py + 1
+    }
+}
+
+// ─── fill_circle_in_buffer ───────────────────────────────────────
+
+fill_circle_in_buffer(buf: ptr, buf_w: int, buf_h: int,
+                      cx: float, cy: float, radius: float,
+                      r: int, g: int, b: int, a: int) {
+    // Bounding box: floor(cx-rad-1) .. ceil(cx+rad+1)
+    x0 = clamp_int(fround(math.floor(cx - radius - 1.0)), 0, buf_w)
+    y0 = clamp_int(fround(math.floor(cy - radius - 1.0)), 0, buf_h)
+    x1 = clamp_int(fround(math.ceil(cx + radius + 1.0)),  0, buf_w)
+    y1 = clamp_int(fround(math.ceil(cy + radius + 1.0)),  0, buf_h)
+    r2 = radius * radius
+    py = y0
+    while py < y1 {
+        px = x0
+        while px < x1 {
+            dx = px + 0.5 - cx
+            dy = py + 0.5 - cy
+            d2 = dx * dx + dy * dy
+            if d2 <= r2 {
+                write_px(buf, buf_w, px, py, r, g, b, a)
+            }
+            px = px + 1
+        }
+        py = py + 1
+    }
+}
+
+// ─── Cubic Bezier flattener ──────────────────────────────────────
+//
+// Appends line-segment edges to `edges` (a *FloatArray of packed
+// [x1,y1,x2,y2, …]). Returns the new edges-count (number of
+// 4-tuples). Recursive subdivision with a 0.5px tolerance and
+// 8-level depth cap.
+//
+// Aether's floatarr is fixed-size on creation, so the "edges"
+// array can't grow dynamically. We instead pass a *FloatArray
+// pre-sized to a generous upper bound (paths in real SVGs have a
+// few thousand edges max) plus the current write index passed by
+// reference via a small *IntCell struct.
+
+struct IntCell { v: int }
+
+mk_cell(v: int) -> *IntCell {
+    c = malloc(8) as *IntCell
+    c.v = v
+    return c
+}
+
+EDGES_CAP() -> int { return 16384 }   // 16k segments — generous for any practical path
+
+append_edge(edges: ptr, count: *IntCell, x1: float, y1: float, x2: float, y2: float) {
+    i = count.v
+    if i + 4 > floatarr.size(edges) { return }   // silently drop on overflow
+    floatarr.set_unchecked(edges, i,     x1)
+    floatarr.set_unchecked(edges, i + 1, y1)
+    floatarr.set_unchecked(edges, i + 2, x2)
+    floatarr.set_unchecked(edges, i + 3, y2)
+    count.v = i + 4
+}
+
+flatten_cubic(x0: float, y0: float,
+              cp1x: float, cp1y: float,
+              cp2x: float, cp2y: float,
+              x3: float, y3: float,
+              edges: ptr, count: *IntCell, depth: int) {
+    tolerance = 0.5
+    if depth < 8 {
+        dx = x3 - x0
+        dy = y3 - y0
+        d2 = dx * dx + dy * dy
+        if d2 > 0.001 {
+            inv_len = 1.0 / math.sqrt(d2)
+            d1 = math.abs_float((cp1x - x0) * dy - (cp1y - y0) * dx) * inv_len
+            d2v = math.abs_float((cp2x - x0) * dy - (cp2y - y0) * dx) * inv_len
+            if d1 > tolerance {
+                subdivide(x0, y0, cp1x, cp1y, cp2x, cp2y, x3, y3, edges, count, depth)
+                return
+            }
+            if d2v > tolerance {
+                subdivide(x0, y0, cp1x, cp1y, cp2x, cp2y, x3, y3, edges, count, depth)
+                return
+            }
+        }
+    }
+    append_edge(edges, count, x0, y0, x3, y3)
+}
+
+subdivide(x0: float, y0: float,
+          cp1x: float, cp1y: float,
+          cp2x: float, cp2y: float,
+          x3: float, y3: float,
+          edges: ptr, count: *IntCell, depth: int) {
+    mx01 = (x0 + cp1x) / 2.0
+    my01 = (y0 + cp1y) / 2.0
+    mx12 = (cp1x + cp2x) / 2.0
+    my12 = (cp1y + cp2y) / 2.0
+    mx23 = (cp2x + x3) / 2.0
+    my23 = (cp2y + y3) / 2.0
+    mx012 = (mx01 + mx12) / 2.0
+    my012 = (my01 + my12) / 2.0
+    mx123 = (mx12 + mx23) / 2.0
+    my123 = (my12 + my23) / 2.0
+    mid_x = (mx012 + mx123) / 2.0
+    mid_y = (my012 + my123) / 2.0
+    flatten_cubic(x0, y0, mx01, my01, mx012, my012, mid_x, mid_y, edges, count, depth + 1)
+    flatten_cubic(mid_x, mid_y, mx123, my123, mx23, my23, x3, y3, edges, count, depth + 1)
+}
+
+// ─── path_to_edges ───────────────────────────────────────────────
+//
+// Parses an already-normalized path string (M / L / C / Z only,
+// absolute) into a packed-edges *FloatArray. Returns the edges
+// buffer; caller passes it to scanline rendering, then frees.
+
+path_to_edges(path_str: string, off_x: float, off_y: float, count_out: *IntCell) -> ptr {
+    edges, _ = floatarr.new(EDGES_CAP())
+    count = mk_cell(0)
+
+    // Tokenize: command letters [MLCZ] + their numeric args until next letter.
+    re, e = regex.compile("([MLCZ])\\s*([-\\d\\s.eE+]*)")
+    if e != "" {
+        count_out.v = 0
+        return edges
+    }
+    fa, fe = regex.find_all(re, path_str)
+    if fe != "" {
+        regex.free(re)
+        count_out.v = 0
+        return edges
+    }
+
+    cx = 0.0; cy = 0.0
+    sx = 0.0; sy = 0.0
+    n_matches = regex.find_all_count(fa)
+
+    // Sub-regex for numbers inside the args group.
+    num_re, _ = regex.compile("[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?")
+
+    i = 0
+    while i < n_matches {
+        m_start = regex.find_all_start(fa, i)
+        m_end = regex.find_all_end(fa, i)
+        match_str = string.substring(path_str, m_start, m_end)
+        cmd_char = string_char_at(match_str, 0)
+
+        if cmd_char == 90 {   // 'Z'
+            if math.abs_float(cx - sx) > 0.01 {
+                append_edge(edges, count, cx, cy, sx, sy)
+            } else {
+                if math.abs_float(cy - sy) > 0.01 {
+                    append_edge(edges, count, cx, cy, sx, sy)
+                }
+            }
+            cx = sx; cy = sy
+            i = i + 1
+            continue
+        }
+
+        // Parse number args from the rest of match_str (skip cmd char).
+        args_str = string.substring(match_str, 1, string.length(match_str))
+        num_fa, _ = regex.find_all(num_re, args_str)
+        n_nums = regex.find_all_count(num_fa)
+
+        if cmd_char == 77 {   // 'M'
+            if n_nums >= 2 {
+                ns0 = regex.find_all_start(num_fa, 0); ne0 = regex.find_all_end(num_fa, 0)
+                ns1 = regex.find_all_start(num_fa, 1); ne1 = regex.find_all_end(num_fa, 1)
+                v0, _ = string.to_double(string.substring(args_str, ns0, ne0))
+                v1, _ = string.to_double(string.substring(args_str, ns1, ne1))
+                cx = v0 + off_x; cy = v1 + off_y
+                sx = cx; sy = cy
+            }
+        }
+        if cmd_char == 76 {   // 'L'
+            if n_nums >= 2 {
+                ns0 = regex.find_all_start(num_fa, 0); ne0 = regex.find_all_end(num_fa, 0)
+                ns1 = regex.find_all_start(num_fa, 1); ne1 = regex.find_all_end(num_fa, 1)
+                v0, _ = string.to_double(string.substring(args_str, ns0, ne0))
+                v1, _ = string.to_double(string.substring(args_str, ns1, ne1))
+                ex = v0 + off_x; ey = v1 + off_y
+                append_edge(edges, count, cx, cy, ex, ey)
+                cx = ex; cy = ey
+            }
+        }
+        if cmd_char == 67 {   // 'C'
+            if n_nums >= 6 {
+                read_at(args_str, num_fa, 0)
+                v0, _ = string.to_double(read_at(args_str, num_fa, 0))
+                v1, _ = string.to_double(read_at(args_str, num_fa, 1))
+                v2, _ = string.to_double(read_at(args_str, num_fa, 2))
+                v3, _ = string.to_double(read_at(args_str, num_fa, 3))
+                v4, _ = string.to_double(read_at(args_str, num_fa, 4))
+                v5, _ = string.to_double(read_at(args_str, num_fa, 5))
+                cp1x = v0 + off_x; cp1y = v1 + off_y
+                cp2x = v2 + off_x; cp2y = v3 + off_y
+                x3   = v4 + off_x; y3   = v5 + off_y
+                flatten_cubic(cx, cy, cp1x, cp1y, cp2x, cp2y, x3, y3, edges, count, 0)
+                cx = x3; cy = y3
+            }
+        }
+
+        regex.find_all_free(num_fa)
+        i = i + 1
+    }
+
+    regex.free(num_re)
+    regex.find_all_free(fa)
+    regex.free(re)
+    count_out.v = count.v
+    return edges
+}
+
+// Helper: read the i'th number match from a find_all over args_str.
+read_at(args_str: string, num_fa: ptr, i: int) -> string {
+    s = regex.find_all_start(num_fa, i)
+    e = regex.find_all_end(num_fa, i)
+    return string.substring(args_str, s, e)
+}
+
+// ─── Scanline render: scan x-crossings, sort, fill spans ─────────
+//
+// crossings: *FloatArray of [x, dir, x, dir, ...]; n is the number
+// of crossings (pairs). Insertion-sort by x in-place.
+
+sort_crossings(cr: ptr, n: int) {
+    i = 1
+    while i < n {
+        kx = floatarr.get_unchecked(cr, i * 2)
+        kd = floatarr.get_unchecked(cr, i * 2 + 1)
+        j = i - 1
+        while j >= 0 {
+            jx = floatarr.get_unchecked(cr, j * 2)
+            if jx <= kx { break }
+            floatarr.set_unchecked(cr, (j + 1) * 2,     jx)
+            floatarr.set_unchecked(cr, (j + 1) * 2 + 1, floatarr.get_unchecked(cr, j * 2 + 1))
+            j = j - 1
+        }
+        floatarr.set_unchecked(cr, (j + 1) * 2,     kx)
+        floatarr.set_unchecked(cr, (j + 1) * 2 + 1, kd)
+        i = i + 1
+    }
+}
+
+CROSSINGS_CAP() -> int { return 1024 }   // up to 512 crossings per scanline
+
+// ─── fill_path_in_buffer ─────────────────────────────────────────
+
+fill_path_in_buffer(buf: ptr, buf_w: int, buf_h: int,
+                    path_str: string, off_x: float, off_y: float,
+                    r: int, g: int, b: int, a: int,
+                    fill_rule: int) {
+    count_out = mk_cell(0)
+    edges = path_to_edges(path_str, off_x, off_y, count_out)
+    n_floats = count_out.v
+    if n_floats == 0 {
+        floatarr.free(edges)
+        return
+    }
+    n_edges = n_floats / 4
+
+    cr, _ = floatarr.new(CROSSINGS_CAP())
+
+    y = 0
+    while y < buf_h {
+        scan_y = y + 0.5
+        n_cross = 0
+
+        // Find crossings against every edge.
+        e_idx = 0
+        while e_idx < n_edges {
+            base = e_idx * 4
+            x1 = floatarr.get_unchecked(edges, base)
+            y1 = floatarr.get_unchecked(edges, base + 1)
+            x2 = floatarr.get_unchecked(edges, base + 2)
+            y2 = floatarr.get_unchecked(edges, base + 3)
+            // Either (y1 <= scanY < y2) OR (y2 <= scanY < y1).
+            crosses = 0
+            if y1 <= scan_y {
+                if y2 > scan_y { crosses = 1 }
+            }
+            if y2 <= scan_y {
+                if y1 > scan_y { crosses = 1 }
+            }
+            if crosses == 1 {
+                t = (scan_y - y1) / (y2 - y1)
+                x = x1 + t * (x2 - x1)
+                dir = 1.0
+                if y2 <= y1 { dir = 0.0 - 1.0 }
+                if n_cross * 2 + 1 < floatarr.size(cr) {
+                    floatarr.set_unchecked(cr, n_cross * 2,     x)
+                    floatarr.set_unchecked(cr, n_cross * 2 + 1, dir)
+                    n_cross = n_cross + 1
+                }
+            }
+            e_idx = e_idx + 1
+        }
+
+        if n_cross == 0 { y = y + 1; continue }
+        sort_crossings(cr, n_cross)
+
+        if fill_rule == FILL_EVENODD() {
+            i = 0
+            while i + 1 < n_cross {
+                x0i = math.clamp_int(fround(floatarr.get_unchecked(cr, i * 2)), 0, buf_w)
+                x1i = math.clamp_int(fround(floatarr.get_unchecked(cr, (i + 1) * 2)), 0, buf_w)
+                px = x0i
+                while px < x1i {
+                    write_px(buf, buf_w, px, y, r, g, b, a)
+                    px = px + 1
+                }
+                i = i + 2
+            }
+        } else {
+            // Nonzero winding.
+            winding = 0
+            span_start = 0.0
+            in_span = 0
+            i = 0
+            while i < n_cross {
+                cx = floatarr.get_unchecked(cr, i * 2)
+                cdir = floatarr.get_unchecked(cr, i * 2 + 1)
+                prev_w = winding
+                if cdir > 0.0 { winding = winding + 1 }
+                if cdir < 0.0 { winding = winding - 1 }
+                if prev_w == 0 {
+                    if winding != 0 {
+                        span_start = cx
+                        in_span = 1
+                    }
+                } else {
+                    if winding == 0 {
+                        if in_span == 1 {
+                            x0i = math.clamp_int(fround(span_start), 0, buf_w)
+                            x1i = math.clamp_int(fround(cx), 0, buf_w)
+                            px = x0i
+                            while px < x1i {
+                                write_px(buf, buf_w, px, y, r, g, b, a)
+                                px = px + 1
+                            }
+                            in_span = 0
+                        }
+                    }
+                }
+                i = i + 1
+            }
+        }
+
+        y = y + 1
+    }
+
+    floatarr.free(cr)
+    floatarr.free(edges)
+}
+
+// ─── apply_clip_mask ─────────────────────────────────────────────
+//
+// target.alpha[i] *= mask.alpha[i] / 255 for each of `pixel_count`
+// pixels. Both buffers RGBA, 4 bytes per pixel.
+
+apply_clip_mask(target: ptr, mask: ptr, pixel_count: int) {
+    i = 0
+    while i < pixel_count {
+        ti = i * 4 + 3
+        ta = bytes.get(target, ti)
+        ma = bytes.get(mask, ti)
+        // (ta * ma) / 255, rounded.
+        product = ta * ma
+        new_alpha = lrint(product / 255.0)
+        bytes.set(target, ti, new_alpha)
+        i = i + 1
+    }
+}
