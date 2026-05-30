@@ -1,0 +1,131 @@
+// aevg/test_loader.ae — regression test for loader.ae.
+//
+// End-to-end: feed an SVG string in, walk the tree through the
+// shape factories, inspect the backend's recorded calls.
+//
+// This is the integration test the whole port has been building
+// toward — a real <svg> string in, a sequence of recorded backend
+// calls out, with positions and styles preserved per SVG spec.
+
+import loader
+import aevg_backend
+import grammar_context
+import std.string
+import std.math
+
+extern exit(code: int)
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_opt_near(label: string, b: ptr, i: int, key: string, want: float) {
+    s = aevg_backend.backend_opt_get(b, i, key)
+    got, e = string.to_double(s)
+    if e != "" { println("  FAIL: ${label}: parse '${s}' → ${e}"); exit(1) }
+    if math.abs_float(got - want) < 0.01 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_opt_str(label: string, b: ptr, i: int, key: string, want: string) {
+    got = aevg_backend.backend_opt_get(b, i, key)
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+main() {
+    println("=== test_loader ===")
+
+    // ─── Minimal SVG: single circle ──────────────────────────────
+    bk1 = aevg_backend.backend_new()
+    svg1 = "<svg viewBox='0 0 100 100' width='100' height='100'><circle cx='50' cy='50' r='25' fill='red'/></svg>"
+    _ctx1 = loader.load_svg(bk1, svg1, 100.0, 100.0)
+    assert_eq_int("minimal: 1 backend call", aevg_backend.backend_call_count(bk1), 1)
+    assert_eq_str("minimal: kind=circle",    aevg_backend.backend_kind(bk1, 0), "circle")
+    assert_opt_near("minimal: circle.x",     bk1, 0, "x",  25.0)
+    assert_opt_near("minimal: circle.x2",    bk1, 0, "x2", 75.0)
+    assert_opt_str("minimal: fillColor",      bk1, 0, "fillColor", "red")
+
+    // ─── Mix: rect + circle + line ───────────────────────────────
+    bk2 = aevg_backend.backend_new()
+    svg2 = "<svg viewBox='0 0 100 100' width='100' height='100'><rect x='10' y='10' width='30' height='30' fill='blue'/><circle cx='60' cy='60' r='20' fill='green'/><line x1='0' y1='0' x2='100' y2='100' stroke='black'/></svg>"
+    _ctx2 = loader.load_svg(bk2, svg2, 100.0, 100.0)
+    assert_eq_int("mix: 3 calls",       aevg_backend.backend_call_count(bk2), 3)
+    assert_eq_str("mix: call 0 = rect",   aevg_backend.backend_kind(bk2, 0), "rectangle")
+    assert_eq_str("mix: call 1 = circle", aevg_backend.backend_kind(bk2, 1), "circle")
+    assert_eq_str("mix: call 2 = line",   aevg_backend.backend_kind(bk2, 2), "line")
+    assert_opt_str("mix: rect fill",  bk2, 0, "fillColor",   "blue")
+    assert_opt_str("mix: circle fill", bk2, 1, "fillColor",   "green")
+    assert_opt_str("mix: line stroke", bk2, 2, "strokeColor", "black")
+
+    // ─── Grouped: <g transform> with two children ────────────────
+    // The translate(10 20) should shift both children's coords.
+    bk3 = aevg_backend.backend_new()
+    svg3 = "<svg viewBox='0 0 100 100' width='100' height='100'><g transform='translate(10 20)'><rect x='0' y='0' width='20' height='20' fill='red'/><circle cx='30' cy='30' r='5' fill='blue'/></g></svg>"
+    _ctx3 = loader.load_svg(bk3, svg3, 100.0, 100.0)
+    assert_eq_int("group: 2 calls", aevg_backend.backend_call_count(bk3), 2)
+    // Rect: x=0, y=0 + translate(10, 20) → bbox (10, 20)..(30, 40)
+    assert_opt_near("group rect x",  bk3, 0, "x",  10.0)
+    assert_opt_near("group rect y",  bk3, 0, "y",  20.0)
+    assert_opt_near("group rect x2", bk3, 0, "x2", 30.0)
+    assert_opt_near("group rect y2", bk3, 0, "y2", 40.0)
+    // Circle: cx=30, cy=30, r=5 + translate(10, 20) → center (40, 50)
+    assert_opt_near("group circle x",  bk3, 1, "x",  35.0)
+    assert_opt_near("group circle x2", bk3, 1, "x2", 45.0)
+    assert_opt_near("group circle y",  bk3, 1, "y",  45.0)
+    assert_opt_near("group circle y2", bk3, 1, "y2", 55.0)
+
+    // ─── Polyline → path emission ────────────────────────────────
+    bk4 = aevg_backend.backend_new()
+    svg4 = "<svg viewBox='0 0 100 100' width='100' height='100'><polyline points='0,0 50,50 100,0' stroke='blue'/></svg>"
+    _ctx4 = loader.load_svg(bk4, svg4, 100.0, 100.0)
+    assert_eq_int("polyline: 1 call",     aevg_backend.backend_call_count(bk4), 1)
+    assert_eq_str("polyline: kind=path",  aevg_backend.backend_kind(bk4, 0), "path")
+    assert_opt_str("polyline: d",          bk4, 0, "d", "M 0 0 L 50 50 L 100 0")
+
+    // ─── Polygon: closes with Z ──────────────────────────────────
+    bk5 = aevg_backend.backend_new()
+    svg5 = "<svg viewBox='0 0 100 100' width='100' height='100'><polygon points='0 0 100 0 50 86.6' fill='lime'/></svg>"
+    _ctx5 = loader.load_svg(bk5, svg5, 100.0, 100.0)
+    assert_eq_str("polygon: d closes with Z",
+                   aevg_backend.backend_opt_get(bk5, 0, "d"),
+                   "M 0 0 L 100 0 L 50 86.6 Z")
+
+    // ─── Path: passes the d-string through unchanged ─────────────
+    bk6 = aevg_backend.backend_new()
+    svg6 = "<svg viewBox='0 0 100 100' width='100' height='100'><path d='M 10 10 L 90 10 L 50 90 Z' fill='yellow'/></svg>"
+    _ctx6 = loader.load_svg(bk6, svg6, 100.0, 100.0)
+    assert_eq_str("path: d preserved",
+                   aevg_backend.backend_opt_get(bk6, 0, "d"),
+                   "M 10 10 L 90 10 L 50 90 Z")
+
+    // ─── Unsupported elements (text, use, defs) skipped silently ─
+    // Ellipse + text are NOT yet implemented; the loader skips them
+    // without crashing and walks their siblings.
+    bk7 = aevg_backend.backend_new()
+    svg7 = "<svg viewBox='0 0 100 100' width='100' height='100'><defs><linearGradient id='g1'/></defs><text x='10' y='20'>hi</text><ellipse cx='50' cy='50' rx='20' ry='10'/><rect x='0' y='0' width='10' height='10' fill='black'/></svg>"
+    _ctx7 = loader.load_svg(bk7, svg7, 100.0, 100.0)
+    // Only the rect should produce a backend call.
+    assert_eq_int("graceful skip: 1 call (rect only)",
+                   aevg_backend.backend_call_count(bk7), 1)
+    assert_eq_str("graceful skip: kind=rect",
+                   aevg_backend.backend_kind(bk7, 0), "rectangle")
+
+    // ─── Nested group → deep transform composition ───────────────
+    bk8 = aevg_backend.backend_new()
+    svg8 = "<svg viewBox='0 0 100 100' width='100' height='100'><g transform='translate(5 5)'><g transform='scale(2)'><rect x='0' y='0' width='10' height='10' fill='red'/></g></g></svg>"
+    _ctx8 = loader.load_svg(bk8, svg8, 100.0, 100.0)
+    // translate(5,5) ∘ scale(2): rect (0,0)..(10,10) → scale → (0,0)..(20,20) → translate → (5,5)..(25,25)
+    assert_opt_near("nested g: rect x",  bk8, 0, "x",  5.0)
+    assert_opt_near("nested g: rect y",  bk8, 0, "y",  5.0)
+    assert_opt_near("nested g: rect x2", bk8, 0, "x2", 25.0)
+    assert_opt_near("nested g: rect y2", bk8, 0, "y2", 25.0)
+
+    println("=== test_loader passed ===")
+}

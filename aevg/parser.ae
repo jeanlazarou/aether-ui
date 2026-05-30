@@ -28,7 +28,7 @@
 
 exports (
     parse_svg,
-    node_tag, node_text, node_attr, node_has_attr,
+    node_tag, node_text, node_attr, node_has_attr, node_attrs,
     node_child_count, node_child_at
 )
 
@@ -80,6 +80,15 @@ node_attr(h: ptr, name: string) -> string {
 node_has_attr(h: ptr, name: string) -> int {
     n = h as *SvgNode
     return map.has(n.attrs, name)
+}
+
+// Hand back the SvgNode's full attribute map (std.map string→string).
+// The map is owned by the SvgNode; don't free it independently. This
+// is the bridge between parsed nodes and the shape factories, which
+// take a `*std.map` attrs handle as their per-shape input.
+node_attrs(h: ptr) -> ptr {
+    n = h as *SvgNode
+    return n.attrs
 }
 
 node_child_count(h: ptr) -> int {

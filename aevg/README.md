@@ -34,6 +34,8 @@ The platform-coupling layer lives behind `aevg_backend.ae`'s interface
 | grammar_utils | (additions this commit) | `grammar_utils.ae` | (existing test still 49) | ✅ Adds `resolve_fill_color`, `resolve_stroke_color`, `effective_alpha`, `effective_stroke_alpha`, `style_num_default`. `url(#id)` gradient lookup deferred (needs grammar_defs); falls back to trailing color or "black". |
 | grammar_factories | `grammar-factories.ts` (223 LoC, kernel subset) | `grammar_factories.ae` | `test_grammar_factories.ae` (31 asserts) | ✅ `create_aevg_context(opts)` — the meat: parses viewBox, computes the two-step `viewBox → viewport → canvas` affine via `preserveAspectRatio` (xMidYMid meet default; Min/Max alignment; meet/slice scaling), constructs a `*AevgContext` ready for shape calls. `aevg(backend, opts, body)` convenience wraps it. `AevgOptions` struct with width/height/viewBox/PAR setters. Letterbox/pillarbox math verified end-to-end: vb 100×50 + canvas 200×200 + meet → scale 2, offset_y 50. The TS `CvgBuilder` class doesn't port (no classes); callers use `shape_*` factories directly. `app.clip`/`app.canvasStack` widget machinery is real-backend territory (Phase 1). |
 | grammar_animations | `grammar-context.ts` (animation sub-system) | `grammar_animations.ae` | `test_grammar_animations.ae` (19 asserts) | ✅ Animation manager separated from grammar_context. `add_animation(mgr, el, dur, delay, loop, yoyo, now) callback \|t: float\| { … }` registers; `tick_animations(mgr, now_ms)` drives one frame. Synthetic-clock-driven tests (no sleep). Closure receives **raw t** in [0,1] and applies its own easing — workaround for an Aether codegen bug where invoking a `fn`-typed param that returns float through closure-unbox emits an `int(*)` cast that mangles the return. Filed as follow-up to `aether/fn_ptr_coercion.md`. Real-frame tick via `os.now_monotonic_ms()` + backend timer is Phase 1. |
+| **— Tier D —** | | | | |
+| loader | `loader.ts` (178 LoC) | `loader.ae` | `test_loader.ae` (32 asserts) | ✅ End-to-end SVG → backend dispatch. Takes an SVG string, parses, walks the tree, dispatches `shape_*` factory calls per element. Handles `g/path/circle/rect/line/polyline/polygon` (the seven core shapes); silently skips `defs/linearGradient/filter/clipPath/style/text/use/ellipse` (those need `grammar_defs`); walks children of unknown elements. Polyline/polygon → emit as `<path>` via `points_to_path` + style attrs copy-forward. viewBox derived from root's `viewBox` / `width+height` attrs (computeContentBounds fallback deferred). Integration test: build an SVG string in test, load through loader, inspect `aevg_backend`'s recorded calls — confirms parser + context + style + transforms + shape factories + backend all line up end-to-end. |
 
 Also landed: **`parse_transform`** (deferred since the first commit; ~22
 extra assertions in `test_transform.ae`, total 52) + cross-module
@@ -68,12 +70,12 @@ Tier C breakdown (per inventory):
   - ⬜ Binding regions
   - ⬜ `grammar-defs` (gradient/filter/clipPath/text/use construction)
 
-**End-to-end smoke now works**: `create_aevg_context(opts)` → `shape_*(ctx,
-backend, attrs)` runs the full pipeline (viewBox-mapping → style cascade
-→ map_point → fill/stroke resolution → backend dispatch → element
-wrapping) and the recording backend confirms every opt is computed
-correctly. See `test_grammar_factories.ae`'s "e2e" block for the
-canonical "build an SVG, inspect the backend" pattern.
+**End-to-end now works from a raw SVG string**: `loader.load_svg(backend,
+"<svg viewBox='0 0 100 100'><circle cx='50' cy='50' r='25' fill='red'/></svg>",
+100, 100)` parses, walks, dispatches — and the recording backend confirms
+a single `canvas_circle` call with `x=25, y=25, x2=75, y2=75, fillColor='red'`.
+The whole port runs as a system. See `test_loader.ae` for nested groups,
+transforms, polyline/polygon, and graceful-degradation cases.
 
 Then Tier D: `loader.ae`, `transpiler.ae`.
 
