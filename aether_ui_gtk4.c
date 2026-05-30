@@ -1149,7 +1149,8 @@ typedef struct {
     // Gradient (FILL_LINEAR / FILL_RADIAL): geometry in x,y..(see impls),
     // plus owned stop arrays. FILL_LINEAR uses (gx1,gy1)→(gx2,gy2);
     // FILL_RADIAL uses center (gx1,gy1) radius gr + focal (gfx,gfy).
-    double gx1, gy1, gx2, gy2, gr, gfx, gfy;
+    // grad_line_width: 0 → fill the path; >0 → stroke it at that width.
+    double gx1, gy1, gx2, gy2, gr, gfx, gfy, grad_line_width;
     int n_stops;
     double* stop_off;        // owned: n_stops offsets (0..1)
     double* stop_rgba;       // owned: n_stops*4 colour comps (0..1)
@@ -1283,7 +1284,14 @@ static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
                         c->stop_rgba[si*4+2], c->stop_rgba[si*4+3]);
                 }
                 cairo_set_source(cr, pat);
-                cairo_fill(cr);
+                if (c->grad_line_width > 0) {
+                    cairo_set_line_width(cr, c->grad_line_width);
+                    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+                    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+                    cairo_stroke(cr);
+                } else {
+                    cairo_fill(cr);
+                }
                 cairo_pattern_destroy(pat);
                 cairo_set_source_rgba(cr, 0, 0, 0, 1); // reset source
                 break;
@@ -1417,18 +1425,20 @@ static void canvas_copy_stops(CanvasCmd* c, int n_stops,
 
 void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
         float x1, float y1, float x2, float y2,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd cmd = { .type = CANVAS_FILL_LINEAR,
-                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2 };
+                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2,
+                      .grad_line_width = line_width };
     canvas_copy_stops(&cmd, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, cmd);
 }
 
 void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
         float cx, float cy, float radius, float fx, float fy,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd cmd = { .type = CANVAS_FILL_RADIAL,
-                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy };
+                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy,
+                      .grad_line_width = line_width };
     canvas_copy_stops(&cmd, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, cmd);
 }

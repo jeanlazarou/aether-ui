@@ -165,10 +165,10 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
                                        const unsigned char* rgba, int byte_len);
 void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
         float x1, float y1, float x2, float y2,
-        int n_stops, void* offsets, void* rgba);
+        int n_stops, void* offsets, void* rgba, float line_width);
 void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
         float cx, float cy, float radius, float fx, float fy,
-        int n_stops, void* offsets, void* rgba);
+        int n_stops, void* offsets, void* rgba, float line_width);
 void aether_ui_canvas_clear_impl(int canvas_id);
 void aether_ui_canvas_redraw_impl(int canvas_id);
 

@@ -271,13 +271,14 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
     fill = opt_s(opts, "fillColor")
     stroke = opt_s(opts, "strokeColor")
     grad_type = opt_s(opts, "gradType")
+    stroke_grad_type = opt_s(opts, "strokeGradType")
     sw = opt_f(opts, "strokeWidth", 1.0)
 
     // Gradient fill (if a gradType opt was emitted) takes precedence
     // over a solid fill color.
     if string.length(grad_type) > 0 {
         replay_path(cid, pts)
-        apply_gradient(cid, opts, grad_type)
+        apply_gradient(cid, opts, "grad", grad_type, 0.0)
     } else {
         if string.length(fill) > 0 {
             replay_path(cid, pts)
@@ -285,20 +286,27 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
                                        color_b01(fill), color_a01(fill))
         }
     }
-    if string.length(stroke) > 0 {
+    // Stroke: gradient stroke takes precedence over a solid stroke.
+    if string.length(stroke_grad_type) > 0 {
         replay_path(cid, pts)
-        aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
-                                     color_b01(stroke), color_a01(stroke), sw)
+        apply_gradient(cid, opts, "strokeGrad", stroke_grad_type, sw)
+    } else {
+        if string.length(stroke) > 0 {
+            replay_path(cid, pts)
+            aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
+                                         color_b01(stroke), color_a01(stroke), sw)
+        }
     }
     return fresh_handle()
 }
 
-// Parse the gradStops opt + geometry and invoke the canvas gradient
-// primitive. The current path must already be on the canvas (the
-// caller replays it first). gradStops is "off,r,g,b,a ..." with rgba
-// in 0..255; we build floatarrs of offsets (0..1) + colours (0..1).
-apply_gradient(cid: int, opts: ptr, grad_type: string) {
-    stops_s = opt_s(opts, "gradStops")
+// Parse the {prefix}Stops opt + geometry and invoke the canvas
+// gradient primitive. The current path must already be on the canvas
+// (the caller replays it first). Stops are "off,r,g,b,a ..." with
+// rgba in 0..255; built into floatarrs of offsets + colours (0..1).
+// line_width = 0 fills the path; > 0 strokes it at that width.
+apply_gradient(cid: int, opts: ptr, prefix: string, grad_type: string, line_width: float) {
+    stops_s = opt_s(opts, string.concat(prefix, "Stops"))
     if string.length(stops_s) == 0 { return }
     toks = string_split(stops_s, " ")
     n = string_array_size(toks)
@@ -331,18 +339,18 @@ apply_gradient(cid: int, opts: ptr, grad_type: string) {
     if valid == 0 { return }
 
     if string.equals(grad_type, "radial") == 1 {
-        cx = opt_f(opts, "gradCX", 0.0)
-        cy = opt_f(opts, "gradCY", 0.0)
-        r  = opt_f(opts, "gradR",  0.0)
-        fx = opt_f(opts, "gradFX", cx)
-        fy = opt_f(opts, "gradFY", cy)
-        aether_ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba)
+        cx = opt_f(opts, string.concat(prefix, "CX"), 0.0)
+        cy = opt_f(opts, string.concat(prefix, "CY"), 0.0)
+        r  = opt_f(opts, string.concat(prefix, "R"),  0.0)
+        fx = opt_f(opts, string.concat(prefix, "FX"), cx)
+        fy = opt_f(opts, string.concat(prefix, "FY"), cy)
+        aether_ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba, line_width)
     } else {
-        x1 = opt_f(opts, "gradX1", 0.0)
-        y1 = opt_f(opts, "gradY1", 0.0)
-        x2 = opt_f(opts, "gradX2", 0.0)
-        y2 = opt_f(opts, "gradY2", 0.0)
-        aether_ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba)
+        x1 = opt_f(opts, string.concat(prefix, "X1"), 0.0)
+        y1 = opt_f(opts, string.concat(prefix, "Y1"), 0.0)
+        x2 = opt_f(opts, string.concat(prefix, "X2"), 0.0)
+        y2 = opt_f(opts, string.concat(prefix, "Y2"), 0.0)
+        aether_ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba, line_width)
     }
 }
 

@@ -1173,6 +1173,7 @@ typedef struct {
     unsigned char* pixels;  // DRAW_IMAGE RGBA8888 buffer (owned)
     int iw, ih;     // DRAW_IMAGE pixel dims
     double gx1, gy1, gx2, gy2, gr, gfx, gfy;  // gradient geometry
+    double grad_line_width;  // 0 → fill; >0 → stroke at this width
     int n_stops;
     double* stop_off;   // owned: offsets
     double* stop_rgba;  // owned: n_stops*4 colour comps
@@ -1316,8 +1317,15 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                     CGGradientRef grad = CGGradientCreateWithColorComponents(
                         gcs, comps, locs, c->n_stops);
                     if (grad) {
-                        // Clip to the current path, then draw the gradient.
+                        // Clip to the current path (or its stroked
+                        // outline for a gradient stroke), then draw.
                         CGContextSaveGState(cg);
+                        if (c->grad_line_width > 0) {
+                            CGContextSetLineWidth(cg, c->grad_line_width);
+                            CGContextSetLineCap(cg, kCGLineCapRound);
+                            CGContextSetLineJoin(cg, kCGLineJoinRound);
+                            CGContextReplacePathWithStrokedPath(cg);
+                        }
                         CGContextClip(cg);  // uses current path as clip
                         if (c->type == CANVAS_FILL_LINEAR) {
                             CGContextDrawLinearGradient(cg, grad,
@@ -1463,18 +1471,20 @@ static void macos_copy_stops(CanvasCmd* c, int n_stops,
 
 void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
         float x1, float y1, float x2, float y2,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd cmd = { .type = CANVAS_FILL_LINEAR,
-                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2 };
+                      .gx1 = x1, .gy1 = y1, .gx2 = x2, .gy2 = y2,
+                      .grad_line_width = line_width };
     macos_copy_stops(&cmd, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, cmd);
 }
 
 void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
         float cx, float cy, float radius, float fx, float fy,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd cmd = { .type = CANVAS_FILL_RADIAL,
-                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy };
+                      .gx1 = cx, .gy1 = cy, .gr = radius, .gfx = fx, .gfy = fy,
+                      .grad_line_width = line_width };
     macos_copy_stops(&cmd, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, cmd);
 }

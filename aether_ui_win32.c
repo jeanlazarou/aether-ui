@@ -2176,6 +2176,7 @@ typedef struct {
     int iw, ih;            // DRAW_IMAGE pixel dims
     // Gradient: linear (gx1,gy1)→(gx2,gy2); radial center (gx1,gy1) r gr.
     float gx1, gy1, gx2, gy2, gr, gfx, gfy;
+    float grad_line_width;  // 0 → fill; >0 → stroke (GDI approximates as fill)
     int n_stops;
     double* stop_off;      // owned
     double* stop_rgba;     // owned: n_stops*4
@@ -2354,19 +2355,20 @@ static void win32_copy_stops(CanvasCmd* c, int n_stops,
 
 void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
         float x1, float y1, float x2, float y2,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd c = {0};
     c.k = CV_FILL_LINEAR; c.gx1 = x1; c.gy1 = y1; c.gx2 = x2; c.gy2 = y2;
+    c.grad_line_width = line_width;
     win32_copy_stops(&c, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, c);
 }
 
 void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
         float cx, float cy, float radius, float fx, float fy,
-        int n_stops, void* offsets, void* rgba) {
+        int n_stops, void* offsets, void* rgba, float line_width) {
     CanvasCmd c = {0};
     c.k = CV_FILL_RADIAL; c.gx1 = cx; c.gy1 = cy; c.gr = radius;
-    c.gfx = fx; c.gfy = fy;
+    c.gfx = fx; c.gfy = fy; c.grad_line_width = line_width;
     win32_copy_stops(&c, n_stops, offsets, rgba);
     canvas_add_cmd(canvas_id, c);
 }

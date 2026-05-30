@@ -133,5 +133,65 @@ main() {
     assert_opt_near("radial: gradCY=50", bk3, 0, "gradCY", 50.0)
     assert_opt_near("radial: gradR=50",  bk3, 0, "gradR",  50.0)
 
+    // ─── Gradient stroke → strokeGradType + strokeGradStops ───
+    ctx4 = mk_ctx()
+    bk4 = aevg_backend.backend_new()
+    register_linear(ctx4, "g3")
+    a4 = map.new()
+    _ = map.put(a4, "d", "M 0 0 L 100 0 L 100 100 Z")
+    _ = map.put(a4, "fill", "none")
+    _ = map.put(a4, "stroke", "url(#g3)")
+    _ = map.put(a4, "stroke-width", "4")
+    _ = grammar_shapes.shape_path(ctx4, bk4, a4)
+    assert_eq_str("stroke-grad: strokeGradType=linear",
+                  aevg_backend.backend_opt_get(bk4, 0, "strokeGradType"), "linear")
+    assert_nonempty("stroke-grad: strokeGradStops present", bk4, 0, "strokeGradStops")
+    assert_empty("stroke-grad: strokeColor omitted", bk4, 0, "strokeColor")
+
+    // ─── Gradient-filled rect → routes through path ───────────
+    // A rect with fill=url(#id) builds a rect path and delegates to
+    // shape_path, so the dispatch kind is "path" (not "rectangle")
+    // and carries the gradient descriptor.
+    ctx5 = mk_ctx()
+    bk5 = aevg_backend.backend_new()
+    register_linear(ctx5, "g4")
+    a5 = map.new()
+    _ = map.put(a5, "x", "10")
+    _ = map.put(a5, "y", "10")
+    _ = map.put(a5, "width", "80")
+    _ = map.put(a5, "height", "40")
+    _ = map.put(a5, "fill", "url(#g4)")
+    _ = grammar_shapes.shape_rectangle(ctx5, bk5, a5)
+    assert_eq_str("grad rect: routed to path", aevg_backend.backend_kind(bk5, 0), "path")
+    assert_eq_str("grad rect: gradType=linear",
+                  aevg_backend.backend_opt_get(bk5, 0, "gradType"), "linear")
+
+    // ─── Rounded rect → routes through path ───────────────────
+    ctx6 = mk_ctx()
+    bk6 = aevg_backend.backend_new()
+    a6 = map.new()
+    _ = map.put(a6, "x", "10")
+    _ = map.put(a6, "y", "10")
+    _ = map.put(a6, "width", "80")
+    _ = map.put(a6, "height", "40")
+    _ = map.put(a6, "rx", "8")
+    _ = map.put(a6, "fill", "orange")
+    _ = grammar_shapes.shape_rectangle(ctx6, bk6, a6)
+    assert_eq_str("rounded rect: routed to path", aevg_backend.backend_kind(bk6, 0), "path")
+    // Rounded corners flatten arcs → many points; just confirm non-empty.
+    assert_nonempty("rounded rect: points present", bk6, 0, "points")
+
+    // ─── Plain rect (no grad/round/rotation) → stays rectangle ─
+    ctx7 = mk_ctx()
+    bk7 = aevg_backend.backend_new()
+    a7 = map.new()
+    _ = map.put(a7, "x", "10")
+    _ = map.put(a7, "y", "10")
+    _ = map.put(a7, "width", "80")
+    _ = map.put(a7, "height", "40")
+    _ = map.put(a7, "fill", "teal")
+    _ = grammar_shapes.shape_rectangle(ctx7, bk7, a7)
+    assert_eq_str("plain rect: stays rectangle", aevg_backend.backend_kind(bk7, 0), "rectangle")
+
     println("=== test_gradient_fill passed ===")
 }

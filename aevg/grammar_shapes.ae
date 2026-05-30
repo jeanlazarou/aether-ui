@@ -55,6 +55,7 @@ import rasterize
 import parser
 import std.regex
 import grammar_defs
+import std.math
 
 extern malloc(size: int) -> ptr
 
@@ -152,17 +153,26 @@ needs_raster(filter_id: string, clip_id: string) -> int {
 //   gradCX/CY/R/FX/FY        (radial, canvas space)
 //   gradStops = "off,r,g,b,a off,r,g,b,a ..." (rgba 0..255 / off 0..1)
 
-style_gradient_id(style: ptr) -> string {
-    v = grammar_style.style_get(style, "fill")
+// Extract a gradient id from a style value (fill or stroke).
+style_grad_id_of(style: ptr, source_key: string) -> string {
+    v = grammar_style.style_get(style, source_key)
     if string.length(v) == 0 { return "" }
     return grammar_utils.extract_url_id(v)
 }
 
-// Emit gradient opts if fill references a registered gradient.
-// bx,by,bw,bh = the shape's canvas-space bounding box.
-emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
-                   bx: float, by: float, bw: float, bh: float) -> int {
-    gid = style_gradient_id(style)
+// Convenience: fill-gradient id (back-compat shorthand).
+style_gradient_id(style: ptr) -> string {
+    return style_grad_id_of(style, "fill")
+}
+
+// Emit gradient opts if `source_key` (fill / stroke) references a
+// registered gradient. Opt keys are `${prefix}Type`/`${prefix}X1`/…/
+// `${prefix}Stops` (prefix "grad" for fill, "strokeGrad" for stroke).
+// bx,by,bw,bh = the shape's canvas-space bounding box. Returns 1 if a
+// gradient descriptor was emitted.
+emit_gradient_for(ctx: ptr, style: ptr, opts: ptr, source_key: string, prefix: string,
+                  bx: float, by: float, bw: float, bh: float) -> int {
+    gid = style_grad_id_of(style, source_key)
     if string.length(gid) == 0 { return 0 }
     if grammar_context.has_gradient(ctx, gid) == 0 { return 0 }
     gdef = grammar_context.get_gradient(ctx, gid)
@@ -174,7 +184,7 @@ emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
     if string.equals(units, "userSpaceOnUse") == 1 { user_space = 1 }
 
     if gtype == grammar_defs.GRADIENT_RADIAL() {
-        opt_set_s(opts, "gradType", "radial")
+        opt_set_s(opts, string.concat(prefix, "Type"), "radial")
         gcx = grammar_defs.gradient_cx(gdef)
         gcy = grammar_defs.gradient_cy(gdef)
         gr  = grammar_defs.gradient_r(gdef)
@@ -184,25 +194,25 @@ emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
             pc = grammar_rendering.map_point(ctx, gcx, gcy)
             pf = grammar_rendering.map_point(ctx, gfx, gfy)
             avg = transform.affine_average_scale_p(grammar_rendering.current_transform(ctx))
-            opt_set_f(opts, "gradCX", transform.pt_x(pc))
-            opt_set_f(opts, "gradCY", transform.pt_y(pc))
-            opt_set_f(opts, "gradR",  grammar_rendering.map_length(ctx, gr) * avg)
-            opt_set_f(opts, "gradFX", transform.pt_x(pf))
-            opt_set_f(opts, "gradFY", transform.pt_y(pf))
+            opt_set_f(opts, string.concat(prefix, "CX"), transform.pt_x(pc))
+            opt_set_f(opts, string.concat(prefix, "CY"), transform.pt_y(pc))
+            opt_set_f(opts, string.concat(prefix, "R"),  grammar_rendering.map_length(ctx, gr) * avg)
+            opt_set_f(opts, string.concat(prefix, "FX"), transform.pt_x(pf))
+            opt_set_f(opts, string.concat(prefix, "FY"), transform.pt_y(pf))
         } else {
             // objectBoundingBox: 0..1 over the shape bbox.
-            opt_set_f(opts, "gradCX", bx + gcx * bw)
-            opt_set_f(opts, "gradCY", by + gcy * bh)
+            opt_set_f(opts, string.concat(prefix, "CX"), bx + gcx * bw)
+            opt_set_f(opts, string.concat(prefix, "CY"), by + gcy * bh)
             // radius scales by the bbox (use the larger extent, as
             // most renderers do for a circle-in-bbox approximation).
             rext = bw
             if bh > rext { rext = bh }
-            opt_set_f(opts, "gradR",  gr * rext)
-            opt_set_f(opts, "gradFX", bx + gfx * bw)
-            opt_set_f(opts, "gradFY", by + gfy * bh)
+            opt_set_f(opts, string.concat(prefix, "R"),  gr * rext)
+            opt_set_f(opts, string.concat(prefix, "FX"), bx + gfx * bw)
+            opt_set_f(opts, string.concat(prefix, "FY"), by + gfy * bh)
         }
     } else {
-        opt_set_s(opts, "gradType", "linear")
+        opt_set_s(opts, string.concat(prefix, "Type"), "linear")
         gx1 = grammar_defs.gradient_x1(gdef)
         gy1 = grammar_defs.gradient_y1(gdef)
         gx2 = grammar_defs.gradient_x2(gdef)
@@ -210,15 +220,15 @@ emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
         if user_space == 1 {
             p1 = grammar_rendering.map_point(ctx, gx1, gy1)
             p2 = grammar_rendering.map_point(ctx, gx2, gy2)
-            opt_set_f(opts, "gradX1", transform.pt_x(p1))
-            opt_set_f(opts, "gradY1", transform.pt_y(p1))
-            opt_set_f(opts, "gradX2", transform.pt_x(p2))
-            opt_set_f(opts, "gradY2", transform.pt_y(p2))
+            opt_set_f(opts, string.concat(prefix, "X1"), transform.pt_x(p1))
+            opt_set_f(opts, string.concat(prefix, "Y1"), transform.pt_y(p1))
+            opt_set_f(opts, string.concat(prefix, "X2"), transform.pt_x(p2))
+            opt_set_f(opts, string.concat(prefix, "Y2"), transform.pt_y(p2))
         } else {
-            opt_set_f(opts, "gradX1", bx + gx1 * bw)
-            opt_set_f(opts, "gradY1", by + gy1 * bh)
-            opt_set_f(opts, "gradX2", bx + gx2 * bw)
-            opt_set_f(opts, "gradY2", by + gy2 * bh)
+            opt_set_f(opts, string.concat(prefix, "X1"), bx + gx1 * bw)
+            opt_set_f(opts, string.concat(prefix, "Y1"), by + gy1 * bh)
+            opt_set_f(opts, string.concat(prefix, "X2"), bx + gx2 * bw)
+            opt_set_f(opts, string.concat(prefix, "Y2"), by + gy2 * bh)
         }
     }
 
@@ -243,8 +253,14 @@ emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
         _ = strbuilder.append(sb, string.from_int(rasterize.rgba_a(rgba)))
         si = si + 1
     }
-    _ = map.put(opts, "gradStops", strbuilder.finish(sb))
+    _ = map.put(opts, string.concat(prefix, "Stops"), strbuilder.finish(sb))
     return 1
+}
+
+// Fill-gradient shorthand (the common case).
+emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
+                   bx: float, by: float, bw: float, bh: float) -> int {
+    return emit_gradient_for(ctx, style, opts, "fill", "grad", bx, by, bw, bh)
 }
 
 // ─── shape_circle ────────────────────────────────────────────────
@@ -357,6 +373,30 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
         return el_w
     }
 
+    // Gradient fill, rotation, or rounded corners → build a rect path
+    // and delegate to shape_path (which handles gradients, arbitrary
+    // mapping, and arc-corner flattening). Mirrors the TS
+    // `if (gradDef || hasRotation || hasRoundedCorners)` branch.
+    has_grad = string.length(style_grad_id_of(style, "fill")) > 0
+    rx = grammar_rendering.parse_len_x(ctx, attr_str_or(attrs, "rx", "0"))
+    ry = grammar_rendering.parse_len_y(ctx, attr_str_or(attrs, "ry", "0"))
+    has_round = 0
+    if rx > 0.0 { has_round = 1 }
+    if ry > 0.0 { has_round = 1 }
+    cur_x = grammar_rendering.current_transform(ctx)
+    has_rot = 0
+    if math.abs_float(transform.affine_b(cur_x)) > 0.000001 { has_rot = 1 }
+    if math.abs_float(transform.affine_c(cur_x)) > 0.000001 { has_rot = 1 }
+    if has_grad == 1 {
+        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+    }
+    if has_round == 1 {
+        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+    }
+    if has_rot == 1 {
+        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+    }
+
     // Project the four corners and compute axis-aligned bounds.
     p1 = grammar_rendering.map_point(ctx, px, py)
     p2 = grammar_rendering.map_point(ctx, px + pw, py)
@@ -413,6 +453,99 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     grammar_element.element_set_bounds(el, min_x, min_y, max_x - min_x, max_y - min_y)
     grammar_element.element_set_shape_rect(el, px, py, pw, ph)
     return el
+}
+
+// rect_via_path — build an SVG path for a rect (rounded or plain) in
+// SVG space and delegate to shape_path, which handles gradients,
+// arbitrary (rotating) mapping, and arc-corner flattening. Mirrors
+// the TS rect()→path() delegation.
+//
+// The rect's transform is already pushed on the context (did_push);
+// we strip `transform` from the delegated attrs so shape_path doesn't
+// double-push, let shape_path render under the active transform, then
+// pop here. rx/ry are clamped to half the width/height per SVG spec.
+rect_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
+              px: float, py: float, pw: float, ph: float,
+              rx: float, ry: float, did_push: int) -> ptr {
+    // SVG: if only one of rx/ry is given, the other defaults to it.
+    erx = rx
+    ery = ry
+    if erx == 0.0 { erx = ery }
+    if ery == 0.0 { ery = erx }
+    crx = erx
+    if crx > pw / 2.0 { crx = pw / 2.0 }
+    cry = ery
+    if cry > ph / 2.0 { cry = ph / 2.0 }
+
+    d = ""
+    if crx > 0.0 {
+        d = rounded_rect_path(px, py, pw, ph, crx, cry)
+    } else {
+        if cry > 0.0 {
+            d = rounded_rect_path(px, py, pw, ph, crx, cry)
+        } else {
+            d = plain_rect_path(px, py, pw, ph)
+        }
+    }
+
+    // Delegate to shape_path with transform stripped + d/fill carried.
+    pa = map.new()
+    _ = map.put(pa, "d", d)
+    fv = grammar_style.style_get(style, "fill")
+    if string.length(fv) > 0 { _ = map.put(pa, "fill", fv) }
+    sv = grammar_style.style_get(style, "stroke")
+    if string.length(sv) > 0 { _ = map.put(pa, "stroke", sv) }
+    swv = grammar_style.style_get(style, "stroke-width")
+    if string.length(swv) > 0 { _ = map.put(pa, "stroke-width", swv) }
+    clv = attr_str_or(attrs, "class", "")
+    if string.length(clv) > 0 { _ = map.put(pa, "class", clv) }
+
+    el = shape_path(ctx, backend, pa)
+    maybe_pop_transform(ctx, did_push)
+    return el
+}
+
+// Plain rectangle as a closed M/L path (SVG space).
+plain_rect_path(px: float, py: float, pw: float, ph: float) -> string {
+    sb = strbuilder.new(64)
+    _ = strbuilder.append(sb, "M ")
+    append_xy(sb, px, py)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px + pw, py)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px + pw, py + ph)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px, py + ph)
+    _ = strbuilder.append(sb, " Z")
+    return strbuilder.finish(sb)
+}
+
+// Rounded rectangle using arc (A) corner commands (SVG space). The
+// normalizer converts A → cubic, then shape_path flattens.
+rounded_rect_path(px: float, py: float, pw: float, ph: float,
+                  cx: float, cy: float) -> string {
+    sb = strbuilder.new(128)
+    _ = strbuilder.append(sb, "M "); append_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + pw - cx, py)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + pw, py + cy)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + pw, py + ph - cy)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + pw - cx, py + ph)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + cx, py + ph)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px, py + ph - cy)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px, py + cy)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " Z")
+    return strbuilder.finish(sb)
+}
+
+append_xy(sb: ptr, x: float, y: float) {
+    _ = strbuilder.append(sb, string.from_float(x))
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, string.from_float(y))
 }
 
 // ─── shape_line ──────────────────────────────────────────────────
@@ -569,14 +702,18 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opts = map.new()
     opt_set_s(opts, "d", d)                          // raw, for reference
     opt_set_s(opts, "points", strbuilder.finish(points))  // mapped polyline
-    opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
-    // Gradient fill takes precedence over a solid fill color.
+    // Gradient fill takes precedence over a solid fill color; gradient
+    // stroke over a solid stroke color. Bbox drives objectBoundingBox.
     if has_pt == 1 {
         is_grad = emit_gradient_opts(ctx, style, opts, mnx, mny, mxx - mnx, mxy - mny)
         if is_grad == 0 { opt_set_s(opts, "fillColor", fill_color) }
+        is_sgrad = emit_gradient_for(ctx, style, opts, "stroke", "strokeGrad",
+                                     mnx, mny, mxx - mnx, mxy - mny)
+        if is_sgrad == 0 { opt_set_s(opts, "strokeColor", stroke_color) }
     } else {
         opt_set_s(opts, "fillColor", fill_color)
+        opt_set_s(opts, "strokeColor", stroke_color)
     }
 
     underlying = backend_dispatch.dispatch_path(backend, opts)
