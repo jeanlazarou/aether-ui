@@ -149,6 +149,9 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
 
     el = grammar_element.element_new(underlying)
     grammar_element.element_set_bounds(el, cx - r, cy - r, 2.0 * r, 2.0 * r)
+    // Record SVG-space geometry so a bindPos result can recompute
+    // bounds on refresh (grammar_reactive.recompute_bounds).
+    grammar_element.element_set_shape_circle(el, cx_raw, cy_raw, r_raw)
     return el
 }
 
@@ -218,6 +221,7 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
 
     el = grammar_element.element_new(underlying)
     grammar_element.element_set_bounds(el, min_x, min_y, max_x - min_x, max_y - min_y)
+    grammar_element.element_set_shape_rect(el, px, py, pw, ph)
     return el
 }
 
@@ -269,6 +273,7 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     hi_x = mx1; if mx2 > hi_x { hi_x = mx2 }
     hi_y = my1; if my2 > hi_y { hi_y = my2 }
     grammar_element.element_set_bounds(el, lo_x, lo_y, hi_x - lo_x, hi_y - lo_y)
+    grammar_element.element_set_shape_line(el, x1_raw, y1_raw, x2_raw, y2_raw)
     return el
 }
 

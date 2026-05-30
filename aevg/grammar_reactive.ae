@@ -47,7 +47,8 @@ exports (
     invoke_opacity_binding,
     invoke_text_binding,
     invoke_pos_binding,
-    invoke_when_predicate
+    invoke_when_predicate,
+    recompute_bounds
 )
 
 import std.list
@@ -55,6 +56,8 @@ import std.string
 import std.map
 import grammar_element
 import grammar_context
+import grammar_rendering
+import transform
 
 // ─── Per-element refresh ─────────────────────────────────────────
 //
@@ -70,7 +73,7 @@ import grammar_context
 // If when() returned 0 (hide), only bit 0 is set — bindings are
 // skipped per the TS contract.
 
-refresh_element_bindings(el: ptr) -> int {
+refresh_element_bindings(ctx: ptr, el: ptr) -> int {
     fired = 0
 
     if grammar_element.element_is_destroyed(el) == 1 {
@@ -137,6 +140,12 @@ refresh_element_bindings(el: ptr) -> int {
     if pb != null {
         pos_map = invoke_pos_binding(pb)
         grammar_element.element_set_pos_props(el, pos_map)
+        // Merge the new pos props into the element's SVG-space
+        // geometry and recompute canvas bounds so hit-testing
+        // follows the binding (mirrors TS updateSvgProps → setBounds).
+        if pos_map != null {
+            recompute_bounds(ctx, el, pos_map)
+        }
         fired = fired + 32
     }
 
@@ -155,11 +164,116 @@ refresh_all_elements(ctx: ptr) -> int {
     i = 0
     while i < n {
         el, _ = list.get(elements, i)
-        bits = refresh_element_bindings(el)
+        bits = refresh_element_bindings(ctx, el)
         if bits > 0 { touched = touched + 1 }
         i = i + 1
     }
     return touched
+}
+
+// ─── Bounds recompute from bindPos result ───────────────────────
+//
+// Merge the bindPos map's geometry props into the element's stored
+// SVG-space geo slots, then re-map to canvas space and update
+// bounds. Property→slot mapping is per shape type, mirroring
+// SVG_GEOM_KEYS:
+//   circle: cx→geo0, cy→geo1, r→geo2
+//   rect:   x→geo0,  y→geo1,  width→geo2,  height→geo3
+//   line:   x1→geo0, y1→geo1, x2→geo2,     y2→geo3
+//
+// Non-geometry props (fill, etc.) in the pos map are ignored here
+// (the dedicated bindFill/etc. closures handle those). The pos map
+// is the same {prop: value-as-string} shape bindPos returns.
+
+recompute_bounds(ctx: ptr, el: ptr, pos_map: ptr) {
+    st = grammar_element.element_shape_type(el)
+    if st == grammar_element.SHAPE_NONE() { return }
+
+    if st == grammar_element.SHAPE_CIRCLE() {
+        merge_geo(el, pos_map, "cx", 0)
+        merge_geo(el, pos_map, "cy", 1)
+        merge_geo(el, pos_map, "r",  2)
+        cx = grammar_element.element_geo0(el)
+        cy = grammar_element.element_geo1(el)
+        r  = grammar_element.element_geo2(el)
+        p = grammar_rendering.map_point(ctx, cx, cy)
+        avg = transform.affine_average_scale_p(grammar_rendering.current_transform(ctx))
+        pr = grammar_rendering.map_length(ctx, r) * avg
+        pcx = transform.pt_x(p)
+        pcy = transform.pt_y(p)
+        grammar_element.element_set_bounds(el, pcx - pr, pcy - pr, 2.0 * pr, 2.0 * pr)
+        return
+    }
+
+    if st == grammar_element.SHAPE_RECT() {
+        merge_geo(el, pos_map, "x",      0)
+        merge_geo(el, pos_map, "y",      1)
+        merge_geo(el, pos_map, "width",  2)
+        merge_geo(el, pos_map, "height", 3)
+        x = grammar_element.element_geo0(el)
+        y = grammar_element.element_geo1(el)
+        w = grammar_element.element_geo2(el)
+        h = grammar_element.element_geo3(el)
+        // Project the four corners, take the AABB (matches shape_rectangle).
+        p1 = grammar_rendering.map_point(ctx, x, y)
+        p2 = grammar_rendering.map_point(ctx, x + w, y)
+        p3 = grammar_rendering.map_point(ctx, x, y + h)
+        p4 = grammar_rendering.map_point(ctx, x + w, y + h)
+        mnx = transform.pt_x(p1); mxx = transform.pt_x(p1)
+        mny = transform.pt_y(p1); mxy = transform.pt_y(p1)
+        mnx, mxx, mny, mxy = fold_pt(p2, mnx, mxx, mny, mxy)
+        mnx, mxx, mny, mxy = fold_pt(p3, mnx, mxx, mny, mxy)
+        mnx, mxx, mny, mxy = fold_pt(p4, mnx, mxx, mny, mxy)
+        grammar_element.element_set_bounds(el, mnx, mny, mxx - mnx, mxy - mny)
+        return
+    }
+
+    if st == grammar_element.SHAPE_LINE() {
+        merge_geo(el, pos_map, "x1", 0)
+        merge_geo(el, pos_map, "y1", 1)
+        merge_geo(el, pos_map, "x2", 2)
+        merge_geo(el, pos_map, "y2", 3)
+        x1 = grammar_element.element_geo0(el)
+        y1 = grammar_element.element_geo1(el)
+        x2 = grammar_element.element_geo2(el)
+        y2 = grammar_element.element_geo3(el)
+        pa = grammar_rendering.map_point(ctx, x1, y1)
+        pb = grammar_rendering.map_point(ctx, x2, y2)
+        ax = transform.pt_x(pa); ay = transform.pt_y(pa)
+        bx = transform.pt_x(pb); by = transform.pt_y(pb)
+        lo_x = ax; hi_x = ax
+        if bx < lo_x { lo_x = bx }
+        if bx > hi_x { hi_x = bx }
+        lo_y = ay; hi_y = ay
+        if by < lo_y { lo_y = by }
+        if by > hi_y { hi_y = by }
+        grammar_element.element_set_bounds(el, lo_x, lo_y, hi_x - lo_x, hi_y - lo_y)
+        return
+    }
+}
+
+// Merge one property from the pos map into a geo slot, if present.
+// Missing keys leave the slot at its prior value.
+merge_geo(el: ptr, pos_map: ptr, key: string, slot: int) {
+    v, _ = map.get(pos_map, key)
+    if string.length(v) > 0 {
+        parsed, e = string.to_double(v)
+        if e == "" {
+            grammar_element.element_set_geo(el, slot, parsed)
+        }
+    }
+}
+
+// Fold a mapped point into a running AABB. Returns the four-tuple
+// (min_x, max_x, min_y, max_y).
+fold_pt(p: ptr, mnx: float, mxx: float, mny: float, mxy: float) -> (float, float, float, float) {
+    cx = transform.pt_x(p)
+    cy = transform.pt_y(p)
+    if cx < mnx { mnx = cx }
+    if cx > mxx { mxx = cx }
+    if cy < mny { mny = cy }
+    if cy > mxy { mxy = cy }
+    return mnx, mxx, mny, mxy
 }
 
 // ─── Invocation thunks ──────────────────────────────────────────
