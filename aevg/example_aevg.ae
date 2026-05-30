@@ -1,0 +1,42 @@
+// example_aevg.ae — render an SVG through AeVG onto a real canvas.
+//
+// Wires the full Phase-1 path: loader parses an SVG string, the
+// shape factories dispatch through the aevg_gtk_backend adapter,
+// which forwards to the real aether_ui canvas primitives. Proves
+// the adapter links against the real backend and renders live.
+
+import aether_ui
+import aevg_gtk_backend
+import loader
+import std.string
+
+string_concat3(a: string, b: string) -> string {
+    return string.concat(a, b)
+}
+
+main() {
+    root = aether_ui.root_vstack(10) {
+        title = aether_ui.text("AeVG — SVG on a real canvas")
+        aether_ui.style_font_size(title, 18)
+        aether_ui.style_font_bold(title)
+        aether_ui.divider()
+
+        // Real canvas + AeVG adapter backend around its id.
+        c = aether_ui.canvas_create(400, 300)
+        backend = aevg_gtk_backend.gtk_backend_new(c)
+
+        svg = "<svg viewBox='0 0 400 300'>"
+        svg = string_concat3(svg, "<rect x='20' y='20' width='120' height='80' fill='#4488cc' stroke='#003366'/>")
+        svg = string_concat3(svg, "<circle cx='280' cy='80' r='50' fill='#cc4444'/>")
+        svg = string_concat3(svg, "<line x1='20' y1='180' x2='380' y2='180' stroke='#333333'/>")
+        svg = string_concat3(svg, "<text x='40' y='240' font-size='28' fill='#222'>Hello AeVG</text>")
+        svg = string_concat3(svg, "</svg>")
+
+        // load_svg parses, builds the context, and dispatches every
+        // shape through the adapter onto the real canvas `c`.
+        _ctx = loader.load_svg(backend, svg, 400.0, 300.0)
+        aether_ui.canvas_redraw(c)
+    }
+    aether_ui.margin(root, 12, 12, 12, 12)
+    aether_ui.app_run("AeVG Demo", 440, 380, root)
+}

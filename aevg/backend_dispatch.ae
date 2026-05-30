@@ -1,0 +1,81 @@
+// aevg/backend_dispatch.ae — backend dispatch table.
+//
+// The shape factories (grammar_shapes) must not be statically bound
+// to one backend. This module owns a small dispatch struct holding
+// the concrete backend's own handle (`be`) plus a single dispatch
+// closure of shape (be, op, opts) -> ptr, where `op` selects the
+// canvas operation (OP_CIRCLE .. OP_TAPPABLE). One closure (not
+// seven) because Aether's trailing-callback syntax only creates one
+// closure per call site — a 7-closure backend_make() is unbuildable.
+//
+// Two concrete backends register into this table:
+//   - aevg_backend.ae      (recording stub, Phase 0 / headless)
+//   - aevg_gtk_backend.ae  (real GTK4/AppKit/Win32 adapter, Phase 1)
+//
+// Each builds its own handle then calls backend_make(be) with a
+// trailing closure that switches on `op`. No import cycle: this
+// module imports nothing of the concrete backends; they import this.
+//
+// The dispatch closure is a `callback { ... }` so the closure-call
+// trampoline stays env-aware.
+
+exports (
+    backend_make, backend_self,
+    OP_CIRCLE, OP_RECT, OP_LINE, OP_PATH, OP_TEXT, OP_RASTER, OP_TAPPABLE,
+    dispatch_circle, dispatch_rectangle, dispatch_line,
+    dispatch_path, dispatch_text, dispatch_raster, dispatch_tappable_raster
+)
+
+import std.string
+
+extern malloc(size: int) -> ptr
+
+// Operation selectors (functions, matching the codebase's const idiom).
+OP_CIRCLE()   -> int { return 0 }
+OP_RECT()     -> int { return 1 }
+OP_LINE()     -> int { return 2 }
+OP_PATH()     -> int { return 3 }
+OP_TEXT()     -> int { return 4 }
+OP_RASTER()   -> int { return 5 }
+OP_TAPPABLE() -> int { return 6 }
+
+struct Dispatch {
+    be: ptr        // concrete backend handle
+    cb: ptr        // closure (be: ptr, op: int, opts: ptr) -> ptr
+}
+
+// Construct a dispatch table. `be` is the concrete backend's handle;
+// `cb` is a single closure that switches on the op selector.
+backend_make(be: ptr, cb: fn) -> ptr {
+    d = malloc(16) as *Dispatch
+    d.be = be
+    d.cb = cb
+    return d
+}
+
+backend_self(p: ptr) -> ptr {
+    d = p as *Dispatch
+    return d.be
+}
+
+// ─── Dispatch entry points ───────────────────────────────────────
+//
+// Each invokes the stored closure with the op selector. Two-layer
+// thunk (outer-ptr → inner-fn) so the closure-call trampoline
+// resolves the ptr return type via the inner's enclosing-fn return.
+
+dispatch_circle(p: ptr, opts: ptr) -> ptr          { return run(p, 0, opts) }
+dispatch_rectangle(p: ptr, opts: ptr) -> ptr       { return run(p, 1, opts) }
+dispatch_line(p: ptr, opts: ptr) -> ptr            { return run(p, 2, opts) }
+dispatch_path(p: ptr, opts: ptr) -> ptr            { return run(p, 3, opts) }
+dispatch_text(p: ptr, opts: ptr) -> ptr            { return run(p, 4, opts) }
+dispatch_raster(p: ptr, opts: ptr) -> ptr          { return run(p, 5, opts) }
+dispatch_tappable_raster(p: ptr, opts: ptr) -> ptr { return run(p, 6, opts) }
+
+run(p: ptr, op: int, opts: ptr) -> ptr {
+    d = p as *Dispatch
+    return inner(d.cb, d.be, op, opts)
+}
+inner(cb: fn, be: ptr, op: int, opts: ptr) -> ptr {
+    return cb(be, op, opts)
+}

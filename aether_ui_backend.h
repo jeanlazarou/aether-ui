@@ -153,6 +153,13 @@ void aether_ui_canvas_stroke_impl(int canvas_id, float r, float g, float b,
 void aether_ui_canvas_fill_rect_impl(int canvas_id, float x, float y,
                                 float w, float h,
                                 float r, float g, float b, float a);
+void aether_ui_canvas_arc_impl(int canvas_id, float cx, float cy, float radius,
+                                float start_angle, float end_angle);
+void aether_ui_canvas_close_path_impl(int canvas_id);
+void aether_ui_canvas_fill_impl(int canvas_id, float r, float g, float b, float a);
+void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
+                                      float x, float y, float font_size,
+                                      float r, float g, float b, float a);
 void aether_ui_canvas_clear_impl(int canvas_id);
 void aether_ui_canvas_redraw_impl(int canvas_id);
 

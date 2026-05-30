@@ -2158,15 +2158,19 @@ void aether_ui_grid_place(int grid_handle, int child_handle,
 // line_to, stroke, fill_rect, clear.
 // ---------------------------------------------------------------------------
 typedef enum {
-    CV_BEGIN, CV_MOVE, CV_LINE, CV_STROKE, CV_FILL_RECT, CV_CLEAR
+    CV_BEGIN, CV_MOVE, CV_LINE, CV_STROKE, CV_FILL_RECT, CV_CLEAR,
+    CV_ARC, CV_CLOSE, CV_FILL, CV_FILL_TEXT
 } CanvasCmdKind;
 
 typedef struct {
     CanvasCmdKind k;
     // p0..p3 carry geometry: x1,y1,x2,y2 for lines; x,y,w,h for rects;
-    // line width in p0 for stroke commands.
+    // line width in p0 for stroke commands; ARC: cx,cy,radius,(unused);
+    // FILL_TEXT: x,y,font_size,(unused).
     float p0, p1, p2, p3;
+    float a0, a1;          // ARC start/end angle (radians)
     float cr, cg, cb, calpha;
+    char* text;            // FILL_TEXT string (owned)
 } CanvasCmd;
 
 typedef struct {
@@ -2181,6 +2185,8 @@ typedef struct {
 static Canvas* canvases = NULL;
 static int canvas_count = 0;
 static int canvas_cap = 0;
+
+static void canvas_free_text(int canvas_id);  // fwd; frees FILL_TEXT strings
 
 static int canvas_id_for_hwnd(HWND hwnd) {
     for (int i = 0; i < canvas_count; i++) {
@@ -2238,6 +2244,7 @@ int aether_ui_canvas_get_widget(int canvas_id) {
 // leaked ~16 bytes/cmd * 60Hz forever (hundreds of MB/hr on busy scenes).
 void aether_ui_canvas_begin_path_impl(int canvas_id) {
     if (canvas_id >= 1 && canvas_id <= canvas_count) {
+        canvas_free_text(canvas_id);
         canvases[canvas_id - 1].cmd_count = 0;
     }
     CanvasCmd c = {0}; c.k = CV_BEGIN;
@@ -2278,8 +2285,49 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, float x, float y,
     canvas_add_cmd(canvas_id, c);
 }
 
+void aether_ui_canvas_arc_impl(int canvas_id, float cx, float cy, float radius,
+                                float start_angle, float end_angle) {
+    CanvasCmd c = {0};
+    c.k = CV_ARC; c.p0 = cx; c.p1 = cy; c.p2 = radius;
+    c.a0 = start_angle; c.a1 = end_angle;
+    canvas_add_cmd(canvas_id, c);
+}
+
+void aether_ui_canvas_close_path_impl(int canvas_id) {
+    CanvasCmd c = {0}; c.k = CV_CLOSE;
+    canvas_add_cmd(canvas_id, c);
+}
+
+void aether_ui_canvas_fill_impl(int canvas_id, float r, float g, float b, float a) {
+    CanvasCmd c = {0};
+    c.k = CV_FILL; c.cr = r; c.cg = g; c.cb = b; c.calpha = a;
+    canvas_add_cmd(canvas_id, c);
+}
+
+void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
+                                      float x, float y, float font_size,
+                                      float r, float g, float b, float a) {
+    CanvasCmd c = {0};
+    c.k = CV_FILL_TEXT; c.p0 = x; c.p1 = y; c.p2 = font_size;
+    c.cr = r; c.cg = g; c.cb = b; c.calpha = a;
+    c.text = text ? _strdup(text) : NULL;
+    canvas_add_cmd(canvas_id, c);
+}
+
+static void canvas_free_text(int canvas_id) {
+    if (canvas_id < 1 || canvas_id > canvas_count) return;
+    Canvas* cv = &canvases[canvas_id - 1];
+    for (int i = 0; i < cv->cmd_count; i++) {
+        if (cv->cmds[i].k == CV_FILL_TEXT && cv->cmds[i].text) {
+            free(cv->cmds[i].text);
+            cv->cmds[i].text = NULL;
+        }
+    }
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     if (canvas_id < 1 || canvas_id > canvas_count) return;
+    canvas_free_text(canvas_id);
     canvases[canvas_id - 1].cmd_count = 0;
     CanvasCmd c = {0}; c.k = CV_CLEAR;
     canvas_add_cmd(canvas_id, c);
@@ -2334,6 +2382,64 @@ static void canvas_paint(HWND hwnd, HDC hdc, int width, int height) {
                            (int)(cmd->p0 + cmd->p2), (int)(cmd->p1 + cmd->p3) };
                 FillRect(mem, &r, br);
                 DeleteObject(br);
+                break;
+            }
+            case CV_ARC: {
+                // Outline the circle/arc. GDI's Arc takes a bounding box
+                // + two radial points; for a full circle (a0=0,a1=2π)
+                // we use Ellipse. Stroke colour comes from the current pen.
+                int cx = (int)cmd->p0, cy = (int)cmd->p1, rad = (int)cmd->p2;
+                Ellipse(mem, cx - rad, cy - rad, cx + rad, cy + rad);
+                break;
+            }
+            case CV_CLOSE:
+                break;  // polygon close handled in CV_FILL accumulation
+            case CV_FILL: {
+                // Accumulate the points from MOVE/LINE/ARC commands since
+                // the last BEGIN into a polygon, fill with the given color.
+                POINT pts[256];
+                int np = 0;
+                for (int j = i - 1; j >= 0 && np < 256; j--) {
+                    CanvasCmdKind k = cv->cmds[j].k;
+                    if (k == CV_BEGIN) break;
+                    if (k == CV_MOVE) {
+                        pts[np].x = (int)cv->cmds[j].p0;
+                        pts[np].y = (int)cv->cmds[j].p1;
+                        np++;
+                    } else if (k == CV_LINE) {
+                        pts[np].x = (int)cv->cmds[j].p2;
+                        pts[np].y = (int)cv->cmds[j].p3;
+                        np++;
+                    }
+                }
+                if (np >= 3) {
+                    int ri = (int)(cmd->cr * 255), gi = (int)(cmd->cg * 255),
+                        bi = (int)(cmd->cb * 255);
+                    HBRUSH br = CreateSolidBrush(RGB(ri, gi, bi));
+                    HBRUSH oldbr = (HBRUSH)SelectObject(mem, br);
+                    Polygon(mem, pts, np);
+                    SelectObject(mem, oldbr);
+                    DeleteObject(br);
+                }
+                break;
+            }
+            case CV_FILL_TEXT: {
+                if (cmd->text) {
+                    int ri = (int)(cmd->cr * 255), gi = (int)(cmd->cg * 255),
+                        bi = (int)(cmd->cb * 255);
+                    HFONT font = CreateFontA((int)cmd->p2, 0, 0, 0, FW_NORMAL,
+                        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, NULL);
+                    HFONT oldfont = (HFONT)SelectObject(mem, font);
+                    SetTextColor(mem, RGB(ri, gi, bi));
+                    SetBkMode(mem, TRANSPARENT);
+                    // cairo origin is baseline; GDI TextOut is top-left.
+                    // Offset up by ~font ascent (≈0.8 of size) for parity.
+                    TextOutA(mem, (int)cmd->p0, (int)(cmd->p1 - cmd->p2 * 0.8f),
+                             cmd->text, (int)strlen(cmd->text));
+                    SelectObject(mem, oldfont);
+                    DeleteObject(font);
+                }
                 break;
             }
             default: break;

@@ -47,6 +47,12 @@ case "$OS" in
         fi
         # GDBus for StatusNotifierItem + DBusMenu is part of GIO, which
         # is a transitive dep of GTK4 — no extra pkg-config probe needed.
+        #
+        # AETHER_LIBS pulls in libaether's transitive deps (PCRE2 / SSL /
+        # zlib / nghttp2) via `ae cflags --libs`. Examples that import
+        # std.regex-using modules (e.g. the AeVG port's rasterize/parser)
+        # need -lpcre2-8 at link time; plain -laether doesn't pull it in.
+        AETHER_LIBS="$(ae cflags --libs 2>/dev/null || true)"
         gcc -O0 -g -pipe \
             $(pkg-config --cflags gtk4) \
             $AETHER_INCLUDES \
@@ -56,7 +62,7 @@ case "$OS" in
             "$SCRIPT_DIR/aether_ui_sni.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$OUTPUT" \
-            -pthread -lm $(pkg-config --libs gtk4) $LIBNOTIFY_LIBS
+            -pthread -lm $(pkg-config --libs gtk4) $LIBNOTIFY_LIBS $AETHER_LIBS
         ;;
     MINGW*|MSYS*|CYGWIN*)
         echo "Platform: Windows (native Win32)"

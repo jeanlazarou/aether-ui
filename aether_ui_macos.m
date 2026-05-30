@@ -1153,7 +1153,11 @@ typedef enum {
     CANVAS_LINE_TO,
     CANVAS_STROKE,
     CANVAS_FILL_RECT,
-    CANVAS_CLEAR
+    CANVAS_CLEAR,
+    CANVAS_ARC,
+    CANVAS_CLOSE_PATH,
+    CANVAS_FILL,
+    CANVAS_FILL_TEXT
 } CanvasCmdType;
 
 typedef struct {
@@ -1161,6 +1165,8 @@ typedef struct {
     double x, y;
     double r, g, b, a;
     double w, h;
+    double a0, a1;   // ARC start/end angle
+    char* text;     // FILL_TEXT string (owned)
 } CanvasCmd;
 
 typedef struct {
@@ -1226,6 +1232,37 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                 CGContextSetRGBFillColor(cg, c->r, c->g, c->b, c->a);
                 CGContextFillRect(cg, CGRectMake(c->x, c->y, c->w, c->h));
                 break;
+            case CANVAS_ARC:
+                // CGContextAddArc appends to the current path. w = radius,
+                // a0/a1 = start/end angle. clockwise=0 to match cairo's
+                // positive-angle direction on a flipped (isFlipped) view.
+                CGContextAddArc(cg, c->x, c->y, c->w, c->a0, c->a1, 0);
+                break;
+            case CANVAS_CLOSE_PATH:
+                CGContextClosePath(cg);
+                break;
+            case CANVAS_FILL:
+                CGContextSetRGBFillColor(cg, c->r, c->g, c->b, c->a);
+                CGContextFillPath(cg);
+                break;
+            case CANVAS_FILL_TEXT: {
+                if (c->text) {
+                    NSString* s = [NSString stringWithUTF8String:c->text];
+                    NSColor* col = [NSColor colorWithRed:c->r green:c->g
+                                                    blue:c->b alpha:c->a];
+                    NSFont* font = [NSFont systemFontOfSize:c->w];
+                    NSDictionary* attrs = @{
+                        NSFontAttributeName: font,
+                        NSForegroundColorAttributeName: col
+                    };
+                    // cairo's text origin is the baseline; NSString draws
+                    // from the top-left, so offset up by the ascender.
+                    CGFloat ascent = [font ascender];
+                    [s drawAtPoint:NSMakePoint(c->x, c->y - ascent)
+                        withAttributes:attrs];
+                }
+                break;
+            }
             case CANVAS_CLEAR:
                 break;
         }
@@ -1288,9 +1325,43 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, float x, float y,
     });
 }
 
+void aether_ui_canvas_arc_impl(int canvas_id, float cx, float cy, float radius,
+                                float start_angle, float end_angle) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_ARC, .x = cx, .y = cy, .w = radius,
+        .a0 = start_angle, .a1 = end_angle
+    });
+}
+
+void aether_ui_canvas_close_path_impl(int canvas_id) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){ .type = CANVAS_CLOSE_PATH });
+}
+
+void aether_ui_canvas_fill_impl(int canvas_id, float r, float g, float b, float a) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_FILL, .r = r, .g = g, .b = b, .a = a
+    });
+}
+
+void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
+                                      float x, float y, float font_size,
+                                      float r, float g, float b, float a) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_FILL_TEXT, .x = x, .y = y, .w = font_size,
+        .r = r, .g = g, .b = b, .a = a,
+        .text = text ? strdup(text) : NULL
+    });
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (!cs) return;
+    for (int i = 0; i < cs->count; i++) {
+        if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
+            free(cs->cmds[i].text);
+            cs->cmds[i].text = NULL;
+        }
+    }
     cs->count = 0;
     NSView* v = (__bridge NSView*)aether_ui_get_widget(cs->widget_handle);
     if (v) [v setNeedsDisplay:YES];

@@ -35,6 +35,7 @@ exports (
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_fill_rect, canvas_clear, canvas_redraw,
+    canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
     enable_test_server, seal_widget, seal_subtree,
@@ -195,6 +196,13 @@ extern aether_ui_canvas_move_to_impl(canvas_id: int, x: float, y: float)
 extern aether_ui_canvas_line_to_impl(canvas_id: int, x: float, y: float)
 extern aether_ui_canvas_stroke_impl(canvas_id: int, r: float, g: float, b: float,
                                a: float, line_width: float)
+extern aether_ui_canvas_arc_impl(canvas_id: int, cx: float, cy: float,
+                                 radius: float, start_angle: float, end_angle: float)
+extern aether_ui_canvas_close_path_impl(canvas_id: int)
+extern aether_ui_canvas_fill_impl(canvas_id: int, r: float, g: float, b: float, a: float)
+extern aether_ui_canvas_fill_text_impl(canvas_id: int, text: string,
+                                       x: float, y: float, font_size: float,
+                                       r: float, g: float, b: float, a: float)
 extern aether_ui_canvas_fill_rect_impl(canvas_id: int, x: float, y: float,
                                   w: float, h: float,
                                   r: float, g: float, b: float, a: float)
@@ -716,6 +724,30 @@ canvas_stroke(cid: int, r: float, g: float, b: float, a: float, line_width: floa
 canvas_fill_rect(cid: int, x: float, y: float, w: float, h: float,
                   r: float, g: float, b: float, a: float) {
     aether_ui_canvas_fill_rect_impl(cid, x, y, w, h, r, g, b, a)
+}
+
+// Append a circle/arc to the current path. For a full circle pass
+// start=0, end=2π. Fill or stroke afterward.
+canvas_arc(cid: int, cx: float, cy: float, radius: float,
+           start_angle: float, end_angle: float) {
+    aether_ui_canvas_arc_impl(cid, cx, cy, radius, start_angle, end_angle)
+}
+
+// Close the current sub-path (connects back to the last move_to).
+canvas_close_path(cid: int) {
+    aether_ui_canvas_close_path_impl(cid)
+}
+
+// Fill the current path with a solid color.
+canvas_fill(cid: int, r: float, g: float, b: float, a: float) {
+    aether_ui_canvas_fill_impl(cid, r, g, b, a)
+}
+
+// Draw text at (x, y) — the text baseline origin — with the given
+// font size and color.
+canvas_fill_text(cid: int, text: string, x: float, y: float, font_size: float,
+                 r: float, g: float, b: float, a: float) {
+    aether_ui_canvas_fill_text_impl(cid, text, x, y, font_size, r, g, b, a)
 }
 
 canvas_clear(cid: int) {

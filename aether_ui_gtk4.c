@@ -1124,14 +1124,21 @@ typedef enum {
     CANVAS_LINE_TO,
     CANVAS_STROKE,
     CANVAS_FILL_RECT,
-    CANVAS_CLEAR
+    CANVAS_CLEAR,
+    CANVAS_ARC,         // add a circle/arc to the current path
+    CANVAS_CLOSE_PATH,  // close the current sub-path
+    CANVAS_FILL,        // fill the current path with a color
+    CANVAS_FILL_TEXT    // draw text at (x, y), size in w
 } CanvasCmdType;
 
 typedef struct {
     CanvasCmdType type;
-    double x, y;              // MOVE_TO, LINE_TO coords
+    double x, y;              // MOVE_TO, LINE_TO, ARC center, FILL_TEXT origin
     double r, g, b, a;        // STROKE / FILL color
-    double w, h;              // FILL_RECT width/height or STROKE line_width (in x)
+    double w, h;              // FILL_RECT w/h; STROKE line_width (x); ARC radius (w);
+                              //   ARC start angle (h); FILL_TEXT font size (w)
+    double a0, a1;            // ARC start/end angle (radians)
+    char* text;              // FILL_TEXT string (owned, freed on clear/destroy)
 } CanvasCmd;
 
 typedef struct {
@@ -1190,6 +1197,26 @@ static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
                 cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
                 cairo_rectangle(cr, c->x, c->y, c->w, c->h);
                 cairo_fill(cr);
+                break;
+            case CANVAS_ARC:
+                // Append an arc to the current path. w = radius,
+                // a0/a1 = start/end angle (radians). For a full
+                // circle the caller passes 0..2π.
+                cairo_arc(cr, c->x, c->y, c->w, c->a0, c->a1);
+                break;
+            case CANVAS_CLOSE_PATH:
+                cairo_close_path(cr);
+                break;
+            case CANVAS_FILL:
+                cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
+                cairo_fill(cr);
+                break;
+            case CANVAS_FILL_TEXT:
+                cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
+                cairo_set_font_size(cr, c->w);
+                cairo_move_to(cr, c->x, c->y);
+                if (c->text) cairo_show_text(cr, c->text);
+                cairo_new_path(cr); // show_text leaves a path; clear it
                 break;
             case CANVAS_CLEAR:
                 break;
@@ -1254,9 +1281,44 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, float x, float y,
     });
 }
 
+void aether_ui_canvas_arc_impl(int canvas_id, float cx, float cy, float radius,
+                                float start_angle, float end_angle) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_ARC, .x = cx, .y = cy, .w = radius,
+        .a0 = start_angle, .a1 = end_angle
+    });
+}
+
+void aether_ui_canvas_close_path_impl(int canvas_id) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){ .type = CANVAS_CLOSE_PATH });
+}
+
+void aether_ui_canvas_fill_impl(int canvas_id, float r, float g, float b, float a) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_FILL, .r = r, .g = g, .b = b, .a = a
+    });
+}
+
+void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
+                                      float x, float y, float font_size,
+                                      float r, float g, float b, float a) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_FILL_TEXT, .x = x, .y = y, .w = font_size,
+        .r = r, .g = g, .b = b, .a = a,
+        .text = text ? strdup(text) : NULL
+    });
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (cs) {
+        // Free any owned text strings before resetting the buffer.
+        for (int i = 0; i < cs->count; i++) {
+            if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
+                free(cs->cmds[i].text);
+                cs->cmds[i].text = NULL;
+            }
+        }
         cs->count = 0;
         GtkWidget* w = aether_ui_get_widget(cs->widget_handle);
         if (w) gtk_widget_queue_draw(w);

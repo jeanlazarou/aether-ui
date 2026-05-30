@@ -51,7 +51,7 @@ import grammar_defs
 import rasterize
 import blur
 import transform
-import aevg_backend
+import backend_dispatch
 
 extern malloc(size: int) -> ptr
 extern lrint(x: float) -> long
@@ -234,7 +234,7 @@ render_as_raster(ctx: ptr, backend: ptr,
     _ = map.put(opts, "w",         string.from_int(out_w))
     _ = map.put(opts, "h",         string.from_int(out_h))
     _ = map.put(opts, "rawPixels", raw_b64)
-    return aevg_backend.canvas_raster(backend, opts)
+    return backend_dispatch.dispatch_raster(backend, opts)
 }
 
 // Bridge from stored fn to invocation. The shape_filler arrives as

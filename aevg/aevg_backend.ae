@@ -47,6 +47,7 @@ exports (
 import std.list
 import std.map
 import std.string
+import backend_dispatch
 
 extern malloc(size: int) -> ptr
 
@@ -54,6 +55,11 @@ extern malloc(size: int) -> ptr
 //
 // Single field: a *std.list of *RecordedCall, each one a small
 // {kind, opts} struct. Tests walk the list by index.
+//
+// backend_new() returns a *backend_dispatch.Dispatch wrapping a
+// *Backend recording handle. The factory dispatches through the
+// table; the inspection functions (backend_kind etc.) unwrap the
+// dispatch ptr back to the recording handle via backend_self.
 
 struct Backend {
     calls: ptr   // std.list of *RecordedCall
@@ -74,16 +80,33 @@ mk_call(kind: string, opts: ptr) -> *RecordedCall {
 backend_new() -> ptr {
     b = malloc(16) as *Backend
     b.calls = list.new()
-    return b
+    // Wrap the recording handle in a dispatch table. The single
+    // closure switches on the op selector and forwards to this
+    // module's canvas_* recorders. `be` is the *Backend above.
+    return backend_dispatch.backend_make(b) callback |be: ptr, op: int, opts: ptr| {
+        if op == 0 { return canvas_circle(be, opts) }
+        if op == 1 { return canvas_rectangle(be, opts) }
+        if op == 2 { return canvas_line(be, opts) }
+        if op == 3 { return canvas_path(be, opts) }
+        if op == 4 { return canvas_text(be, opts) }
+        if op == 5 { return canvas_raster(be, opts) }
+        return canvas_tappable_raster(be, opts)
+    }
+}
+
+// Inspection functions take the dispatch ptr returned by
+// backend_new() and unwrap to the recording handle.
+rec_handle(p: ptr) -> ptr {
+    return backend_dispatch.backend_self(p)
 }
 
 backend_call_count(p: ptr) -> int {
-    b = p as *Backend
+    b = rec_handle(p) as *Backend
     return list.size(b.calls)
 }
 
 backend_kind(p: ptr, i: int) -> string {
-    b = p as *Backend
+    b = rec_handle(p) as *Backend
     item, _ = list.get(b.calls, i)
     if item == null { return "" }
     c = item as *RecordedCall
@@ -91,7 +114,7 @@ backend_kind(p: ptr, i: int) -> string {
 }
 
 backend_opt_get(p: ptr, i: int, key: string) -> string {
-    b = p as *Backend
+    b = rec_handle(p) as *Backend
     item, _ = list.get(b.calls, i)
     if item == null { return "" }
     c = item as *RecordedCall
@@ -101,7 +124,7 @@ backend_opt_get(p: ptr, i: int, key: string) -> string {
 }
 
 backend_opt_has(p: ptr, i: int, key: string) -> int {
-    b = p as *Backend
+    b = rec_handle(p) as *Backend
     item, _ = list.get(b.calls, i)
     if item == null { return 0 }
     c = item as *RecordedCall
@@ -109,7 +132,7 @@ backend_opt_has(p: ptr, i: int, key: string) -> int {
 }
 
 backend_clear(p: ptr) {
-    b = p as *Backend
+    b = rec_handle(p) as *Backend
     list.clear(b.calls)
 }
 

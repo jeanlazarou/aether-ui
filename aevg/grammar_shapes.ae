@@ -47,7 +47,7 @@ import grammar_style
 import grammar_utils
 import grammar_element
 import transform
-import aevg_backend
+import backend_dispatch
 import normalizer
 import parser
 import std.regex
@@ -143,7 +143,7 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = aevg_backend.canvas_circle(backend, opts)
+    underlying = backend_dispatch.dispatch_circle(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -215,7 +215,7 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = aevg_backend.canvas_rectangle(backend, opts)
+    underlying = backend_dispatch.dispatch_rectangle(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -262,7 +262,7 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = aevg_backend.canvas_line(backend, opts)
+    underlying = backend_dispatch.dispatch_line(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -347,7 +347,7 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
 
-    underlying = aevg_backend.canvas_path(backend, opts)
+    underlying = backend_dispatch.dispatch_path(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
 
@@ -481,7 +481,7 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
 
     opts = mk_text_opts(content, mx, my - baseline_offset, fill_color,
                        text_size, alignment, bold, italic, monospace)
-    underlying = aevg_backend.canvas_text(backend, opts)
+    underlying = backend_dispatch.dispatch_text(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
     el = grammar_element.element_new(underlying)
@@ -568,7 +568,7 @@ emit_tspans(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr,
 
                 opts = mk_text_opts(t_text, mx, my - baseline_offset, color,
                                    text_size, alignment, bold, italic, monospace)
-                _ = aevg_backend.canvas_text(backend, opts)
+                _ = backend_dispatch.dispatch_text(backend, opts)
             }
         }
         i = i + 1
