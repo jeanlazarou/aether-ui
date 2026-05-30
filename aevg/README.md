@@ -33,6 +33,7 @@ The platform-coupling layer lives behind `aevg_backend.ae`'s interface
 | grammar_shapes | `grammar-shapes.ts` (525 LoC, happy-path subset) | `grammar_shapes.ae` | `test_grammar_shapes.ae` (34 asserts) | ✅ Shape factories: `shape_circle`, `shape_rectangle`, `shape_line`, `shape_path`, `shape_group`. End-to-end pipeline per call: maybe-push-transform → resolve_style → map_point + parse_len_x/y → resolve_fill/stroke_color → map_stroke_width → backend dispatch → wrap in *AevgElement with bounds → maybe-pop-transform. Path bounds computed by walking normalize_commands output. Group is unique (no backend call) — pushes style+transform, runs the body closure, pops. Projective-transform, raster-fallback, gradient, rounded-corner branches all deferred (need grammar_defs / projective glue). |
 | grammar_utils | (additions this commit) | `grammar_utils.ae` | (existing test still 49) | ✅ Adds `resolve_fill_color`, `resolve_stroke_color`, `effective_alpha`, `effective_stroke_alpha`, `style_num_default`. `url(#id)` gradient lookup deferred (needs grammar_defs); falls back to trailing color or "black". |
 | grammar_factories | `grammar-factories.ts` (223 LoC, kernel subset) | `grammar_factories.ae` | `test_grammar_factories.ae` (31 asserts) | ✅ `create_aevg_context(opts)` — the meat: parses viewBox, computes the two-step `viewBox → viewport → canvas` affine via `preserveAspectRatio` (xMidYMid meet default; Min/Max alignment; meet/slice scaling), constructs a `*AevgContext` ready for shape calls. `aevg(backend, opts, body)` convenience wraps it. `AevgOptions` struct with width/height/viewBox/PAR setters. Letterbox/pillarbox math verified end-to-end: vb 100×50 + canvas 200×200 + meet → scale 2, offset_y 50. The TS `CvgBuilder` class doesn't port (no classes); callers use `shape_*` factories directly. `app.clip`/`app.canvasStack` widget machinery is real-backend territory (Phase 1). |
+| grammar_animations | `grammar-context.ts` (animation sub-system) | `grammar_animations.ae` | `test_grammar_animations.ae` (19 asserts) | ✅ Animation manager separated from grammar_context. `add_animation(mgr, el, dur, delay, loop, yoyo, now) callback \|t: float\| { … }` registers; `tick_animations(mgr, now_ms)` drives one frame. Synthetic-clock-driven tests (no sleep). Closure receives **raw t** in [0,1] and applies its own easing — workaround for an Aether codegen bug where invoking a `fn`-typed param that returns float through closure-unbox emits an `int(*)` cast that mangles the return. Filed as follow-up to `aether/fn_ptr_coercion.md`. Real-frame tick via `os.now_monotonic_ms()` + backend timer is Phase 1. |
 
 Also landed: **`parse_transform`** (deferred since the first commit; ~22
 extra assertions in `test_transform.ae`, total 52) + cross-module
@@ -61,9 +62,9 @@ Tier C breakdown (per inventory):
   - ✅ `grammar_shapes.ae` (circle/rect/line/path/group factories)
   - ✅ `grammar_factories.ae` (`create_aevg_context`, viewBox → canvas
     mapping with preserveAspectRatio)
+  - ✅ `grammar_animations.ae` (animation manager + tick loop)
   - ⬜ CSS class system (registerCssStyle/getCssProps)
   - ⬜ Event tracking & dispatch (context-side)
-  - ⬜ Animation manager
   - ⬜ Binding regions
   - ⬜ `grammar-defs` (gradient/filter/clipPath/text/use construction)
 
