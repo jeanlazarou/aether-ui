@@ -241,9 +241,87 @@ canvas_line(p: ptr, opts: ptr) -> ptr {
 // flattening to canvas segments is the next adapter increment.
 // Logged so the gap is visible rather than silent.
 
+// opts: "points" — a space-separated polyline in canvas space
+// produced by shape_path. Tokens are either "x,y" coordinate pairs,
+// "M" (start a new sub-path — the next point is a move_to), or "Z"
+// (close the current sub-path). Plus fillColor / strokeColor /
+// strokeWidth.
+//
+// Fill and stroke each replay the whole token stream (fill first so
+// the stroke sits on top), because the canvas command buffer's
+// fill/stroke consume the accumulated path.
+
 canvas_path(p: ptr, opts: ptr) -> ptr {
-    println("[aevg_gtk_backend] canvas_path: 'd' flattening not yet wired — skipped")
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    pts = opt_s(opts, "points")
+    if string.length(pts) == 0 { return fresh_handle() }
+
+    fill = opt_s(opts, "fillColor")
+    stroke = opt_s(opts, "strokeColor")
+    sw = opt_f(opts, "strokeWidth", 1.0)
+
+    if string.length(fill) > 0 {
+        replay_path(cid, pts)
+        aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+                                   color_b01(fill), color_a01(fill))
+    }
+    if string.length(stroke) > 0 {
+        replay_path(cid, pts)
+        aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
+                                     color_b01(stroke), color_a01(stroke), sw)
+    }
     return fresh_handle()
+}
+
+// Replay a polyline token stream into the canvas as a path (no
+// fill/stroke — the caller does that). The first point of each
+// sub-path is a move_to; subsequent points are line_to; "M" forces
+// the next point to be a move_to; "Z" closes the sub-path.
+replay_path(cid: int, pts: string) {
+    aether_ui.canvas_begin_path(cid)
+    toks = string_split(pts, " ")
+    n = string_array_size(toks)
+    pen_down = 0       // 0 = next coord is a move_to
+    i = 0
+    while i < n {
+        tok = string_array_get(toks, i)
+        if string.length(tok) == 0 {
+            i = i + 1
+            continue
+        }
+        if string.equals(tok, "M") == 1 {
+            pen_down = 0
+            i = i + 1
+            continue
+        }
+        if string.equals(tok, "Z") == 1 {
+            aether_ui.canvas_close_path(cid)
+            pen_down = 0
+            i = i + 1
+            continue
+        }
+        // "x,y" coordinate token.
+        comma = string.index_of(tok, ",")
+        if comma > 0 {
+            xs = string.substring(tok, 0, comma)
+            ys = string.substring(tok, comma + 1, string.length(tok))
+            x, ex = string.to_double(xs)
+            y, ey = string.to_double(ys)
+            if ex == "" {
+                if ey == "" {
+                    if pen_down == 0 {
+                        aether_ui.canvas_move_to(cid, x, y)
+                        pen_down = 1
+                    } else {
+                        aether_ui.canvas_line_to(cid, x, y)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
 }
 
 // ─── canvas_text ─────────────────────────────────────────────────

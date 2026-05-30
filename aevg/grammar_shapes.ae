@@ -49,6 +49,7 @@ import grammar_element
 import transform
 import backend_dispatch
 import normalizer
+import std.strbuilder
 import parser
 import std.regex
 
@@ -295,34 +296,69 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     // Normalise the path string; consumers see only M/L/C/Z.
     cmds = normalizer.normalize_commands(normalizer.parse_path(d))
 
-    // Compute path bounds (over the normalised cmds — same logic as
-    // bbox.ae's path_bounds inner loop, simplified to walk floatarr
-    // args directly).
+    // Flatten to a canvas-space polyline. Each M/L contributes one
+    // mapped point; each C is sampled into PATH_CUBIC_STEPS line
+    // segments (canvas-space). Z marks a sub-path close. The result is
+    // emitted as a compact "points" opt: a space-separated list of
+    // "x,y" tokens, with sub-paths separated by the token "Z". The
+    // backend adapter strokes/fills it directly — no further mapping.
+    //
+    // Bounds are accumulated over the *mapped* points (the old code
+    // computed bounds in SVG space, which was wrong for any non-
+    // identity viewBox; hit-testing now matches the drawn pixels).
+    points = strbuilder.new(128)
     has_pt = 0
     mnx = 0.0; mny = 0.0; mxx = 0.0; mxy = 0.0
+    // Current pen position in SVG space (for cubic sampling start).
+    cur_x = 0.0; cur_y = 0.0
     n_cmds = list_size(cmds)
     Z_code = 90
+    M_code = 77
+    C_code = 67
     i = 0
     while i < n_cmds {
         item, _ = list.get(cmds, i)
         cty = normalizer.cmd_type(item)
-        if cty != Z_code {
-            args = normalizer.cmd_args(item)
-            argn = floatarr_size(args)
-            j = 0
-            while j + 1 < argn {
-                cx = floatarr_get_unchecked(args, j)
-                cy = floatarr_get_unchecked(args, j + 1)
-                if has_pt == 0 {
-                    mnx = cx; mny = cy; mxx = cx; mxy = cy
-                    has_pt = 1
-                } else {
-                    if cx < mnx { mnx = cx }
-                    if cy < mny { mny = cy }
-                    if cx > mxx { mxx = cx }
-                    if cy > mxy { mxy = cy }
+        args = normalizer.cmd_args(item)
+
+        if cty == Z_code {
+            sb_token(points, "Z")
+        } else {
+            if cty == C_code {
+                // Cubic: sample from (cur_x,cur_y) through the two
+                // control points to the endpoint. Each sample is
+                // mapped to canvas space.
+                cp1x = floatarr_get_unchecked(args, 0)
+                cp1y = floatarr_get_unchecked(args, 1)
+                cp2x = floatarr_get_unchecked(args, 2)
+                cp2y = floatarr_get_unchecked(args, 3)
+                ex   = floatarr_get_unchecked(args, 4)
+                ey   = floatarr_get_unchecked(args, 5)
+                steps = PATH_CUBIC_STEPS()
+                s = 1
+                while s <= steps {
+                    t = s / steps_f()
+                    bx = cubic_at(cur_x, cp1x, cp2x, ex, t)
+                    by = cubic_at(cur_y, cp1y, cp2y, ey, t)
+                    mp = grammar_rendering.map_point(ctx, bx, by)
+                    px = transform.pt_x(mp); py = transform.pt_y(mp)
+                    has_pt, mnx, mny, mxx, mxy =
+                        emit_pt(points, px, py, has_pt, mnx, mny, mxx, mxy)
+                    s = s + 1
                 }
-                j = j + 2
+                cur_x = ex; cur_y = ey
+            } else {
+                // M or L: one point. M emits a pen-up marker first so
+                // the adapter starts a new sub-path (move_to) rather
+                // than drawing a line from the previous sub-path.
+                ax = floatarr_get_unchecked(args, 0)
+                ay = floatarr_get_unchecked(args, 1)
+                mp = grammar_rendering.map_point(ctx, ax, ay)
+                px = transform.pt_x(mp); py = transform.pt_y(mp)
+                if cty == M_code { sb_token(points, "M") }
+                has_pt, mnx, mny, mxx, mxy =
+                    emit_pt(points, px, py, has_pt, mnx, mny, mxx, mxy)
+                cur_x = ax; cur_y = ay
             }
         }
         i = i + 1
@@ -342,7 +378,8 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     }
 
     opts = map.new()
-    opt_set_s(opts, "d", d)   // pass-through; backend would normalise if it wanted
+    opt_set_s(opts, "d", d)                          // raw, for reference
+    opt_set_s(opts, "points", strbuilder.finish(points))  // mapped polyline
     opt_set_s(opts, "fillColor",   fill_color)
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
@@ -356,6 +393,51 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
         grammar_element.element_set_bounds(el, mnx, mny, mxx - mnx, mxy - mny)
     }
     return el
+}
+
+// ─── path flattening helpers ─────────────────────────────────────
+
+// Number of line segments per cubic Bézier. 16 is plenty for typical
+// on-screen paths; matches the density most SVG renderers use at
+// moderate zoom.
+PATH_CUBIC_STEPS() -> int { return 16 }
+steps_f() -> float { return 16.0 }
+
+// One axis of a cubic Bézier at parameter t (de Casteljau, expanded).
+cubic_at(p0: float, p1: float, p2: float, p3: float, t: float) -> float {
+    u = 1.0 - t
+    uu = u * u
+    tt = t * t
+    return uu * u * p0 + 3.0 * uu * t * p1 + 3.0 * u * tt * p2 + tt * t * p3
+}
+
+// Append a control token ("M" or "Z"), space-prefixed. The leading
+// space yields an empty first split-token, which the adapter ignores.
+sb_token(sb: ptr, tok: string) {
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, tok)
+}
+
+// Append one canvas-space point token " x,y" to the polyline builder
+// and fold it into the running bounds. Returns the updated
+// (has_pt, mnx, mny, mxx, mxy) tuple.
+emit_pt(sb: ptr, px: float, py: float,
+        has_pt: int,
+        mnx: float, mny: float, mxx: float, mxy: float)
+        -> (int, float, float, float, float) {
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, string.from_float(px))
+    _ = strbuilder.append(sb, ",")
+    _ = strbuilder.append(sb, string.from_float(py))
+    if has_pt == 0 {
+        mnx = px; mny = py; mxx = px; mxy = py
+    } else {
+        if px < mnx { mnx = px }
+        if py < mny { mny = py }
+        if px > mxx { mxx = px }
+        if py > mxy { mxy = py }
+    }
+    return 1, mnx, mny, mxx, mxy
 }
 
 // std.list / std.floatarr externs we need (the qualified imports

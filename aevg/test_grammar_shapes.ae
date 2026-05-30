@@ -63,6 +63,22 @@ assert_opt_str(label: string, b: ptr, i: int, key: string, want: string) {
     }
 }
 
+// Count space-separated tokens that contain a comma (i.e. "x,y"
+// coordinate points), ignoring "M"/"Z" control tokens and the empty
+// leading token. Used to verify cubic flattening density.
+count_coord_tokens(pts: string) -> int {
+    toks = string_split(pts, " ")
+    n = string_array_size(toks)
+    c = 0
+    i = 0
+    while i < n {
+        tok = string_array_get(toks, i)
+        if string.index_of(tok, ",") >= 0 { c = c + 1 }
+        i = i + 1
+    }
+    return c
+}
+
 // Identity-viewBox context: vb 0,0→100×100, canvas 100×100, scale 1.
 // So map_point(x, y) = (x, y).
 mk_test_ctx() -> ptr {
@@ -191,6 +207,28 @@ main() {
         println("  FAIL: path has no bounds")
         exit(1)
     }
+    // The mapped polyline opt: identity viewBox → canvas == svg coords.
+    // Tokens are space-separated; the leading space yields an empty
+    // first token (the adapter ignores it). M starts the sub-path,
+    // then three line points, then Z closes.
+    assert_opt_str("path points polyline", bk, 0, "points",
+                   " M 10,10 30,10 30,30 10,30 Z")
+
+    aevg_backend.backend_clear(bk)
+
+    // ─── Cubic path flattens to 16 segments ─────────────────────
+    // A single cubic from (0,0) to (30,0). The flattener emits an M
+    // for the leading move + 16 sampled line points for the C. So the
+    // points token stream has: empty, "M", "0,0", then 16 coords.
+    a_cubic = map.new()
+    _ = map.put(a_cubic, "d", "M 0 0 C 10 20 20 20 30 0")
+    _ = map.put(a_cubic, "stroke", "black")
+    _ = grammar_shapes.shape_path(ctx, bk, a_cubic)
+    cubic_pts = aevg_backend.backend_opt_get(bk, 0, "points")
+    // Count coordinate tokens (those containing a comma): expect
+    // 1 (move) + 16 (cubic samples) = 17.
+    n_coords = count_coord_tokens(cubic_pts)
+    assert_eq_int("cubic flattened to 1 move + 16 segs", n_coords, 17)
 
     aevg_backend.backend_clear(bk)
 
