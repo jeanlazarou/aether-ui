@@ -216,5 +216,119 @@ main() {
         println("  FAIL: text got '${t_v}'"); exit(1)
     }
 
+    // ─── Verify cached state was written by refresh ──────────
+    //
+    // The third refresh updated el1's bindings. The cache fields
+    // on el1 should now hold the closure return values.
+
+    cached_fill = grammar_element.element_last_fill(el1)
+    if string.equals(cached_fill, "#ff00ff") == 1 {
+        println("  PASS: cached fill ('${cached_fill}')")
+    } else {
+        println("  FAIL: cached fill got '${cached_fill}'"); exit(1)
+    }
+
+    cached_stroke = grammar_element.element_last_stroke_color(el1)
+    if string.equals(cached_stroke, "#000") == 1 {
+        println("  PASS: cached stroke color ('${cached_stroke}')")
+    } else {
+        println("  FAIL: cached stroke color got '${cached_stroke}'"); exit(1)
+    }
+
+    cached_sw = grammar_element.element_last_stroke_width(el1)
+    // stroke width 2.5 ± 0.001
+    swd = cached_sw - 2.5
+    if swd < 0.0 { swd = 0.0 - swd }
+    if swd < 0.001 {
+        println("  PASS: cached stroke width (${cached_sw})")
+    } else {
+        println("  FAIL: cached stroke width ${cached_sw} want 2.5"); exit(1)
+    }
+
+    assert_eq_int("has_stroke after binding fire",
+                  grammar_element.element_has_stroke(el1), 1)
+
+    cached_op = grammar_element.element_last_opacity(el1)
+    opd = cached_op - 0.75
+    if opd < 0.0 { opd = 0.0 - opd }
+    if opd < 0.001 {
+        println("  PASS: cached opacity (${cached_op})")
+    } else {
+        println("  FAIL: cached opacity ${cached_op} want 0.75"); exit(1)
+    }
+
+    assert_eq_int("has_opacity after binding fire",
+                  grammar_element.element_has_opacity(el1), 1)
+
+    cached_text = grammar_element.element_last_text(el1)
+    if string.equals(cached_text, "hello") == 1 {
+        println("  PASS: cached text ('${cached_text}')")
+    } else {
+        println("  FAIL: cached text got '${cached_text}'"); exit(1)
+    }
+
+    // bindPos cached as a map; we read the keys back.
+    cached_pos = grammar_element.element_last_pos_props(el1)
+    if cached_pos != null {
+        cx_v, _ = map.get(cached_pos, "cx")
+        if string.equals(cx_v, "50") == 1 {
+            println("  PASS: cached pos cx ('${cx_v}')")
+        } else {
+            println("  FAIL: cached pos cx got '${cx_v}'"); exit(1)
+        }
+        cy_v, _ = map.get(cached_pos, "cy")
+        if string.equals(cy_v, "30") == 1 {
+            println("  PASS: cached pos cy ('${cy_v}')")
+        } else {
+            println("  FAIL: cached pos cy got '${cy_v}'"); exit(1)
+        }
+    } else {
+        println("  FAIL: cached pos map is null"); exit(1)
+    }
+
+    // ─── Manual setter (bypasses binding) ───────────────────
+    //
+    // The setter API isn't just for the reactive pass — users
+    // can call element_set_fill directly to update an element
+    // outside of any binding. Verify the cache reflects it.
+
+    el_manual = grammar_element.element_new(null)
+    grammar_element.element_set_fill(el_manual, "#deadbe")
+    grammar_element.element_set_opacity(el_manual, 0.42)
+    grammar_element.element_set_text(el_manual, "world")
+    grammar_element.element_set_stroke(el_manual, "#cafe00", 1.5)
+
+    mf = grammar_element.element_last_fill(el_manual)
+    if string.equals(mf, "#deadbe") == 1 {
+        println("  PASS: manual set_fill ('${mf}')")
+    } else {
+        println("  FAIL: manual set_fill got '${mf}'"); exit(1)
+    }
+
+    mt = grammar_element.element_last_text(el_manual)
+    if string.equals(mt, "world") == 1 {
+        println("  PASS: manual set_text ('${mt}')")
+    } else {
+        println("  FAIL: manual set_text got '${mt}'"); exit(1)
+    }
+
+    msc = grammar_element.element_last_stroke_color(el_manual)
+    if string.equals(msc, "#cafe00") == 1 {
+        println("  PASS: manual set_stroke color ('${msc}')")
+    } else {
+        println("  FAIL: manual set_stroke color got '${msc}'"); exit(1)
+    }
+
+    // ─── Defaults pre-set ─────────────────────────────────
+    //
+    // A fresh element should report has_stroke=0, has_opacity=0,
+    // and empty cached strings.
+
+    el_fresh = grammar_element.element_new(null)
+    assert_eq_int("fresh has_stroke = 0",
+                  grammar_element.element_has_stroke(el_fresh), 0)
+    assert_eq_int("fresh has_opacity = 0",
+                  grammar_element.element_has_opacity(el_fresh), 0)
+
     println("=== test_grammar_reactive passed ===")
 }

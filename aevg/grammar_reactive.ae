@@ -52,6 +52,7 @@ exports (
 
 import std.list
 import std.string
+import std.map
 import grammar_element
 import grammar_context
 
@@ -95,31 +96,47 @@ refresh_element_bindings(el: ptr) -> int {
 
     fb = grammar_element.element_fill_binding(el)
     if fb != null {
-        _new_fill = invoke_fill_binding(fb)
+        new_fill = invoke_fill_binding(fb)
+        grammar_element.element_set_fill(el, new_fill)
         fired = fired + 2
     }
 
     sb = grammar_element.element_stroke_binding(el)
     if sb != null {
-        _stroke_map = invoke_stroke_binding(sb)
+        stroke_map = invoke_stroke_binding(sb)
+        // stroke_map: ptr to std.map with "color" and optional "width"
+        // as string values. Width defaults to 0.0 if missing.
+        if stroke_map != null {
+            color_v, _ = map.get(stroke_map, "color")
+            width_v, _ = map.get(stroke_map, "width")
+            sw = 0.0
+            if string.length(width_v) > 0 {
+                sw_parsed, _ = string.to_double(width_v)
+                sw = sw_parsed
+            }
+            grammar_element.element_set_stroke(el, color_v, sw)
+        }
         fired = fired + 4
     }
 
     ob = grammar_element.element_opacity_binding(el)
     if ob != null {
-        _new_opacity = invoke_opacity_binding(ob)
+        new_opacity = invoke_opacity_binding(ob)
+        grammar_element.element_set_opacity(el, new_opacity)
         fired = fired + 8
     }
 
     tb = grammar_element.element_text_binding(el)
     if tb != null {
-        _new_text = invoke_text_binding(tb)
+        new_text = invoke_text_binding(tb)
+        grammar_element.element_set_text(el, new_text)
         fired = fired + 16
     }
 
     pb = grammar_element.element_pos_binding(el)
     if pb != null {
-        _pos_map = invoke_pos_binding(pb)
+        pos_map = invoke_pos_binding(pb)
+        grammar_element.element_set_pos_props(el, pos_map)
         fired = fired + 32
     }
 

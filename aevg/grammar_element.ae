@@ -83,7 +83,17 @@ exports (
     element_set_bounds, element_has_bounds,
     element_bounds_x, element_bounds_y,
     element_bounds_width, element_bounds_height,
-    element_hit_test
+    element_hit_test,
+
+    // Cached property state — written by element_set_* (both manual
+    // user calls and the reactive-binding refresh pass) and read by
+    // the real backend on redispatch (Phase 1).
+    element_set_fill, element_last_fill,
+    element_set_stroke, element_last_stroke_color, element_last_stroke_width,
+    element_has_stroke,
+    element_set_opacity, element_last_opacity, element_has_opacity,
+    element_set_text, element_last_text,
+    element_set_pos_props, element_last_pos_props
 )
 
 import std.string
@@ -138,20 +148,37 @@ struct AevgElement {
     bounds_y: float
     bounds_w: float
     bounds_h: float
+
+    // ─── Cached property state ──────────────────────────────────
+    // Written by `element_set_fill / set_stroke / set_opacity /
+    // set_text / set_pos_props` (called manually or via the
+    // reactive-binding refresh pass). The real backend (Phase 1)
+    // re-reads these on redispatch; under the recording stub, only
+    // tests inspect them.
+    last_fill: string
+    last_stroke_color: string
+    last_stroke_width: float
+    last_stroke_set: int      // 1 if stroke ever set, 0 otherwise
+    last_opacity: float
+    last_opacity_set: int     // 1 if opacity ever set
+    last_text: string
+    last_pos_props: ptr       // std.map string→string of last bindPos result
 }
 
 // ─── Construction ────────────────────────────────────────────────
 //
 // Zero-initialised except `visible = 1` (matches TS default).
 element_new(underlying: ptr) -> ptr {
-    // Conservative size — counting fields:
+    // Conservative size — counting fields (8-byte slots throughout):
     //   16 ptr-equivalent fields (underlying, context, 7 handlers,
-    //     5 bindings, when_predicate) × 8 = 128
-    //   3 string fields (AetherString* = 8) × 8 = 24
-    //   3 int fields (visible, destroyed, has_bounds) × 4 + pad = 24
-    //   4 float (bounds_x/y/w/h) × 8 = 32
-    // Sum ≈ 208 with padding. malloc(256) is the safe margin.
-    e = malloc(256) as *AevgElement
+    //     5 bindings, when_predicate) = 128
+    //   5 string fields (name + tooltip + cursor + last_fill +
+    //     last_stroke_color + last_text) ≈ 48
+    //   3 visibility/destroy/bounds flags + 2 cache flags ≈ 40 with pad
+    //   4 bounds floats + 2 cache floats (stroke_width, opacity) ≈ 48
+    //   1 last_pos_props ptr = 8
+    // Sum ≈ 280 with padding. malloc(320) keeps a safe margin.
+    e = malloc(320) as *AevgElement
     e.underlying = underlying
     e.context = null
     e.name_str = ""
@@ -177,6 +204,14 @@ element_new(underlying: ptr) -> ptr {
     e.bounds_y = 0.0
     e.bounds_w = 0.0
     e.bounds_h = 0.0
+    e.last_fill = ""
+    e.last_stroke_color = ""
+    e.last_stroke_width = 0.0
+    e.last_stroke_set = 0
+    e.last_opacity = 0.0
+    e.last_opacity_set = 0
+    e.last_text = ""
+    e.last_pos_props = null
     return e
 }
 
@@ -433,4 +468,104 @@ element_hit_test(p: ptr, px: float, py: float) -> int {
     if px > e.bounds_x + e.bounds_w { return 0 }
     if py > e.bounds_y + e.bounds_h { return 0 }
     return 1
+}
+
+// ─── Cached property setters/getters ─────────────────────────────
+//
+// These are the "current state" cache that the real backend will
+// re-read on redispatch (Phase 1). For now they're updated by
+// element_set_* (whether called manually or by the reactive
+// binding refresh pass) and read by tests to verify the binding
+// values actually flowed in.
+//
+// Strings are heap-tracked via string.copy + string_retain — the
+// same idiom path_builder uses for its heap-string struct fields.
+
+extern string_retain(s: string)
+
+element_set_fill(p: ptr, color: string) {
+    e = p as *AevgElement
+    cp = string.copy(color)
+    string_retain(cp)
+    e.last_fill = cp
+}
+
+element_last_fill(p: ptr) -> string {
+    e = p as *AevgElement
+    return e.last_fill
+}
+
+// Stroke takes both color and width in one call. width=0.0 with
+// flag set means "no width specified" (caller used the
+// 1-arg form). We model this with last_stroke_set bit which is
+// 1 once set at all. To preserve the "width unspecified" shape
+// (TS: width?: number), pass width = -1.0 to mean "leave
+// existing width", but for the recording-stub backend we always
+// take both — the test harness can pass any width.
+
+element_set_stroke(p: ptr, color: string, width: float) {
+    e = p as *AevgElement
+    cp = string.copy(color)
+    string_retain(cp)
+    e.last_stroke_color = cp
+    e.last_stroke_width = width
+    e.last_stroke_set = 1
+}
+
+element_last_stroke_color(p: ptr) -> string {
+    e = p as *AevgElement
+    return e.last_stroke_color
+}
+
+element_last_stroke_width(p: ptr) -> float {
+    e = p as *AevgElement
+    return e.last_stroke_width
+}
+
+element_has_stroke(p: ptr) -> int {
+    e = p as *AevgElement
+    return e.last_stroke_set
+}
+
+element_set_opacity(p: ptr, value: float) {
+    e = p as *AevgElement
+    e.last_opacity = value
+    e.last_opacity_set = 1
+}
+
+element_last_opacity(p: ptr) -> float {
+    e = p as *AevgElement
+    return e.last_opacity
+}
+
+element_has_opacity(p: ptr) -> int {
+    e = p as *AevgElement
+    return e.last_opacity_set
+}
+
+element_set_text(p: ptr, content: string) {
+    e = p as *AevgElement
+    cp = string.copy(content)
+    string_retain(cp)
+    e.last_text = cp
+}
+
+element_last_text(p: ptr) -> string {
+    e = p as *AevgElement
+    return e.last_text
+}
+
+// bindPos returns a std.map of "property" → "value-as-string".
+// We store the ptr directly (the closure owns the lifetime; the
+// real backend will read keys via map.get). Each refresh
+// overwrites with a fresh map.
+
+element_set_pos_props(p: ptr, props_map: ptr) {
+    e = p as *AevgElement
+    e.last_pos_props = props_map
+}
+
+element_last_pos_props(p: ptr) -> ptr {
+    e = p as *AevgElement
+    return e.last_pos_props
 }
