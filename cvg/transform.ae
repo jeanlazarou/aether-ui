@@ -32,9 +32,17 @@ exports (
     affine_rotate, affine_rotate_about, affine_skew_x, affine_skew_y,
     affine_mul, affine_apply, affine_average_scale, affine_is_identity,
     proj_new, proj_identity, proj_from_affine, proj_rotate_y, proj_rotate_x,
-    proj_mul, proj_apply, proj_average_scale, proj_is_affine
+    proj_mul, proj_apply, proj_average_scale, proj_is_affine,
+    parse_transform,
+    // Accessors and ptr-accepting wrappers for cross-module callers
+    // (struct types don't cross module boundaries; ptr handles do).
+    pt_x, pt_y,
+    affine_a, affine_b, affine_c, affine_d, affine_e, affine_f,
+    affine_mul_p, affine_apply_p, affine_is_identity_p
 )
 
+import std.regex
+import std.string
 import std.math
 
 extern malloc(size: int) -> ptr
@@ -249,4 +257,172 @@ proj_is_affine(m: *Projective) -> int {
     if math.abs_float(m.g) >= eps { return 0 }
     if math.abs_float(m.h) >= eps { return 0 }
     return 1
+}
+
+// ─── Pt accessors (for cross-module callers) ─────────────────────
+
+pt_x(p: ptr) -> float { v = p as *Pt; return v.x }
+pt_y(p: ptr) -> float { v = p as *Pt; return v.y }
+
+// ─── Affine field accessors and ptr-accepting wrappers ──────────
+//
+// Cross-module callers can't write `as *transform.Affine` because
+// Aether doesn't accept qualified-type casts. These accept the raw
+// ptr handle and do the cast in-module where the struct is visible.
+
+affine_a(m: ptr) -> float { v = m as *Affine; return v.a }
+affine_b(m: ptr) -> float { v = m as *Affine; return v.b }
+affine_c(m: ptr) -> float { v = m as *Affine; return v.c }
+affine_d(m: ptr) -> float { v = m as *Affine; return v.d }
+affine_e(m: ptr) -> float { v = m as *Affine; return v.e }
+affine_f(m: ptr) -> float { v = m as *Affine; return v.f }
+
+affine_mul_p(a: ptr, b: ptr) -> *Affine {
+    return affine_mul(a as *Affine, b as *Affine)
+}
+
+affine_apply_p(m: ptr, x: float, y: float) -> *Pt {
+    return affine_apply(m as *Affine, x, y)
+}
+
+affine_is_identity_p(m: ptr) -> int {
+    return affine_is_identity(m as *Affine)
+}
+
+// ─── parse_transform: SVG transform string → *Affine ─────────────
+//
+// Handles: translate, scale, rotate, matrix, skewX, skewY.
+// Multiple transforms compose left-to-right per SVG spec.
+// Unblocked by std.regex (PCRE2-backed) in v0.191.
+
+// Parse one whitespace/comma-separated number list into a float[6]
+// args array. Missing trailing args get defaults supplied by the
+// caller via the `default_*` parameters when consumed.
+//
+// Mutates `out` in place; returns the number of args actually parsed.
+parse_arg_list(arg_str: string, out: *Affine) -> int {
+    // Reuse the number-token regex from normalizer.ae's parse_path
+    // (same pattern, captures signed/decimal/scientific).
+    re, e = regex.compile("[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?")
+    if e != "" { return 0 }
+    fa, fe = regex.find_all(re, arg_str)
+    if fe != "" {
+        regex.free(re)
+        return 0
+    }
+    n = regex.find_all_count(fa)
+    // Write into the Affine struct's 6 float slots as a scratch buffer.
+    // Any unused slots stay at whatever the caller initialised them to.
+    i = 0
+    while i < n {
+        if i >= 6 { break }
+        s = regex.find_all_start(fa, i)
+        en = regex.find_all_end(fa, i)
+        tok = string.substring(arg_str, s, en)
+        v, _ = string.to_double(tok)
+        if i == 0 { out.a = v }
+        if i == 1 { out.b = v }
+        if i == 2 { out.c = v }
+        if i == 3 { out.d = v }
+        if i == 4 { out.e = v }
+        if i == 5 { out.f = v }
+        i = i + 1
+    }
+    regex.find_all_free(fa)
+    regex.free(re)
+    return n
+}
+
+// Lowercase-compare for the function-name dispatch. Aether's
+// string.to_lower exists; this just centralises the comparison.
+name_matches(haystack: string, needle_lower: string) -> int {
+    hl = string.to_lower(haystack)
+    return string.equals(hl, needle_lower)
+}
+
+parse_transform(s: string) -> *Affine {
+    result = affine_identity()
+    if string.length(s) == 0 { return result }
+
+    // Match each `name(args)` pair. The regex captures the name and
+    // the inside of the parens separately, but std.regex.find_all
+    // only gives whole-match positions — so we re-scan each match
+    // for the '(' and ')' delimiters.
+    re, e = regex.compile("[a-zA-Z]+\\s*\\([^)]*\\)")
+    if e != "" { return result }
+    fa, fe = regex.find_all(re, s)
+    if fe != "" {
+        regex.free(re)
+        return result
+    }
+    n = regex.find_all_count(fa)
+    i = 0
+    while i < n {
+        st = regex.find_all_start(fa, i)
+        en = regex.find_all_end(fa, i)
+        // `match` is a reserved keyword (actor-model hangover, per
+        // the Aether LLM.md). Use `tok` instead.
+        tok = string.substring(s, st, en)
+        paren = string.index_of(tok, "(")
+        if paren < 0 { i = i + 1; continue }
+        name = string.trim(string.substring(tok, 0, paren))
+        close_paren = string.index_of(tok, ")")
+        if close_paren < 0 { i = i + 1; continue }
+        arg_str = string.substring(tok, paren + 1, close_paren)
+
+        // Parse up to 6 numeric args into a scratch Affine.
+        scratch = affine_new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        n_args = parse_arg_list(arg_str, scratch)
+
+        // Dispatch by name (case-insensitive per SVG spec).
+        m = affine_identity()
+        if name_matches(name, "translate") == 1 {
+            tx = scratch.a
+            ty = 0.0
+            if n_args >= 2 { ty = scratch.b }
+            m = affine_translate(tx, ty)
+        }
+        if name_matches(name, "scale") == 1 {
+            sx = 1.0
+            sy = 1.0
+            if n_args >= 1 { sx = scratch.a; sy = scratch.a }
+            if n_args >= 2 { sy = scratch.b }
+            m = affine_scale(sx, sy)
+        }
+        if name_matches(name, "rotate") == 1 {
+            deg = 0.0
+            if n_args >= 1 { deg = scratch.a }
+            if n_args >= 3 {
+                m = affine_rotate_about(deg, scratch.b, scratch.c)
+            } else {
+                m = affine_rotate(deg)
+            }
+        }
+        if name_matches(name, "skewx") == 1 {
+            deg = 0.0
+            if n_args >= 1 { deg = scratch.a }
+            m = affine_skew_x(deg)
+        }
+        if name_matches(name, "skewy") == 1 {
+            deg = 0.0
+            if n_args >= 1 { deg = scratch.a }
+            m = affine_skew_y(deg)
+        }
+        if name_matches(name, "matrix") == 1 {
+            // Six args: a b c d e f. Defaults: identity.
+            ma = 1.0; mb = 0.0; mc = 0.0; md = 1.0; me = 0.0; mf = 0.0
+            if n_args >= 1 { ma = scratch.a }
+            if n_args >= 2 { mb = scratch.b }
+            if n_args >= 3 { mc = scratch.c }
+            if n_args >= 4 { md = scratch.d }
+            if n_args >= 5 { me = scratch.e }
+            if n_args >= 6 { mf = scratch.f }
+            m = affine_new(ma, mb, mc, md, me, mf)
+        }
+        result = affine_mul(result, m)
+        i = i + 1
+    }
+    regex.find_all_free(fa)
+    regex.free(re)
+    return result
 }

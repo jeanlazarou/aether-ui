@@ -117,5 +117,58 @@ main() {
     ry = transform.proj_rotate_y(30.0, 1000.0, 0.0, 0.0)
     assert_true("rotateY(30) not affine", 1 - transform.proj_is_affine(ry))
 
+    // ── parse_transform ────────────────────────────────────────────
+
+    // empty string → identity
+    pt0 = transform.parse_transform("")
+    assert_true("parse_transform('') is identity", transform.affine_is_identity(pt0))
+
+    // translate(10, 20)
+    pt1 = transform.parse_transform("translate(10 20)")
+    assert_near("parse translate.e", pt1.e, 10.0)
+    assert_near("parse translate.f", pt1.f, 20.0)
+    assert_near("parse translate.a", pt1.a, 1.0)
+
+    // translate(10) — second arg defaults to 0
+    pt2 = transform.parse_transform("translate(10)")
+    assert_near("parse translate(10).e", pt2.e, 10.0)
+    assert_near("parse translate(10).f", pt2.f, 0.0)
+
+    // scale(2)
+    pt3 = transform.parse_transform("scale(2)")
+    assert_near("parse scale(2).a", pt3.a, 2.0)
+    assert_near("parse scale(2).d", pt3.d, 2.0)
+
+    // scale(2, 3)
+    pt4 = transform.parse_transform("scale(2, 3)")
+    assert_near("parse scale(2,3).a", pt4.a, 2.0)
+    assert_near("parse scale(2,3).d", pt4.d, 3.0)
+
+    // matrix(a b c d e f)
+    pt5 = transform.parse_transform("matrix(1 2 3 4 5 6)")
+    assert_near("matrix.a", pt5.a, 1.0)
+    assert_near("matrix.b", pt5.b, 2.0)
+    assert_near("matrix.c", pt5.c, 3.0)
+    assert_near("matrix.d", pt5.d, 4.0)
+    assert_near("matrix.e", pt5.e, 5.0)
+    assert_near("matrix.f", pt5.f, 6.0)
+
+    // rotate(90) about origin: (1,0) → (0,1)
+    pt6 = transform.parse_transform("rotate(90)")
+    pt6p = transform.affine_apply(pt6, 1.0, 0.0)
+    assert_near("parse rotate(90) apply x", pt6p.x, 0.0)
+    assert_near("parse rotate(90) apply y", pt6p.y, 1.0)
+
+    // Composed: translate then scale (left-to-right per SVG spec)
+    pt7 = transform.parse_transform("translate(10 20) scale(2 2)")
+    pt7p = transform.affine_apply(pt7, 1.0, 1.0)
+    assert_near("compose translate+scale apply x", pt7p.x, 12.0)
+    assert_near("compose translate+scale apply y", pt7p.y, 22.0)
+
+    // Comma-separated args inside parens
+    pt8 = transform.parse_transform("matrix(1,0,0,1,5,10)")
+    assert_near("matrix(comma) e", pt8.e, 5.0)
+    assert_near("matrix(comma) f", pt8.f, 10.0)
+
     println("=== test_transform passed ===")
 }

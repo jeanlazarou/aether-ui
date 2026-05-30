@@ -17,6 +17,13 @@ are wired into `ci.sh` as **Phase 0** (runs even with no display).
 | normalizer | `normalizer.ts` (427 LoC) | `normalizer.ae` | `test_normalizer.ae` (60 asserts) | ✅ `parse_path` (regex-based tokenizer) + `normalize_commands` (rel→abs, H/V→L, S/Q/T→C, arc→cubic via SVG F.6). `serialize_commands` deferred until `string.from_float` has caller-controlled precision (the librsvg parity gate wants fixed-point output). |
 | easing | `grammar-types.ts` (subset, ~80 LoC) | `easing.ae` | `test_easing.ae` (44 asserts) | ✅ 7 easing fns (linear, in/out/inOut quad + cubic), `lerp`, `parse_hex_color` (with 3-char shorthand expansion). First downstream consumer of v0.193's `string.to_int_radix`. `lerp_color` deferred — needs `string.from_int_radix` with zero-padding, filed as `aether/cvg_asked_for.md`. |
 | parser | `parser.ts` (245 LoC) | `parser.ae` | `test_parser.ae` (39 asserts) | ✅ SVG → `SvgNode` tree. Index-walking tokenizer (mirrors TS source) + std.regex for header strip (`<?xml…?>`, multi-line `<!DOCTYPE…>`, comments). Hand-rolled attribute scanner avoids juggling regex captures across walks. Self-closing, nested, mixed-quote, text-content, namespaced/hyphenated attrs all covered. <!ENTITY> expansion deferred (~5% of real-world SVGs need it). |
+| bbox | `bbox.ts` (281 LoC) | `bbox.ae` | `test_bbox.ae` (60 asserts) | ✅ AABB walker for circle/ellipse/rect/line/polyline/polygon/path/text + group recursion. Stroke-width margin from `style="stroke-width:…"` or attribute. CSS length units (cm/mm/in/pt/pc/px). Transform cascade via `parse_transform` (also landed this batch). SKIP_TAGS (defs, filter, …) honoured. |
+
+Also landed: **`parse_transform`** (deferred since the first commit; ~22
+extra assertions in `test_transform.ae`, total 52) + cross-module
+ptr-accepting wrappers `affine_mul_p` / `affine_apply_p` /
+`affine_is_identity_p` (struct-types-don't-cross-modules idiom forces
+this pattern for any Tier-A module that wants to call another).
 
 `types.ts` is **not ported** — it's a TS-only idiom (12 type-only
 `interface` declarations). Aether struct types don't cross module
@@ -24,8 +31,8 @@ boundaries, so a shared `types.ae` would be dead weight; each
 consumer declares the structs it uses locally and exposes accessor
 functions for cross-module reads.
 
-Next per the inventory's Tier A order: `bbox` (now unblocked — it
-walks an `SvgNode` tree, which `parser.ae` now produces).
+**Tier A complete.** Next per inventory: Tier B (pixel pipeline:
+`blur.ae`, `rasterize.ae`, `grammar-utils.ae`).
 
 ## Running a test by hand
 
@@ -94,3 +101,20 @@ reference. Capturing them here so the next module doesn't rediscover them.
 - **Discarding tuples and returns**: `_ = expr` emits a codegen warning;
   use a named-but-unused variable (`put_err = …; if string.length(put_err) > 0 { }`)
   if you genuinely want to drop. The warning is benign; the program runs.
+- **No `int as float` cast either** (paired with the earlier "no `float
+  as int`"). Aether implicitly promotes int→float in mixed arithmetic
+  (`1.5 * some_int` works), so most call sites are fine without the cast.
+- **`string.to_double` is strict.** Rejects trailing garbage — `to_double("1in")`
+  returns `(0, "invalid double")`. TS `parseFloat("1in") → 1`. For SVG
+  CSS-length strings, scan a numeric-char prefix manually then `to_double`
+  on the prefix. See `bbox.parse_length_to_px`.
+- **`match` is a reserved keyword** (actor-model hangover, per Aether LLM.md
+  alongside `state` / `message`). Pattern-match in regex code names tokens
+  `tok` not `match`. Compiler error is "Expected statement in block" — not
+  obviously about the keyword.
+- **Cross-module struct access via ptr-wrappers.** When module A's `*Affine`
+  needs to be threaded through module B, B can't `as *transform.Affine`
+  (qualified cast rejected). Pattern: A exposes `*_p(handle: ptr) -> *_p`
+  variants that take the cast inside A. See `transform.affine_mul_p`,
+  `affine_apply_p`, `affine_is_identity_p` — symmetric with the
+  `normalizer.cmd_type` / `cmd_args` shape.
