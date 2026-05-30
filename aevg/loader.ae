@@ -36,6 +36,7 @@ import parser
 import grammar_factories
 import grammar_shapes
 import grammar_utils
+import grammar_defs
 
 extern malloc(size: int) -> ptr
 
@@ -118,12 +119,19 @@ walk_node(ctx: ptr, backend: ptr, node_h: ptr) {
     if string.equals(tag, "title")         == 1 { return }
     if string.equals(tag, "metadata")      == 1 { return }
 
-    // ─── Deferred (need grammar_defs): skip but walk children ────
-    // Same shape as the unknown-element default — child elements
-    // inside these may still produce shapes that should render.
+    // ─── Gradients: parse + register in ctx.gradients ────────────
+    if string.equals(tag, "linearGradient") == 1 {
+        _ = grammar_defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "radialGradient") == 1 {
+        _ = grammar_defs.parse_gradient(ctx, node_h)
+        return
+    }
+
+    // ─── Deferred (need more of grammar_defs): skip but walk
+    //     children where appropriate.
     if string.equals(tag, "defs") == 1 { walk_children(ctx, backend, node_h); return }
-    if string.equals(tag, "linearGradient") == 1 { return }
-    if string.equals(tag, "radialGradient") == 1 { return }
     if string.equals(tag, "filter") == 1 { return }
     if string.equals(tag, "clipPath") == 1 { return }
     if string.equals(tag, "style") == 1 { return }
