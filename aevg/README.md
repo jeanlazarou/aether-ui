@@ -38,6 +38,7 @@ The platform-coupling layer lives behind `aevg_backend.ae`'s interface
 | grammar_events | `grammar-context.ts` (event dispatch sub-system) | `grammar_events.ae` | `test_grammar_events.ae` (37 asserts) | ✅ Event dispatch: `dispatch_click/hover/drag/drag_end/scroll/double_click/right_click`. Topmost-hit lookup walks `tracked_elements` in reverse; first element with both a matching handler AND `hit_test(x,y) == 1` wins. Hover keeps state — enter/leave transitions, no duplicate fires within same element. Drag is **sticky**: first dispatch captures the target, subsequent dispatches stay on it (canonical drag-and-drop UX) until `dispatch_drag_end` releases. All handlers void-returning (the fn-return-float codegen bug doesn't bite). Tooltips and OS-level cursor changes deferred (need real backend integration). |
 | path_builder | `grammar-defs.ts` (PathBuilder class) | `path_builder.ae` | `test_path_builder.ae` (15 asserts) | ✅ Fluent imperative path construction. `pb_new(ctx, backend)` → `pb_move_to`/`pb_line_to`/`pb_cubic_to`/`pb_quadratic_to`/`pb_arc`/`pb_close` accumulate parts; `pb_fill(color)` or `pb_stroke(color, width)` dispatches through `grammar_shapes.shape_path` with the accumulated `d`. quadratic_to/arc route through `normalizer.normalize_commands` then re-serialise, dropping the leading `M` (TS source's trick). The TS class chained via `return this`; without classes in Aether, callers pass the `*PathBuilder` to each step explicitly. Required the heap-string-struct-field `string_retain` idiom — same one I documented in `cvg/README.md`. |
 | render_as_raster | `grammar-defs.ts` (renderAsRaster) | `render_as_raster.ae` | `test_render_as_raster.ae` (20 asserts) | ✅ The Tier-B→Tier-C bridge. Pre-renders a shape into an RGBA buffer with optional Gaussian blur (filter) and clipPath alpha-mask, then dispatches as `canvas_raster`. Pipeline: compute expanded buffer dims in pixel space → allocate `std.bytes` buffer → invoke a `shape_filler: fn` closure (passed as `callback { … }` taking 9 args including buf, dims, offsets, RGBA) → `blur.gaussian_blur` → walk clipPath shapes into a mask via `rasterize.fill_rect_in_buffer` / `fill_circle_in_buffer` → `rasterize.apply_clip_mask` → `grammar_utils.base64_encode_bytes` → `aevg_backend.canvas_raster`. Crop-to-filter-region deferred (TS source comment confirms it's an optimisation, not a correctness requirement). 9-arg closure invocation works via `callback { … }` (env-aware wrapper); bare-named-function-as-fn-arg hits a separate codegen bug — filed as `aether/fn_bare_name_env_shift.md`. |
+| grammar_bind | `grammar-context.ts` (bindTo + refreshBindingRegions) + `grammar-element.ts` (BindingRegion shape) | `grammar_bind.ae` | `test_grammar_bind.ae` (20 asserts) | ✅ Data-driven element regions. `new_region()` then four trailing-callback setters (`region_set_items` / `region_set_render` / `region_set_trackby` / `region_set_update`), then `region_init(ctx, region)`. One trailing-closure per setter — can't take all four in a single call because trailing-callback syntax is single-closure. `refresh_all(ctx)` walks all regions and per-region two-passes: (1) remove keys not in the new items() snapshot; (2) for each new key, call update() if it survived from `current`, else render() and insert. Identity-preserving across refreshes: items keyed by `trackby` retain their existing `*AevgElement` ptr unless removed. Element destruction hook stubbed (calls drop entry from map; real `element_destroy` lands when AevgElement.destroy ports). The fix in Aether `[current]` to closure-call return-type cast (`aether/fn_return_float_cast.md` layer-1) is what makes this safe: `trackby -> string` and `items -> *List` (ptr) returns now go through the right-typed cast and stop being segfault hazards. |
 | grammar_defs | `grammar-defs.ts` (591 LoC, gradient + filter + clipPath subset) | `grammar_defs.ae` | `test_grammar_defs.ae` (69 asserts) | ✅ **Gradients**: `<linearGradient>` / `<radialGradient>` parsing + registration. Stop parsing with `stop-color` / `stop-opacity` / `offset` (incl. `%` form); `gradientTransform` applied to coords; `units`/`spreadMethod` pass-through. Linear default coords (0,0)→(1,0); radial default (0.5, 0.5, 0.5) with `fx/fy` defaulting to `cx/cy`. `xlink:href` inheritance deferred. ✅ **Filters**: `<filter>` with optional `<feGaussianBlur>` child. Region attrs (x/y/width/height) with SVG-spec defaults (-10%, -10%, 120%, 120%). `stdDeviation='5 2'` two-value form supported. ✅ **ClipPaths**: `<clipPath>` with `<rect>` / `<circle>` child shapes. Polygons and other child types silently skipped (matches TS). All three register into `context.gradients` / `.filters` / `.clip_paths` via grammar_context's existing `register_*` API. Text / use / pathBuilder / renderAsRaster still deferred. |
 | **— Tier D —** | | | | |
 | loader | `loader.ts` (178 LoC) | `loader.ae` | `test_loader.ae` (51 asserts) | ✅ End-to-end SVG → backend dispatch. Two-pass: first `index_nodes` builds the id→node registry, then walks the tree dispatching shapes. Handles `g/path/circle/rect/line/polyline/polygon/text/style` plus `<linearGradient>` / `<radialGradient>` / `<filter>` / `<clipPath>` registration via `grammar_defs` plus `<use href="#id" x y />` plus `<style>` (CSS via `grammar_css`, CDATA-aware). `<defs>` walks only definition-style children. Silently skips `ellipse` (still pending). Polyline/polygon → emit as `<path>`. |
@@ -54,11 +55,12 @@ boundaries, so a shared `types.ae` would be dead weight; each
 consumer declares the structs it uses locally and exposes accessor
 functions for cross-module reads.
 
-**Tiers A and B complete; Tier C started.** The rendering core is
-operational, the utility helpers are in place, and the context
-state holder + registries now exist. **Total: 9 modules, 407
-assertions, all passing in Phase 0** (pure-Aether, no GTK/display
-dependency).
+**Tiers A and B complete; Tier C deeply progressed; Tier D loader
+done.** The rendering core is operational, the utility helpers are
+in place, the context state holder + registries exist, and
+data-driven binding regions now diff and update. **Total: 23 modules,
+851 assertions, all passing in Phase 0** (pure-Aether, no
+GTK/display dependency).
 
 Tier C breakdown (per inventory):
   - ✅ `grammar_context.ae` (core + registries)
@@ -73,9 +75,13 @@ Tier C breakdown (per inventory):
   - ✅ `grammar_css.ae` (CSS class system: registerCssStyle/getCssProps)
   - ✅ `grammar_events.ae` (event dispatch: hover/click/drag/scroll)
   - ✅ `path_builder.ae` (fluent imperative path construction)
-  - 🟡 Binding regions — blocked on `aether/fn_return_float_cast.md`
-    (the bug now confirmed to break `fn → string`, `fn → ptr`, and
-    `fn → float` returns; binding region callbacks use all three)
+  - ✅ Binding regions (`grammar_bind.ae`) — unblocked once Aether
+    `[current]` landed the layer-1 fix to the closure-call
+    return-type cast (`aether/fn_return_float_cast.md` PARTIALLY
+    RESOLVED). `trackby -> string` and `items -> *List` (ptr)
+    returns now go through the right-typed cast at the trampoline.
+    Float-bare-fn shape still pending the layer-2 fix; AeVG dodges
+    by always wrapping handlers as `callback { … }`.
   - ✅ `grammar_defs.ae` (gradient subset; filter/clipPath/text/use deferred)
   - ⬜ `grammar-defs` (gradient/filter/clipPath/text/use construction)
 

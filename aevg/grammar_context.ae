@@ -58,7 +58,12 @@ exports (
     transform_push, transform_pop, transform_depth, transform_top,
 
     // When stack (each entry is a closure `fn`)
-    when_push, when_pop, when_depth, when_top
+    when_push, when_pop, when_depth, when_top,
+
+    // Binding regions (each entry is an opaque *BindingRegion ptr from
+    // grammar_bind.ae). Context owns the list; grammar_bind owns the
+    // semantics.
+    binding_regions_add, binding_regions_count, binding_regions_at
 )
 
 import std.map
@@ -130,12 +135,13 @@ struct AevgContext {
     style_stack: ptr        // std.list of *style-map (each entry is a std.map ptr)
     transform_stack: ptr    // std.list of *Affine ptrs
     when_stack: ptr         // std.list of `fn` predicates (closures)
+    binding_regions: ptr    // std.list of *BindingRegion ptrs (grammar_bind.ae)
 }
 
 // Construct a context with empty registries and a single identity
 // transform on the transform stack (mirrors the TS constructor).
 new_context(mapping_handle: ptr) -> ptr {
-    c = malloc(80) as *AevgContext
+    c = malloc(96) as *AevgContext
     c.mapping = mapping_handle
     c.gradients = map.new()
     c.filters = map.new()
@@ -146,6 +152,7 @@ new_context(mapping_handle: ptr) -> ptr {
     c.style_stack = list.new()
     c.transform_stack = list.new()
     c.when_stack = list.new()
+    c.binding_regions = list.new()
 
     // Seed the transform stack with identity (matches TS:
     // transformStack: Transform2D[] = [AffineMatrix.identity()]).
@@ -329,5 +336,27 @@ when_top(c: ptr) -> ptr {
     n = list.size(x.when_stack)
     if n == 0 { return null }
     v, _ = list.get(x.when_stack, n - 1)
+    return v
+}
+
+// ─── Binding regions ─────────────────────────────────────────────
+// Context owns the list; the *BindingRegion ptrs come from
+// grammar_bind.ae. Storing as opaque ptrs avoids cross-module
+// struct-field type issues (the BindingRegion struct lives in
+// grammar_bind.ae and isn't visible here).
+
+binding_regions_add(c: ptr, region: ptr) {
+    x = c as *AevgContext
+    _ = list.add(x.binding_regions, region)
+}
+
+binding_regions_count(c: ptr) -> int {
+    x = c as *AevgContext
+    return list.size(x.binding_regions)
+}
+
+binding_regions_at(c: ptr, i: int) -> ptr {
+    x = c as *AevgContext
+    v, _ = list.get(x.binding_regions, i)
     return v
 }
