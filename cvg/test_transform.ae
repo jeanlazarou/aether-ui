@@ -1,0 +1,121 @@
+// cvg/test_transform.ae — regression test for transform.ae.
+//
+// Mirrors cosyne/test/svg-transform.test.ts (the AffineMatrix /
+// ProjectiveMatrix / fromSpec unit groups). parseTransform string
+// parsing lands in a later commit (needs a hand-rolled tokenizer —
+// no regex in Aether), so it's not exercised here.
+//
+// Headless, pure Aether. Build + run:
+//   aetherc cvg/test_transform.ae /tmp/t.c && gcc /tmp/t.c $(ae cflags) -o /tmp/t && /tmp/t
+
+import transform
+import std.math
+
+extern exit(code: int)
+
+EPS() -> float { return 0.000001 }
+
+near(a: float, b: float) -> int {
+    if math.abs_float(a - b) < EPS() { return 1 }
+    return 0
+}
+
+assert_near(label: string, got: float, want: float) {
+    if near(got, want) == 1 {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_true(label: string, cond: int) {
+    if cond == 1 {
+        println("  PASS: ${label}")
+    } else {
+        println("  FAIL: ${label}")
+        exit(1)
+    }
+}
+
+main() {
+    println("=== test_transform ===")
+
+    // ── identity ──
+    id = transform.affine_identity()
+    assert_near("identity.a", id.a, 1.0)
+    assert_near("identity.d", id.d, 1.0)
+    assert_near("identity.e", id.e, 0.0)
+    assert_true("identity isIdentity", transform.affine_is_identity(id))
+
+    // ── translate ──
+    t = transform.affine_translate(10.0, 20.0)
+    assert_near("translate.e", t.e, 10.0)
+    assert_near("translate.f", t.f, 20.0)
+    pt = transform.affine_apply(t, 3.0, 4.0)
+    assert_near("translate apply x", pt.x, 13.0)
+    assert_near("translate apply y", pt.y, 24.0)
+
+    // ── scale ──
+    s = transform.affine_scale(2.0, 3.0)
+    assert_near("scale.a", s.a, 2.0)
+    assert_near("scale.d", s.d, 3.0)
+    sp = transform.affine_apply(s, 5.0, 7.0)
+    assert_near("scale apply x", sp.x, 10.0)
+    assert_near("scale apply y", sp.y, 21.0)
+
+    // ── rotate 90° about origin: (1,0) → (0,1) ──
+    r = transform.affine_rotate(90.0)
+    rp = transform.affine_apply(r, 1.0, 0.0)
+    assert_near("rotate90 apply x", rp.x, 0.0)
+    assert_near("rotate90 apply y", rp.y, 1.0)
+
+    // ── rotate about a center: 180° about (5,5) maps (5,5)→(5,5) ──
+    rc = transform.affine_rotate_about(180.0, 5.0, 5.0)
+    rcp = transform.affine_apply(rc, 5.0, 5.0)
+    assert_near("rotate180@(5,5) fixed x", rcp.x, 5.0)
+    assert_near("rotate180@(5,5) fixed y", rcp.y, 5.0)
+    rcp2 = transform.affine_apply(rc, 6.0, 5.0)
+    assert_near("rotate180@(5,5) (6,5)->x", rcp2.x, 4.0)
+    assert_near("rotate180@(5,5) (6,5)->y", rcp2.y, 5.0)
+
+    // ── multiply: translate then scale, applied to a point ──
+    // m = translate(10,20) * scale(2,2); apply(1,1) = (12, 22)
+    m = transform.affine_mul(transform.affine_translate(10.0, 20.0),
+                             transform.affine_scale(2.0, 2.0))
+    mp = transform.affine_apply(m, 1.0, 1.0)
+    assert_near("compose apply x", mp.x, 12.0)
+    assert_near("compose apply y", mp.y, 22.0)
+
+    // ── averageScale ──
+    assert_near("avgScale of scale(2,2)", transform.affine_average_scale(transform.affine_scale(2.0, 2.0)), 2.0)
+
+    // ── skewX 45°: c = tan(45) = 1; apply(0,1) → x = 1 ──
+    sk = transform.affine_skew_x(45.0)
+    skp = transform.affine_apply(sk, 0.0, 1.0)
+    assert_near("skewX45 apply x", skp.x, 1.0)
+    assert_near("skewX45 apply y", skp.y, 1.0)
+
+    // ── projective: identity is affine ──
+    pid = transform.proj_identity()
+    assert_true("proj identity isAffine", transform.proj_is_affine(pid))
+    ppt = transform.proj_apply(pid, 7.0, 9.0)
+    assert_near("proj identity apply x", ppt.x, 7.0)
+    assert_near("proj identity apply y", ppt.y, 9.0)
+
+    // ── projective from affine round-trips affine.apply ──
+    pa = transform.proj_from_affine(transform.affine_translate(3.0, 4.0))
+    pap = transform.proj_apply(pa, 1.0, 1.0)
+    assert_near("proj(translate) apply x", pap.x, 4.0)
+    assert_near("proj(translate) apply y", pap.y, 5.0)
+
+    // ── rotateY at 0° is affine identity ──
+    ry0 = transform.proj_rotate_y(0.0, 1000.0, 0.0, 0.0)
+    assert_true("rotateY(0) isAffine", transform.proj_is_affine(ry0))
+
+    // ── rotateY introduces perspective (g != 0) ──
+    ry = transform.proj_rotate_y(30.0, 1000.0, 0.0, 0.0)
+    assert_true("rotateY(30) not affine", 1 - transform.proj_is_affine(ry))
+
+    println("=== test_transform passed ===")
+}

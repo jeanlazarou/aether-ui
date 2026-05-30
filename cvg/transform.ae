@@ -1,0 +1,252 @@
+// cvg/transform.ae — SVG 2D transforms (affine + projective).
+//
+// Port of cosyne/src/cvg/transform.ts (Tier A, pure math — no host
+// coupling). See PORT_INVENTORY.md §1 row 5.
+//
+// Matrix layout, affine [a b c d e f]:
+//     | a c e |        new_x = a*x + c*y + e
+//     | b d f |        new_y = b*x + d*y + f
+//     | 0 0 1 |
+//
+// Projective adds [g h] for the bottom row (homography):
+//     | a c e |        x' = (a*x + c*y + e) / (g*x + h*y + 1)
+//     | b d f |        y' = (b*x + d*y + f) / (g*x + h*y + 1)
+//     | g h 1 |
+//
+// Aether idiom notes (resolved while porting — these are not in the
+// language reference, found empirically against aetherc v0.181.0):
+//   - TS classes have no Aether analogue → plain structs + free
+//     functions. `AffineMatrix.multiply(o)` becomes `affine_mul(a, o)`.
+//   - Structs cannot be returned/passed by value (the `-> Struct {`
+//     form trips the parser). They are heap pointer-structs: malloc +
+//     `as *T`, threaded as `*T`. 48 bytes = 6 × 8-byte float (affine),
+//     64 bytes = 8 × float (projective).
+//   - Float tuple returns (`return x, y`) lower to int and emit broken
+//     C. `apply` therefore returns a `*Pt` struct, not a tuple.
+//   - `math.pi()` / `math.deg_to_rad()` etc. are zero-arg function-
+//     constants (landed alongside this port in CHANGELOG `[current]`).
+
+exports (
+    Affine, Projective, Pt,
+    affine_new, affine_identity, affine_translate, affine_scale,
+    affine_rotate, affine_rotate_about, affine_skew_x, affine_skew_y,
+    affine_mul, affine_apply, affine_average_scale, affine_is_identity,
+    proj_new, proj_identity, proj_from_affine, proj_rotate_y, proj_rotate_x,
+    proj_mul, proj_apply, proj_average_scale, proj_is_affine
+)
+
+import std.math
+
+extern malloc(size: int) -> ptr
+
+// degrees → radians factor is `math.deg_to_rad()` (= π/180), landed in
+// std.math alongside `math.pi` / `math.tau` in the CVG-port batch.
+
+// Transformed point — return type for apply(), since float tuples
+// don't survive Aether's multi-return lowering.
+struct Pt {
+    x: float
+    y: float
+}
+
+mk_pt(x: float, y: float) -> *Pt {
+    p = malloc(16) as *Pt
+    p.x = x
+    p.y = y
+    return p
+}
+
+// ─── Affine ──────────────────────────────────────────────────────
+
+struct Affine {
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+}
+
+affine_new(a: float, b: float, c: float, d: float, e: float, f: float) -> *Affine {
+    m = malloc(48) as *Affine
+    m.a = a
+    m.b = b
+    m.c = c
+    m.d = d
+    m.e = e
+    m.f = f
+    return m
+}
+
+affine_identity() -> *Affine {
+    return affine_new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+}
+
+affine_translate(tx: float, ty: float) -> *Affine {
+    return affine_new(1.0, 0.0, 0.0, 1.0, tx, ty)
+}
+
+affine_scale(sx: float, sy: float) -> *Affine {
+    return affine_new(sx, 0.0, 0.0, sy, 0.0, 0.0)
+}
+
+// rotate(degrees) about the origin.
+affine_rotate(degrees: float) -> *Affine {
+    rad = degrees * math.deg_to_rad()
+    cos = math.cos(rad)
+    sin = math.sin(rad)
+    return affine_new(cos, sin, 0.0 - sin, cos, 0.0, 0.0)
+}
+
+// rotate(degrees, cx, cy) = translate(c) * rotate(deg) * translate(-c).
+affine_rotate_about(degrees: float, cx: float, cy: float) -> *Affine {
+    rad = degrees * math.deg_to_rad()
+    cos = math.cos(rad)
+    sin = math.sin(rad)
+    core = affine_new(cos, sin, 0.0 - sin, cos, 0.0, 0.0)
+    pre = affine_translate(cx, cy)
+    post = affine_translate(0.0 - cx, 0.0 - cy)
+    return affine_mul(affine_mul(pre, core), post)
+}
+
+affine_skew_x(degrees: float) -> *Affine {
+    return affine_new(1.0, 0.0, math.tan(degrees * math.deg_to_rad()), 1.0, 0.0, 0.0)
+}
+
+affine_skew_y(degrees: float) -> *Affine {
+    return affine_new(1.0, math.tan(degrees * math.deg_to_rad()), 0.0, 1.0, 0.0, 0.0)
+}
+
+// this * other.
+affine_mul(m: *Affine, o: *Affine) -> *Affine {
+    return affine_new(
+        m.a * o.a + m.c * o.b,
+        m.b * o.a + m.d * o.b,
+        m.a * o.c + m.c * o.d,
+        m.b * o.c + m.d * o.d,
+        m.a * o.e + m.c * o.f + m.e,
+        m.b * o.e + m.d * o.f + m.f
+    )
+}
+
+affine_apply(m: *Affine, x: float, y: float) -> *Pt {
+    return mk_pt(m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f)
+}
+
+// Geometric mean of X and Y scale factors.
+affine_average_scale(m: *Affine) -> float {
+    sx = math.sqrt(m.a * m.a + m.b * m.b)
+    sy = math.sqrt(m.c * m.c + m.d * m.d)
+    return (sx + sy) / 2.0
+}
+
+affine_is_identity(m: *Affine) -> int {
+    eps = 0.0000000001
+    if math.abs_float(m.a - 1.0) >= eps { return 0 }
+    if math.abs_float(m.b) >= eps { return 0 }
+    if math.abs_float(m.c) >= eps { return 0 }
+    if math.abs_float(m.d - 1.0) >= eps { return 0 }
+    if math.abs_float(m.e) >= eps { return 0 }
+    if math.abs_float(m.f) >= eps { return 0 }
+    return 1
+}
+
+// ─── Projective ──────────────────────────────────────────────────
+
+struct Projective {
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+    g: float
+    h: float
+}
+
+proj_new(a: float, b: float, c: float, d: float,
+         e: float, f: float, g: float, h: float) -> *Projective {
+    m = malloc(64) as *Projective
+    m.a = a
+    m.b = b
+    m.c = c
+    m.d = d
+    m.e = e
+    m.f = f
+    m.g = g
+    m.h = h
+    return m
+}
+
+proj_identity() -> *Projective {
+    return proj_new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+}
+
+proj_from_affine(m: *Affine) -> *Projective {
+    return proj_new(m.a, m.b, m.c, m.d, m.e, m.f, 0.0, 0.0)
+}
+
+// Perspective rotation about the Y axis (vertical — left/right wall).
+// Positive degrees rotate the right edge away from the viewer.
+proj_rotate_y(degrees: float, distance: float, ox: float, oy: float) -> *Projective {
+    rad = degrees * math.deg_to_rad()
+    cos = math.cos(rad)
+    sin = math.sin(rad)
+    core = proj_new(cos, 0.0, 0.0, 1.0, 0.0, 0.0, sin / distance, 0.0)
+    if ox == 0.0 {
+        if oy == 0.0 { return core }
+    }
+    pre = proj_from_affine(affine_translate(ox, oy))
+    post = proj_from_affine(affine_translate(0.0 - ox, 0.0 - oy))
+    return proj_mul(proj_mul(pre, core), post)
+}
+
+// Perspective rotation about the X axis (horizontal — top/bottom tilt).
+proj_rotate_x(degrees: float, distance: float, ox: float, oy: float) -> *Projective {
+    rad = degrees * math.deg_to_rad()
+    cos = math.cos(rad)
+    sin = math.sin(rad)
+    core = proj_new(1.0, 0.0, 0.0, cos, 0.0, 0.0, 0.0, sin / distance)
+    if ox == 0.0 {
+        if oy == 0.0 { return core }
+    }
+    pre = proj_from_affine(affine_translate(ox, oy))
+    post = proj_from_affine(affine_translate(0.0 - ox, 0.0 - oy))
+    return proj_mul(proj_mul(pre, core), post)
+}
+
+// Full 3×3 multiply, bottom-right normalized to 1.
+proj_mul(m: *Projective, o: *Projective) -> *Projective {
+    i = m.g * o.e + m.h * o.f + 1.0
+    return proj_new(
+        (m.a * o.a + m.c * o.b + m.e * o.g) / i,
+        (m.b * o.a + m.d * o.b + m.f * o.g) / i,
+        (m.a * o.c + m.c * o.d + m.e * o.h) / i,
+        (m.b * o.c + m.d * o.d + m.f * o.h) / i,
+        (m.a * o.e + m.c * o.f + m.e) / i,
+        (m.b * o.e + m.d * o.f + m.f) / i,
+        (m.g * o.a + m.h * o.b + o.g) / i,
+        (m.g * o.c + m.h * o.d + o.h) / i
+    )
+}
+
+proj_apply(m: *Projective, x: float, y: float) -> *Pt {
+    w = m.g * x + m.h * y + 1.0
+    return mk_pt(
+        (m.a * x + m.c * y + m.e) / w,
+        (m.b * x + m.d * y + m.f) / w
+    )
+}
+
+proj_average_scale(m: *Projective) -> float {
+    sx = math.sqrt(m.a * m.a + m.b * m.b)
+    sy = math.sqrt(m.c * m.c + m.d * m.d)
+    return (sx + sy) / 2.0
+}
+
+proj_is_affine(m: *Projective) -> int {
+    eps = 0.0000000001
+    if math.abs_float(m.g) >= eps { return 0 }
+    if math.abs_float(m.h) >= eps { return 0 }
+    return 1
+}

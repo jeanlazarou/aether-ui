@@ -126,6 +126,38 @@ run_smoke_test() {
     return 1
 }
 
+# CVG port unit tests — pure Aether (no GTK/display), so they run even
+# under SKIP_RUNTIME. Each is a self-contained `main()` that exits non-zero
+# on the first failed assertion. Append new modules' tests here as they land.
+CVG_TESTS=(test_transform)
+
+echo "=== Phase 0: CVG unit tests (pure Aether) ==="
+for t in "${CVG_TESTS[@]}"; do
+    src="cvg/${t}.ae"
+    cfile="build/cvg_${t}.c"
+    bin="build/cvg_${t}"
+    if ! aetherc "$src" "$cfile" > "/tmp/ci_cvg_${t}.log" 2>&1; then
+        echo "  FAIL $t (compile)"
+        tail -15 "/tmp/ci_cvg_${t}.log" | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+        continue
+    fi
+    if ! gcc "$cfile" $(ae cflags) -o "$bin" >> "/tmp/ci_cvg_${t}.log" 2>&1; then
+        echo "  FAIL $t (link)"
+        tail -15 "/tmp/ci_cvg_${t}.log" | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+        continue
+    fi
+    if "$bin" > "/tmp/ci_cvg_${t}_run.log" 2>&1; then
+        echo "  OK   $t"
+    else
+        echo "  FAIL $t (run)"
+        tail -15 "/tmp/ci_cvg_${t}_run.log" | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
+done
+echo
+
 echo "=== Phase 1: build all aether_ui examples ==="
 for ex in "${EXAMPLES[@]}"; do
     src="example_${ex}.ae"
