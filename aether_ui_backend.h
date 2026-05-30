@@ -160,6 +160,9 @@ void aether_ui_canvas_fill_impl(int canvas_id, float r, float g, float b, float 
 void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
                                       float x, float y, float font_size,
                                       float r, float g, float b, float a);
+void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
+                                       int iw, int ih,
+                                       const unsigned char* rgba, int byte_len);
 void aether_ui_canvas_clear_impl(int canvas_id);
 void aether_ui_canvas_redraw_impl(int canvas_id);
 

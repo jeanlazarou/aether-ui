@@ -1128,17 +1128,22 @@ typedef enum {
     CANVAS_ARC,         // add a circle/arc to the current path
     CANVAS_CLOSE_PATH,  // close the current sub-path
     CANVAS_FILL,        // fill the current path with a color
-    CANVAS_FILL_TEXT    // draw text at (x, y), size in w
+    CANVAS_FILL_TEXT,   // draw text at (x, y), size in w
+    CANVAS_DRAW_IMAGE   // blit an RGBA buffer at (x, y), size w×h
 } CanvasCmdType;
 
 typedef struct {
     CanvasCmdType type;
-    double x, y;              // MOVE_TO, LINE_TO, ARC center, FILL_TEXT origin
+    double x, y;              // MOVE_TO, LINE_TO, ARC center, FILL_TEXT origin,
+                              //   DRAW_IMAGE top-left
     double r, g, b, a;        // STROKE / FILL color
     double w, h;              // FILL_RECT w/h; STROKE line_width (x); ARC radius (w);
-                              //   ARC start angle (h); FILL_TEXT font size (w)
+                              //   ARC start angle (h); FILL_TEXT font size (w);
+                              //   DRAW_IMAGE pixel dims
     double a0, a1;            // ARC start/end angle (radians)
     char* text;              // FILL_TEXT string (owned, freed on clear/destroy)
+    unsigned char* pixels;   // DRAW_IMAGE RGBA8888 buffer (owned), iw*ih*4 bytes
+    int iw, ih;              // DRAW_IMAGE pixel width/height
 } CanvasCmd;
 
 typedef struct {
@@ -1217,6 +1222,40 @@ static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
                 cairo_move_to(cr, c->x, c->y);
                 if (c->text) cairo_show_text(cr, c->text);
                 cairo_new_path(cr); // show_text leaves a path; clear it
+                break;
+            case CANVAS_DRAW_IMAGE:
+                if (c->pixels && c->iw > 0 && c->ih > 0) {
+                    // Incoming buffer is RGBA8888 (R,G,B,A bytes).
+                    // Cairo ARGB32 is native-endian premultiplied — on
+                    // little-endian that's B,G,R,A byte order with
+                    // premultiplied colour. Build a converted buffer.
+                    int n = c->iw * c->ih;
+                    unsigned char* conv = (unsigned char*)malloc(n * 4);
+                    if (conv) {
+                        for (int px = 0; px < n; px++) {
+                            unsigned char sr = c->pixels[px*4+0];
+                            unsigned char sg = c->pixels[px*4+1];
+                            unsigned char sb = c->pixels[px*4+2];
+                            unsigned char sa = c->pixels[px*4+3];
+                            // premultiply
+                            conv[px*4+0] = (unsigned char)(sb * sa / 255); // B
+                            conv[px*4+1] = (unsigned char)(sg * sa / 255); // G
+                            conv[px*4+2] = (unsigned char)(sr * sa / 255); // R
+                            conv[px*4+3] = sa;                              // A
+                        }
+                        int stride = cairo_format_stride_for_width(
+                            CAIRO_FORMAT_ARGB32, c->iw);
+                        cairo_surface_t* surf = cairo_image_surface_create_for_data(
+                            conv, CAIRO_FORMAT_ARGB32, c->iw, c->ih, stride);
+                        if (cairo_surface_status(surf) == CAIRO_STATUS_SUCCESS) {
+                            cairo_set_source_surface(cr, surf, c->x, c->y);
+                            cairo_paint(cr);
+                            cairo_set_source_rgba(cr, 0, 0, 0, 1); // reset source
+                        }
+                        cairo_surface_destroy(surf);
+                        free(conv);
+                    }
+                }
                 break;
             case CANVAS_CLEAR:
                 break;
@@ -1309,14 +1348,33 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     });
 }
 
+void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
+                                       int iw, int ih,
+                                       const unsigned char* rgba, int byte_len) {
+    if (iw <= 0 || ih <= 0 || !rgba) return;
+    if (byte_len < iw * ih * 4) return;  // truncated buffer — skip
+    // Own a copy: the Aether-side buffer doesn't outlive this call.
+    unsigned char* owned = (unsigned char*)malloc(iw * ih * 4);
+    if (!owned) return;
+    memcpy(owned, rgba, iw * ih * 4);
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_DRAW_IMAGE, .x = x, .y = y,
+        .pixels = owned, .iw = iw, .ih = ih
+    });
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (cs) {
-        // Free any owned text strings before resetting the buffer.
+        // Free any owned text strings / image buffers before resetting.
         for (int i = 0; i < cs->count; i++) {
             if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
                 free(cs->cmds[i].text);
                 cs->cmds[i].text = NULL;
+            }
+            if (cs->cmds[i].type == CANVAS_DRAW_IMAGE && cs->cmds[i].pixels) {
+                free(cs->cmds[i].pixels);
+                cs->cmds[i].pixels = NULL;
             }
         }
         cs->count = 0;

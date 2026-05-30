@@ -1157,7 +1157,8 @@ typedef enum {
     CANVAS_ARC,
     CANVAS_CLOSE_PATH,
     CANVAS_FILL,
-    CANVAS_FILL_TEXT
+    CANVAS_FILL_TEXT,
+    CANVAS_DRAW_IMAGE
 } CanvasCmdType;
 
 typedef struct {
@@ -1167,6 +1168,8 @@ typedef struct {
     double w, h;
     double a0, a1;   // ARC start/end angle
     char* text;     // FILL_TEXT string (owned)
+    unsigned char* pixels;  // DRAW_IMAGE RGBA8888 buffer (owned)
+    int iw, ih;     // DRAW_IMAGE pixel dims
 } CanvasCmd;
 
 typedef struct {
@@ -1263,6 +1266,34 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                 }
                 break;
             }
+            case CANVAS_DRAW_IMAGE: {
+                if (c->pixels && c->iw > 0 && c->ih > 0) {
+                    // RGBA8888, non-premultiplied — CoreGraphics can
+                    // consume that directly via kCGImageAlphaLast.
+                    CGColorSpaceRef cs2 = CGColorSpaceCreateDeviceRGB();
+                    CGDataProviderRef prov = CGDataProviderCreateWithData(
+                        NULL, c->pixels, c->iw * c->ih * 4, NULL);
+                    CGImageRef img = CGImageCreate(
+                        c->iw, c->ih, 8, 32, c->iw * 4, cs2,
+                        kCGImageAlphaLast | kCGBitmapByteOrderDefault,
+                        prov, NULL, false, kCGRenderingIntentDefault);
+                    if (img) {
+                        // The view isFlipped (top-left origin), so draw
+                        // into a rect at (x,y). CGContextDrawImage uses a
+                        // bottom-left origin; flip the y within the rect.
+                        CGContextSaveGState(cg);
+                        CGContextTranslateCTM(cg, c->x, c->y + c->ih);
+                        CGContextScaleCTM(cg, 1.0, -1.0);
+                        CGContextDrawImage(cg,
+                            CGRectMake(0, 0, c->iw, c->ih), img);
+                        CGContextRestoreGState(cg);
+                        CGImageRelease(img);
+                    }
+                    CGDataProviderRelease(prov);
+                    CGColorSpaceRelease(cs2);
+                }
+                break;
+            }
             case CANVAS_CLEAR:
                 break;
         }
@@ -1353,6 +1384,20 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     });
 }
 
+void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
+                                       int iw, int ih,
+                                       const unsigned char* rgba, int byte_len) {
+    if (iw <= 0 || ih <= 0 || !rgba) return;
+    if (byte_len < iw * ih * 4) return;
+    unsigned char* owned = (unsigned char*)malloc(iw * ih * 4);
+    if (!owned) return;
+    memcpy(owned, rgba, iw * ih * 4);
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_DRAW_IMAGE, .x = x, .y = y,
+        .pixels = owned, .iw = iw, .ih = ih
+    });
+}
+
 void aether_ui_canvas_clear_impl(int canvas_id) {
     CanvasState* cs = get_canvas_state(canvas_id);
     if (!cs) return;
@@ -1360,6 +1405,10 @@ void aether_ui_canvas_clear_impl(int canvas_id) {
         if (cs->cmds[i].type == CANVAS_FILL_TEXT && cs->cmds[i].text) {
             free(cs->cmds[i].text);
             cs->cmds[i].text = NULL;
+        }
+        if (cs->cmds[i].type == CANVAS_DRAW_IMAGE && cs->cmds[i].pixels) {
+            free(cs->cmds[i].pixels);
+            cs->cmds[i].pixels = NULL;
         }
     }
     cs->count = 0;

@@ -36,6 +36,7 @@ exports (
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_fill_rect, canvas_clear, canvas_redraw,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
+    canvas_draw_image,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
     enable_test_server, seal_widget, seal_subtree,
@@ -203,6 +204,9 @@ extern aether_ui_canvas_fill_impl(canvas_id: int, r: float, g: float, b: float, 
 extern aether_ui_canvas_fill_text_impl(canvas_id: int, text: string,
                                        x: float, y: float, font_size: float,
                                        r: float, g: float, b: float, a: float)
+extern aether_ui_canvas_draw_image_impl(canvas_id: int, x: float, y: float,
+                                        iw: int, ih: int,
+                                        rgba: string, byte_len: int)
 extern aether_ui_canvas_fill_rect_impl(canvas_id: int, x: float, y: float,
                                   w: float, h: float,
                                   r: float, g: float, b: float, a: float)
@@ -748,6 +752,13 @@ canvas_fill(cid: int, r: float, g: float, b: float, a: float) {
 canvas_fill_text(cid: int, text: string, x: float, y: float, font_size: float,
                  r: float, g: float, b: float, a: float) {
     aether_ui_canvas_fill_text_impl(cid, text, x, y, font_size, r, g, b, a)
+}
+
+// Blit an RGBA8888 pixel buffer (iw×ih, byte_len = iw*ih*4) at canvas
+// position (x, y). `rgba` carries the raw bytes as a binary string.
+canvas_draw_image(cid: int, x: float, y: float, iw: int, ih: int,
+                  rgba: string, byte_len: int) {
+    aether_ui_canvas_draw_image_impl(cid, x, y, iw, ih, rgba, byte_len)
 }
 
 canvas_clear(cid: int) {

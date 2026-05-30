@@ -12,11 +12,10 @@
 //   canvas_circle    → canvas_arc (full circle) + fill + stroke
 //   canvas_rectangle → fill_rect (fill) + 4-segment stroke outline
 //   canvas_line      → begin_path + move/line + stroke
-//   canvas_path      → flatten 'd' to segments (TODO) — stroke/fill
+//   canvas_path      → replay mapped polyline (move/line/close) + fill/stroke
 //   canvas_text      → fill_text at baseline
-//   canvas_raster    → deferred (needs a pixel-blit primitive; the
-//                      canvas API has none yet — log + skip)
-//   canvas_tappable_raster → same as raster (deferred)
+//   canvas_raster    → base64-decode rawPixels → canvas_draw_image blit
+//   canvas_tappable_raster → same as raster
 //
 // Shape factories emit canvas-space bounding boxes (x, y, x2, y2)
 // plus fillColor / strokeColor / strokeWidth (and for text: text,
@@ -43,6 +42,7 @@ import std.math
 import aether_ui
 import rasterize
 import backend_dispatch
+import std.cryptography
 
 extern malloc(size: int) -> ptr
 
@@ -100,6 +100,15 @@ opt_s(opts: ptr, key: string) -> string {
     v, _ = map.get(opts, key)
     if v == null { return "" }
     return v
+}
+
+opt_i(opts: ptr, key: string, dflt: int) -> int {
+    v, _ = map.get(opts, key)
+    if v == null { return dflt }
+    if string.length(v) == 0 { return dflt }
+    parsed, e = string.to_int(v)
+    if e != "" { return dflt }
+    return parsed
 }
 
 // Returns a fresh unique ptr for AevgElement.underlying. The
@@ -345,16 +354,39 @@ canvas_text(p: ptr, opts: ptr) -> ptr {
     return fresh_handle()
 }
 
-// ─── canvas_raster (deferred) ────────────────────────────────────
+// ─── canvas_raster ───────────────────────────────────────────────
 //
-// render_as_raster produces a base64 RGBA buffer; blitting it needs
-// a pixel-image canvas primitive the backend doesn't expose yet.
-// Tracked separately. Increment the skip counter for telemetry.
+// opts: x, y (canvas-space top-left), w, h (pixel dims), rawPixels
+// (base64 of a w*h*4 RGBA8888 buffer, produced by render_as_raster).
+// Decode the base64 back to bytes and blit via canvas_draw_image.
 
 canvas_raster(p: ptr, opts: ptr) -> ptr {
     b = p as *GtkBackend
-    b.raster_skipped = b.raster_skipped + 1
-    println("[aevg_gtk_backend] canvas_raster: pixel-blit primitive missing — skipped")
+    cid = b.canvas_id
+
+    raw_b64 = opt_s(opts, "rawPixels")
+    if string.length(raw_b64) == 0 { return fresh_handle() }
+
+    x = opt_f(opts, "x", 0.0)
+    y = opt_f(opts, "y", 0.0)
+    w = opt_i(opts, "w", 0)
+    h = opt_i(opts, "h", 0)
+    if w <= 0 { return fresh_handle() }
+    if h <= 0 { return fresh_handle() }
+
+    // base64_decode returns (bytes-as-string, length, err).
+    pixels, n, e = cryptography.base64_decode(raw_b64)
+    if e != "" {
+        println("[aevg_gtk_backend] canvas_raster: base64 decode failed: ${e}")
+        return fresh_handle()
+    }
+    expected = w * h * 4
+    if n < expected {
+        println("[aevg_gtk_backend] canvas_raster: short buffer (${n} < ${expected}) — skipped")
+        return fresh_handle()
+    }
+
+    aether_ui.canvas_draw_image(cid, x, y, w, h, pixels, n)
     return fresh_handle()
 }
 

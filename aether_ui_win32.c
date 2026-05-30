@@ -2159,18 +2159,20 @@ void aether_ui_grid_place(int grid_handle, int child_handle,
 // ---------------------------------------------------------------------------
 typedef enum {
     CV_BEGIN, CV_MOVE, CV_LINE, CV_STROKE, CV_FILL_RECT, CV_CLEAR,
-    CV_ARC, CV_CLOSE, CV_FILL, CV_FILL_TEXT
+    CV_ARC, CV_CLOSE, CV_FILL, CV_FILL_TEXT, CV_DRAW_IMAGE
 } CanvasCmdKind;
 
 typedef struct {
     CanvasCmdKind k;
     // p0..p3 carry geometry: x1,y1,x2,y2 for lines; x,y,w,h for rects;
     // line width in p0 for stroke commands; ARC: cx,cy,radius,(unused);
-    // FILL_TEXT: x,y,font_size,(unused).
+    // FILL_TEXT: x,y,font_size,(unused); DRAW_IMAGE: x,y,(unused),(unused).
     float p0, p1, p2, p3;
     float a0, a1;          // ARC start/end angle (radians)
     float cr, cg, cb, calpha;
     char* text;            // FILL_TEXT string (owned)
+    unsigned char* pixels; // DRAW_IMAGE RGBA8888 buffer (owned)
+    int iw, ih;            // DRAW_IMAGE pixel dims
 } CanvasCmd;
 
 typedef struct {
@@ -2314,6 +2316,22 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     canvas_add_cmd(canvas_id, c);
 }
 
+void aether_ui_canvas_draw_image_impl(int canvas_id, float x, float y,
+                                       int iw, int ih,
+                                       const unsigned char* rgba, int byte_len) {
+    if (iw <= 0 || ih <= 0 || !rgba) return;
+    if (byte_len < iw * ih * 4) return;
+    unsigned char* owned = (unsigned char*)malloc(iw * ih * 4);
+    if (!owned) return;
+    memcpy(owned, rgba, iw * ih * 4);
+    CanvasCmd c = {0};
+    c.k = CV_DRAW_IMAGE; c.p0 = x; c.p1 = y;
+    c.pixels = owned; c.iw = iw; c.ih = ih;
+    canvas_add_cmd(canvas_id, c);
+}
+
+// Free owned per-command buffers (FILL_TEXT strings + DRAW_IMAGE
+// pixels) before a cmd-buffer reset.
 static void canvas_free_text(int canvas_id) {
     if (canvas_id < 1 || canvas_id > canvas_count) return;
     Canvas* cv = &canvases[canvas_id - 1];
@@ -2321,6 +2339,10 @@ static void canvas_free_text(int canvas_id) {
         if (cv->cmds[i].k == CV_FILL_TEXT && cv->cmds[i].text) {
             free(cv->cmds[i].text);
             cv->cmds[i].text = NULL;
+        }
+        if (cv->cmds[i].k == CV_DRAW_IMAGE && cv->cmds[i].pixels) {
+            free(cv->cmds[i].pixels);
+            cv->cmds[i].pixels = NULL;
         }
     }
 }
@@ -2439,6 +2461,42 @@ static void canvas_paint(HWND hwnd, HDC hdc, int width, int height) {
                              cmd->text, (int)strlen(cmd->text));
                     SelectObject(mem, oldfont);
                     DeleteObject(font);
+                }
+                break;
+            }
+            case CV_DRAW_IMAGE: {
+                if (cmd->pixels && cmd->iw > 0 && cmd->ih > 0) {
+                    // Source is RGBA8888 top-down. Build a top-down
+                    // 32bpp BGRA DIB (negative height) and StretchDIBits.
+                    // GDI ignores alpha for plain blits; swizzle R/B and
+                    // (approximately) composite onto the white backing by
+                    // premultiplying against white where alpha < 255.
+                    int n = cmd->iw * cmd->ih;
+                    unsigned char* conv = (unsigned char*)malloc(n * 4);
+                    if (conv) {
+                        for (int px = 0; px < n; px++) {
+                            unsigned char sr = cmd->pixels[px*4+0];
+                            unsigned char sg = cmd->pixels[px*4+1];
+                            unsigned char sb = cmd->pixels[px*4+2];
+                            unsigned char sa = cmd->pixels[px*4+3];
+                            int inv = 255 - sa;
+                            conv[px*4+0] = (unsigned char)((sb*sa + 255*inv)/255); // B
+                            conv[px*4+1] = (unsigned char)((sg*sa + 255*inv)/255); // G
+                            conv[px*4+2] = (unsigned char)((sr*sa + 255*inv)/255); // R
+                            conv[px*4+3] = 255;
+                        }
+                        BITMAPINFO bi = {0};
+                        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                        bi.bmiHeader.biWidth = cmd->iw;
+                        bi.bmiHeader.biHeight = -cmd->ih; // top-down
+                        bi.bmiHeader.biPlanes = 1;
+                        bi.bmiHeader.biBitCount = 32;
+                        bi.bmiHeader.biCompression = BI_RGB;
+                        StretchDIBits(mem, (int)cmd->p0, (int)cmd->p1,
+                            cmd->iw, cmd->ih, 0, 0, cmd->iw, cmd->ih,
+                            conv, &bi, DIB_RGB_COLORS, SRCCOPY);
+                        free(conv);
+                    }
                 }
                 break;
             }

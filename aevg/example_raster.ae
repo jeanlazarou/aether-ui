@@ -1,0 +1,54 @@
+// example_raster.ae — exercise canvas_raster (render_as_raster → blit).
+//
+// render_as_raster isn't auto-routed from the SVG pipeline yet (the
+// shape factories don't delegate on filter=/clip-path= attrs — a
+// separate deferred integration). So this demo calls it directly:
+// pre-render a filled shape into an RGBA buffer and blit it via the
+// GTK adapter's canvas_raster (base64 round-trip → canvas_draw_image).
+//
+// Proves the raster path links + runs without crashing on a real
+// display.
+
+import aether_ui
+import aevg_gtk_backend
+import render_as_raster
+import grammar_context
+import rasterize
+import transform
+import std.string
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(
+        0.0, 0.0, 200.0, 200.0,
+        200.0, 200.0,
+        1.0, 0.0, 0.0,
+        id
+    )
+    return grammar_context.new_context(m)
+}
+
+main() {
+    root = aether_ui.root_vstack(10) {
+        title = aether_ui.text("AeVG — canvas_raster blit")
+        aether_ui.style_font_size(title, 16)
+        aether_ui.divider()
+
+        c = aether_ui.canvas_create(200, 200)
+        backend = aevg_gtk_backend.gtk_backend_new(c)
+        ctx = mk_ctx()
+
+        // Pre-render a 60×60 filled blue rect at (40,40) into an RGBA
+        // buffer and blit it. shape_filler paints the rect into the
+        // buffer; render_as_raster base64s it and dispatches
+        // canvas_raster, which the adapter decodes + blits.
+        _u = render_as_raster.render_as_raster(ctx, backend,
+            40.0, 40.0, 60.0, 60.0, "blue", null, "", "") callback |buf: ptr, w: int, h: int, off_x: float, off_y: float, r: int, g: int, b: int, a: int| {
+            rasterize.fill_rect_in_buffer(buf, w, h, off_x, off_y, 60.0, 60.0, r, g, b, a)
+        }
+
+        aether_ui.canvas_redraw(c)
+    }
+    aether_ui.margin(root, 12, 12, 12, 12)
+    aether_ui.app_run("Raster Demo", 240, 290, root)
+}
