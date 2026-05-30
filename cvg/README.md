@@ -16,6 +16,7 @@ are wired into `ci.sh` as **Phase 0** (runs even with no display).
 | transform | `transform.ts` (346 LoC) | `transform.ae` | `test_transform.ae` (30 asserts) | ✅ matrix algebra + factories + projective. `parseTransform` (string→matrix) deferred — unblocked by `std.regex` v0.191; lands alongside `parser.ae`. |
 | normalizer | `normalizer.ts` (427 LoC) | `normalizer.ae` | `test_normalizer.ae` (60 asserts) | ✅ `parse_path` (regex-based tokenizer) + `normalize_commands` (rel→abs, H/V→L, S/Q/T→C, arc→cubic via SVG F.6). `serialize_commands` deferred until `string.from_float` has caller-controlled precision (the librsvg parity gate wants fixed-point output). |
 | easing | `grammar-types.ts` (subset, ~80 LoC) | `easing.ae` | `test_easing.ae` (44 asserts) | ✅ 7 easing fns (linear, in/out/inOut quad + cubic), `lerp`, `parse_hex_color` (with 3-char shorthand expansion). First downstream consumer of v0.193's `string.to_int_radix`. `lerp_color` deferred — needs `string.from_int_radix` with zero-padding, filed as `aether/cvg_asked_for.md`. |
+| parser | `parser.ts` (245 LoC) | `parser.ae` | `test_parser.ae` (39 asserts) | ✅ SVG → `SvgNode` tree. Index-walking tokenizer (mirrors TS source) + std.regex for header strip (`<?xml…?>`, multi-line `<!DOCTYPE…>`, comments). Hand-rolled attribute scanner avoids juggling regex captures across walks. Self-closing, nested, mixed-quote, text-content, namespaced/hyphenated attrs all covered. <!ENTITY> expansion deferred (~5% of real-world SVGs need it). |
 
 `types.ts` is **not ported** — it's a TS-only idiom (12 type-only
 `interface` declarations). Aether struct types don't cross module
@@ -23,9 +24,8 @@ boundaries, so a shared `types.ae` would be dead weight; each
 consumer declares the structs it uses locally and exposes accessor
 functions for cross-module reads.
 
-Next per the inventory's Tier A order: `bbox`, then `parser`. The
-`parser.ts` regex shape is the same as `parse_path`'s tokenizer, so it
-should fall out quickly.
+Next per the inventory's Tier A order: `bbox` (now unblocked — it
+walks an `SvgNode` tree, which `parser.ae` now produces).
 
 ## Running a test by hand
 
@@ -79,3 +79,18 @@ reference. Capturing them here so the next module doesn't rediscover them.
 - **No `as ptr` cast.** Only `as *Struct` / `as fn(...)` / `as T[]` are
   accepted. Functions that take `ptr` params accept `*Struct` values
   directly (the C-side widens).
+- **No `as string` cast either.** When you have a `ptr` that's actually
+  an `AetherString*` (e.g. `map.get`'s value), let interpolation handle
+  it (`${map_get_raw(m, "k")}` prints fine) or return `string` directly
+  from your function — the codegen widens. Don't try to spell the cast.
+- **`map.put(m, k, str)` auto-routes to `put_string_owned`** for heap
+  string values (per #467 in std.map). Don't reach for `put_string` —
+  it doesn't exist as a qualified wrapper. `map.get(m, k)` returns
+  `(ptr, string)` — destructure and treat the ptr as a string at call
+  sites.
+- **`if int_fn(...)` doesn't auto-coerce.** `if string.starts_with(s, p)`
+  fails with "If condition must be boolean". Use `== 1`. Same for
+  `node_has_attr` and other 0/1 returns.
+- **Discarding tuples and returns**: `_ = expr` emits a codegen warning;
+  use a named-but-unused variable (`put_err = …; if string.length(put_err) > 0 { }`)
+  if you genuinely want to drop. The warning is benign; the program runs.

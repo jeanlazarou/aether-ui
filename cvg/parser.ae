@@ -1,0 +1,448 @@
+// cvg/parser.ae — lightweight SVG XML parser (TS port).
+//
+// Port of cosyne/src/cvg/parser.ts (Tier A). Tokenizes SVG strings
+// then assembles a node tree. Index-based scanning for tag boundaries
+// (the TS source's approach), regex.replace_all for the three header
+// strip patterns (XML decl, DOCTYPE, comments).
+//
+// Data model:
+//   SvgNode { tag: string, attrs: ptr (std.map string→string),
+//             children: ptr (std.list of *SvgNode), text: string }
+//   Accessor functions cross module boundaries; struct types don't.
+//
+// Out of scope, intentionally:
+//   - <!ENTITY> declarations in DOCTYPE internal subset (TS has it;
+//     ~5% of real-world SVGs use it. Adds a `*StringMap` of entity
+//     decls + a second replace_all pass. Skip until the parity gate
+//     trips on a sample that needs it.)
+//   - parse_view_box (one-liner; place lives in this module per the
+//     TS source, but lands when `bbox.ae` next needs it).
+//
+// External contract:
+//   parse_svg(s: string) -> *SvgNode handle (always non-null; empty
+//     input returns <svg/>).
+//   node_tag(h), node_text(h), node_attr(h, name),
+//   node_child_count(h), node_child_at(h, i)
+// Callers use the handle and accessors exclusively — they never see
+// the SvgNode struct definition.
+
+exports (
+    parse_svg,
+    node_tag, node_text, node_attr, node_has_attr,
+    node_child_count, node_child_at
+)
+
+import std.regex
+import std.string
+import std.map
+import std.list
+
+extern malloc(size: int) -> ptr
+
+// ─── SvgNode struct + constructor + accessors ────────────────────
+
+struct SvgNode {
+    tag: string
+    attrs: ptr      // std.map: attribute name → value string
+    children: ptr   // std.list of *SvgNode
+    text: string    // "" if absent
+}
+
+mk_node(tag: string) -> *SvgNode {
+    n = malloc(40) as *SvgNode
+    n.tag = tag
+    n.attrs = map.new()
+    n.children = list.new()
+    n.text = ""
+    return n
+}
+
+node_tag(h: ptr) -> string {
+    n = h as *SvgNode
+    return n.tag
+}
+
+node_text(h: ptr) -> string {
+    n = h as *SvgNode
+    return n.text
+}
+
+// Returns the attribute value (heap string under the hood, stored
+// in std.map). Interpolation (`${parser.node_attr(h, "x")}`) handles
+// the ptr→string conversion at the call site. Returns "" if absent.
+node_attr(h: ptr, name: string) -> string {
+    n = h as *SvgNode
+    v = map_get_raw(n.attrs, name)
+    if v == null { return "" }
+    return v
+}
+
+node_has_attr(h: ptr, name: string) -> int {
+    n = h as *SvgNode
+    return map.has(n.attrs, name)
+}
+
+node_child_count(h: ptr) -> int {
+    n = h as *SvgNode
+    return list.size(n.children)
+}
+
+node_child_at(h: ptr, i: int) -> ptr {
+    n = h as *SvgNode
+    item, _ = list.get(n.children, i)
+    return item
+}
+
+// ─── Header stripping ────────────────────────────────────────────
+//
+// The TS source uses three regex.replace_all calls. We do the same —
+// PCRE2 multi-line/dot-all handle the patterns directly.
+
+strip_headers(s: string) -> string {
+    out = s
+
+    // <?xml … ?>
+    re1, e1 = regex.compile("<\\?xml[^?]*\\?>")
+    if e1 == "" {
+        out, _ = regex.replace_all(re1, out, "")
+        regex.free(re1)
+    }
+
+    // <!DOCTYPE … > — accept multi-line, optional internal-subset
+    // brackets. PCRE2 needs DOTALL (`.` matches newline) for the
+    // optional [ … ] subset capture.
+    flags = regex.FLAG_DOTALL + regex.FLAG_CASELESS
+    re2, e2 = regex.compile_flags("<!DOCTYPE[^\\[>]*(\\[[\\s\\S]*?\\])?[^>]*>", flags)
+    if e2 == "" {
+        out, _ = regex.replace_all(re2, out, "")
+        regex.free(re2)
+    }
+
+    // <!-- … -->
+    re3, e3 = regex.compile_flags("<!--[\\s\\S]*?-->", regex.FLAG_DOTALL)
+    if e3 == "" {
+        out, _ = regex.replace_all(re3, out, "")
+        regex.free(re3)
+    }
+
+    return string.trim(out)
+}
+
+// ─── Find tag end ────────────────────────────────────────────────
+//
+// Scan forward from `start` looking for '>'. Skip past any '>' that
+// appears inside a quoted attribute value (so `width=">"` doesn't
+// confuse the scan). Returns the index of the closing '>', or -1.
+
+find_tag_end(s: string, start: int) -> int {
+    len = string.length(s)
+    in_quote = 0      // 0 = not in quote; otherwise = char code of opening quote
+    i = start + 1
+    while i < len {
+        ch = string_char_at(s, i)
+        if in_quote != 0 {
+            if ch == in_quote { in_quote = 0 }
+        } else {
+            // 34 = '"', 39 = '\''
+            if ch == 34 { in_quote = 34 }
+            if ch == 39 { in_quote = 39 }
+            if ch == 62 { return i }   // '>'
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// ─── Attribute string → map ──────────────────────────────────────
+//
+// Hand-rolled scanner. TS uses a regex with two alternation captures
+// (`"…"` or `'…'`). regex.find_all only gives whole-match positions;
+// the captures-per-match accessor doesn't exist. A small state-
+// machine is easier than juggling regex.captures + offsets for a
+// linear walk anyway.
+
+parse_attributes(s: string, into: ptr) {
+    len = string.length(s)
+    i = 0
+    while i < len {
+        // Skip leading whitespace.
+        while i < len {
+            c = string_char_at(s, i)
+            if c == 32 { i = i + 1; continue }     // ' '
+            if c == 9  { i = i + 1; continue }     // '\t'
+            if c == 10 { i = i + 1; continue }     // '\n'
+            if c == 13 { i = i + 1; continue }     // '\r'
+            break
+        }
+        if i >= len { break }
+
+        // Read attribute name: [A-Za-z0-9_:.-]+.
+        name_start = i
+        while i < len {
+            c = string_char_at(s, i)
+            // ASCII letter/digit ranges + ':' (58), '.' (46), '-' (45), '_' (95)
+            is_name = 0
+            if c >= 65 { if c <= 90  { is_name = 1 } }  // A..Z
+            if c >= 97 { if c <= 122 { is_name = 1 } }  // a..z
+            if c >= 48 { if c <= 57  { is_name = 1 } }  // 0..9
+            if c == 58 { is_name = 1 }
+            if c == 46 { is_name = 1 }
+            if c == 45 { is_name = 1 }
+            if c == 95 { is_name = 1 }
+            if is_name == 0 { break }
+            i = i + 1
+        }
+        if i == name_start { i = i + 1; continue }  // skip a stray char
+        name = string.substring(s, name_start, i)
+
+        // Skip whitespace before '='.
+        while i < len {
+            c = string_char_at(s, i)
+            if c == 32 { i = i + 1; continue }
+            if c == 9  { i = i + 1; continue }
+            if c == 10 { i = i + 1; continue }
+            if c == 13 { i = i + 1; continue }
+            break
+        }
+        if i >= len { break }
+        if string_char_at(s, i) != 61 {  // '='
+            // Boolean attr (no =value). TS dropped these silently
+            // unless they had a value; mirror that.
+            continue
+        }
+        i = i + 1   // past '='
+
+        // Skip whitespace after '='.
+        while i < len {
+            c = string_char_at(s, i)
+            if c == 32 { i = i + 1; continue }
+            if c == 9  { i = i + 1; continue }
+            if c == 10 { i = i + 1; continue }
+            if c == 13 { i = i + 1; continue }
+            break
+        }
+        if i >= len { break }
+
+        // Quoted value: " … " or ' … '.
+        quote = string_char_at(s, i)
+        if quote != 34 {
+            if quote != 39 { continue }
+        }
+        i = i + 1
+        val_start = i
+        while i < len {
+            if string_char_at(s, i) == quote { break }
+            i = i + 1
+        }
+        value = string.substring(s, val_start, i)
+        if i < len { i = i + 1 }   // past closing quote
+
+        // Insert into the map. `map.put` auto-routes heap strings to
+        // map_put_string_owned (#467 in the std.map source), so the
+        // value lifetime is managed for us. Drop the error via a
+        // named-but-unused local — Aether warns on `_ =` here.
+        copied = string.copy(value)
+        put_err = map.put(into, name, copied)
+        if string.length(put_err) > 0 { } // intentionally ignored
+    }
+}
+
+// ─── Token types ─────────────────────────────────────────────────
+//
+// Tokens stored as small structs; tokenize() returns a std.list of
+// *Token. The build phase walks the list.
+
+TOK_OPEN()      -> int { return 1 }
+TOK_CLOSE()     -> int { return 2 }
+TOK_SELFCLOSE() -> int { return 3 }
+TOK_TEXT()      -> int { return 4 }
+
+struct Token {
+    kind: int
+    tag: string     // "" for text
+    attrs: ptr      // map or null
+    text: string    // "" for non-text
+}
+
+mk_token(kind: int) -> *Token {
+    t = malloc(40) as *Token
+    t.kind = kind
+    t.tag = ""
+    t.attrs = null
+    t.text = ""
+    return t
+}
+
+// ─── Tokenizer ───────────────────────────────────────────────────
+
+tokenize(s: string) -> ptr {
+    tokens = list.new()
+    len = string.length(s)
+    pos = 0
+    while pos < len {
+        ch = string_char_at(s, pos)
+        if ch == 60 {   // '<'
+            // CDATA: <![CDATA[ … ]]>
+            if string.starts_with(string.substring(s, pos, len), "<![CDATA[") == 1 {
+                cdata_end = string.index_of_from(s, "]]>", pos + 9)
+                if cdata_end == 0 - 1 { break }
+                text = string.substring(s, pos + 9, cdata_end)
+                if string.length(text) > 0 {
+                    tk = mk_token(TOK_TEXT())
+                    tk.text = text
+                    list.add(tokens, tk)
+                }
+                pos = cdata_end + 3
+                continue
+            }
+            // Closing tag: </name>
+            if pos + 1 < len {
+                if string_char_at(s, pos + 1) == 47 {  // '/'
+                    end = string.index_of_from(s, ">", pos)
+                    if end == 0 - 1 { break }
+                    tag = string.trim(string.substring(s, pos + 2, end))
+                    tk = mk_token(TOK_CLOSE())
+                    tk.tag = tag
+                    list.add(tokens, tk)
+                    pos = end + 1
+                    continue
+                }
+            }
+            // Opening or self-closing tag.
+            tag_end = find_tag_end(s, pos)
+            if tag_end == 0 - 1 { break }
+            tag_content = string.substring(s, pos + 1, tag_end)
+            is_self_closing = string.ends_with(tag_content, "/")
+            content = tag_content
+            if is_self_closing == 1 {
+                content = string.substring(tag_content, 0, string.length(tag_content) - 1)
+            }
+            content = string.trim(content)
+
+            // Split name and attribute string at first whitespace.
+            name_end = first_whitespace(content)
+            tag_name = content
+            attr_str = ""
+            if name_end >= 0 {
+                tag_name = string.substring(content, 0, name_end)
+                attr_str = string.substring(content, name_end + 1, string.length(content))
+            }
+
+            kind = TOK_OPEN()
+            if is_self_closing == 1 { kind = TOK_SELFCLOSE() }
+            tk = mk_token(kind)
+            tk.tag = tag_name
+            tk.attrs = map.new()
+            parse_attributes(attr_str, tk.attrs)
+            list.add(tokens, tk)
+            pos = tag_end + 1
+            continue
+        }
+        // Text content between tags.
+        next_tag = string.index_of_from(s, "<", pos)
+        text_end = len
+        if next_tag >= 0 { text_end = next_tag }
+        text = string.trim(string.substring(s, pos, text_end))
+        if string.length(text) > 0 {
+            tk = mk_token(TOK_TEXT())
+            tk.text = text
+            list.add(tokens, tk)
+        }
+        if next_tag < 0 { pos = len } else { pos = next_tag }
+    }
+    return tokens
+}
+
+// Index of the first whitespace char in s, or -1.
+first_whitespace(s: string) -> int {
+    len = string.length(s)
+    i = 0
+    while i < len {
+        c = string_char_at(s, i)
+        if c == 32 { return i }
+        if c == 9  { return i }
+        if c == 10 { return i }
+        if c == 13 { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// ─── Tree builder ────────────────────────────────────────────────
+//
+// Stack of *SvgNode; push on open, pop on close, append on selfClose
+// and text. The TS source uses an explicit `root` pointer; we do the
+// same so `parse_svg("")` returns a valid <svg/>.
+
+build_tree(tokens: ptr) -> *SvgNode {
+    stack = list.new()
+    root = null as *SvgNode
+    n = list.size(tokens)
+    i = 0
+    while i < n {
+        item, _ = list.get(tokens, i)
+        tk = item as *Token
+        if tk.kind == TOK_OPEN() {
+            nd = mk_node(tk.tag)
+            nd.attrs = tk.attrs
+            // Append to parent (if any) before pushing onto stack.
+            d = list.size(stack)
+            if d > 0 {
+                parent_item, _ = list.get(stack, d - 1)
+                parent = parent_item as *SvgNode
+                list.add(parent.children, nd)
+            }
+            list.add(stack, nd)
+            if root == null { root = nd }
+        }
+        if tk.kind == TOK_SELFCLOSE() {
+            nd = mk_node(tk.tag)
+            nd.attrs = tk.attrs
+            d = list.size(stack)
+            if d > 0 {
+                parent_item, _ = list.get(stack, d - 1)
+                parent = parent_item as *SvgNode
+                list.add(parent.children, nd)
+            } else {
+                if root == null { root = nd }
+            }
+        }
+        if tk.kind == TOK_CLOSE() {
+            d = list.size(stack)
+            if d > 1 {
+                list.remove(stack, d - 1)
+            } else {
+                if d == 1 {
+                    // Root close: capture root if not yet set.
+                    last_item, _ = list.get(stack, 0)
+                    if root == null { root = last_item as *SvgNode }
+                    list.remove(stack, 0)
+                }
+            }
+        }
+        if tk.kind == TOK_TEXT() {
+            d = list.size(stack)
+            if d > 0 {
+                parent_item, _ = list.get(stack, d - 1)
+                parent = parent_item as *SvgNode
+                if string.length(parent.text) == 0 {
+                    parent.text = tk.text
+                } else {
+                    parent.text = string.concat(parent.text, string.concat(" ", tk.text))
+                }
+            }
+        }
+        i = i + 1
+    }
+    return root
+}
+
+// ─── Entry point ─────────────────────────────────────────────────
+
+parse_svg(s: string) -> ptr {
+    stripped = strip_headers(s)
+    tokens = tokenize(stripped)
+    root = build_tree(tokens)
+    if root == null { return mk_node("svg") }
+    return root
+}
