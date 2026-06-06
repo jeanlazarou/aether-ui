@@ -28,7 +28,7 @@
 //   load_svg_default(backend, svg_string) -> *AevgContext
 //     (canvas defaults: 400×400)
 
-exports ( load_svg, load_svg_default )
+exports ( load_svg, load_svg_default, register_defs_into )
 
 import std.string
 import std.map
@@ -484,6 +484,44 @@ load_svg(backend: ptr, svg_string: string, canvas_w: float, canvas_h: float) -> 
 
 load_svg_default(backend: ptr, svg_string: string) -> ptr {
     return load_svg(backend, svg_string, 400.0, 400.0)
+}
+
+// Register the gradients (+ filters / clipPaths) from `svg_string` into an
+// existing context, WITHOUT drawing any shapes. The transpiled vg{} harness
+// uses this: its shapes carry url(#id) fill refs, but the flattened output has
+// no <defs>, so the gradient registry would be empty and url() fills fall back
+// to black. Parsing the original SVG's defs here populates ctx.gradients so
+// the refs resolve (index_nodes first, for gradient xlink:href inheritance).
+register_defs_into(ctx: ptr, svg_string: string) {
+    root = parser.parse_svg(svg_string)
+    index_nodes(ctx, root)
+    register_defs_walk(ctx, root)
+}
+
+register_defs_walk(ctx: ptr, node_h: ptr) {
+    tag = parser.node_tag(node_h)
+    if string.equals(tag, "linearGradient") == 1 {
+        _ = grammar_defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "radialGradient") == 1 {
+        _ = grammar_defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "filter") == 1 {
+        _ = grammar_defs.parse_filter(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "clipPath") == 1 {
+        _ = grammar_defs.parse_clip_path(ctx, node_h)
+        return
+    }
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        register_defs_walk(ctx, parser.node_child_at(node_h, i))
+        i = i + 1
+    }
 }
 
 // Helper: small float → string. The string.from_float fix in v0.193

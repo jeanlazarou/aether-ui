@@ -146,6 +146,7 @@ transpile_svg_to_png_harness(svg: string) -> string {
     _ = strbuilder.append(sb, "import vg (view_box)\n")
     _ = strbuilder.append(sb, "import grammar_factories\n")
     _ = strbuilder.append(sb, "import aevg_gtk_backend\n")
+    _ = strbuilder.append(sb, "import loader\n")
     _ = strbuilder.append(sb, "import std.string\n")
     _ = strbuilder.append(sb, "extern getenv(name: string) -> string\n")
     _ = strbuilder.append(sb, "extern exit(code: int)\n\n")
@@ -164,6 +165,11 @@ transpile_svg_to_png_harness(svg: string) -> string {
     _ = strbuilder.append(sb, "    grammar_factories.opts_set_width(opts, sz / 1.0)\n")
     _ = strbuilder.append(sb, "    grammar_factories.opts_set_height(opts, sz / 1.0)\n")
     _ = strbuilder.append(sb, "    ctx = grammar_factories.create_aevg_context(opts)\n")
+    // Register the original SVG's gradient/filter/clipPath defs so the shapes'
+    // url(#id) fills resolve (the flattened shapes below have no <defs>).
+    _ = strbuilder.append(sb, "    loader.register_defs_into(ctx, \"")
+    _ = strbuilder.append(sb, escape_str_multiline(svg))
+    _ = strbuilder.append(sb, "\")\n")
     _ = strbuilder.append(sb, "    scene = vg.scene_new(ctx, backend)\n")
     _ = strbuilder.append(sb, "    vg.scene_set_canvas(scene, cid)\n")
     _ = strbuilder.append(sb, "    vg.scene_set_deferred(scene, 1)\n")
@@ -1014,6 +1020,40 @@ escape_str(s: string) -> string {
                 _ = strbuilder.append(out, "\\\"")
             } else {
                 _ = strbuilder.append_byte(out, c)
+            }
+        }
+        i = i + 1
+    }
+    return strbuilder.finish(out)
+}
+
+// Like escape_str but also escapes newlines/CR/tab → \n \r \t, for embedding a
+// whole SVG document (which has line breaks) as a single Aether string literal.
+escape_str_multiline(s: string) -> string {
+    n = string.length(s)
+    out = strbuilder.new(n + 16)
+    i = 0
+    while i < n {
+        c = string.char_at(s, i)
+        if c == 92 {
+            _ = strbuilder.append(out, "\\\\")
+        } else {
+            if c == 34 {
+                _ = strbuilder.append(out, "\\\"")
+            } else {
+                if c == 10 {
+                    _ = strbuilder.append(out, "\\n")
+                } else {
+                    if c == 13 {
+                        _ = strbuilder.append(out, "\\r")
+                    } else {
+                        if c == 9 {
+                            _ = strbuilder.append(out, "\\t")
+                        } else {
+                            _ = strbuilder.append_byte(out, c)
+                        }
+                    }
+                }
             }
         }
         i = i + 1
