@@ -1,0 +1,75 @@
+// aevg/svg_render_png.ae — render an SVG (read from stdin) to a PNG.
+//
+// The conformance/parity harness (aevg/test/svg-compare-aevg.py) shells out to
+// this once per SVG: it pipes the SVG source on stdin and sets two env vars:
+//
+//   AEVG_OUT   — output PNG path (required)
+//   AEVG_SIZE  — square render size in px (default 400, matching the librsvg
+//                reference render in the harness)
+//
+// We read stdin → SVG string, build a GTK-backed canvas at SIZE×SIZE, run the
+// full loader pipeline (parse → context → dispatch every shape), and write the
+// command buffer to a PNG headless via canvas_write_png (pure cairo image
+// surface — no window/display needed). Aether's main() takes no args, so the
+// stdin+env convention keeps the binary CLI-free; see the harness.
+//
+//   build:  ./build.sh aevg/svg_render_png.ae build/svg_render
+//   run:    AEVG_OUT=/tmp/x.png AEVG_SIZE=400 ./build/svg_render < heart.svg
+
+import aether_ui
+import aether_ui (canvas_create, canvas_write_png)
+import loader
+import aevg_gtk_backend
+import std.string
+import std.strbuilder
+
+extern getchar() -> int
+extern getenv(name: string) -> string
+extern exit(code: int)
+
+// Read all of stdin into a string (byte by byte; getchar returns -1 at EOF).
+read_stdin() -> string {
+    out = strbuilder.new(4096)
+    c = getchar()
+    while c >= 0 {
+        _ = strbuilder.append_byte(out, c)
+        c = getchar()
+    }
+    return strbuilder.finish(out)
+}
+
+main() {
+    out_path = getenv("AEVG_OUT")
+    if string.length(out_path) == 0 {
+        println("svg_render: AEVG_OUT not set")
+        exit(2)
+    }
+
+    size = 400
+    size_str = getenv("AEVG_SIZE")
+    if string.length(size_str) > 0 {
+        v, ok = string.to_int(size_str)
+        if ok == 1 { size = v }
+    }
+
+    svg = read_stdin()
+    if string.length(svg) == 0 {
+        println("svg_render: empty SVG on stdin")
+        exit(2)
+    }
+
+    // Headless canvas + GTK backend; loader dispatches the whole scene.
+    cid = canvas_create(size, size)
+    backend = aevg_gtk_backend.gtk_backend_new(cid)
+    _ctx = loader.load_svg(backend, svg, int_to_f(size), int_to_f(size))
+
+    ok2 = canvas_write_png(cid, out_path, size, size)
+    if ok2 == 1 {
+        println("svg_render: wrote ${out_path}")
+    } else {
+        println("svg_render: PNG write failed")
+        exit(1)
+    }
+}
+
+int_to_f(i: int) -> float { return i / 1.0 }
