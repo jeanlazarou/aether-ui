@@ -1,0 +1,236 @@
+// aevg/vg.ae — the SVG-like declarative drawing DSL ("DSL with Scope").
+//
+// `vg(view_box(…), w, h) { … }` opens a vector-graphics scene inside any
+// aether_ui surface (window / render_to / record) or layout. Shapes read
+// like the SVG they came from — positional geometry + a trailing config
+// block, the same in-block-modifier idiom the widget DSL uses
+// (`circle(50,50,20) { fill("#F00") }` mirrors `button("+") { bg_color(…) }`):
+//
+//   window("Demo", 400, 300) {
+//       vg(view_box(0,0,100,100), 400, 300) {
+//           circle(50, 50, 20) { fill("#F00") }
+//           rect(10, 10, 40, 30) { fill("blue"); stroke("#000", 2) }
+//           g() {
+//               fill("red")
+//               circle(1, 1, 1) { }
+//           }
+//       }
+//   }
+//
+// Mechanism (per docs/closures-and-builder-dsl.md): every `_ctx` value inside
+// a vg subtree is a *VgNode* carrying (a) the scene — the AevgContext +
+// backend everything draws into — and (b) a payload (the current element or
+// group). Aether has no module-level mutable globals, so the scene rides the
+// builder-context stack: `vg` pushes VgNode{scene, null}; a shape reads _ctx,
+// draws via the scene, and pushes VgNode{scene, element} so its block's
+// modifiers find the element AND a nested shape still finds the scene; `g`
+// pushes VgNode{scene, group}. The scene is therefore reachable at any
+// nesting depth without a global.
+//
+// `vg` is a *regular* trailing-block builder (function-first), not a
+// `builder … with` — it creates the canvas/context eagerly so the block's
+// shapes draw live; nothing needs to run after the block. (The surface verbs
+// use `builder … with` because their loop/flush body must run after.)
+
+// This module is PURE AeVG (no aether_ui / GTK coupling) so it tests headless
+// in Phase 0 against the recording backend. The live, canvas-creating `vg(…)`
+// scene verb lives in vg_live.ae (which imports aether_ui); it builds a scene
+// via scene_new + a GTK backend and hands it to these verbs.
+
+exports (
+    view_box,
+    circle, rect, line, path, text, g,
+    fill, stroke, opacity,
+    // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
+    scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
+    mk_node
+)
+
+import std.string
+import std.map
+import grammar_shapes
+import grammar_element
+import parser
+
+extern malloc(size: int) -> ptr
+
+// ─── VgNode: the _ctx value threaded through a vg subtree ────────
+
+struct VgScene {
+    ctx: ptr        // *AevgContext (viewBox→canvas mapping)
+    backend: ptr    // *backend_dispatch.Dispatch (the GTK canvas adapter)
+    canvas_id: int  // aether_ui canvas handle (for redraw)
+}
+
+// PAYLOAD_NONE / ELEMENT / GROUP — what the VgNode's payload is.
+struct VgNode {
+    scene: ptr      // *VgScene (the shared drawing target)
+    payload: ptr    // *AevgElement (shape) / group handle / null (vg root)
+}
+
+mk_node(scene: ptr, payload: ptr) -> ptr {
+    n = malloc(16) as *VgNode
+    n.scene = scene
+    n.payload = payload
+    return n
+}
+
+node_scene(p: ptr) -> ptr   { n = p as *VgNode; return n.scene }
+node_payload(p: ptr) -> ptr { n = p as *VgNode; return n.payload }
+
+scene_ctx(p: ptr) -> ptr     { s = p as *VgScene; return s.ctx }
+scene_backend(p: ptr) -> ptr { s = p as *VgScene; return s.backend }
+
+// scene_new(ctx, backend) — build a scene around an AevgContext + any
+// backend (recording stub, GTK adapter, …). canvas_id 0 means "no live
+// canvas" (headless / recording). vg_root wraps it as the root VgNode the
+// shape verbs accept as _ctx.
+scene_new(ctx: ptr, backend: ptr) -> ptr {
+    s = malloc(24) as *VgScene
+    s.ctx = ctx
+    s.backend = backend
+    s.canvas_id = 0
+    return s
+}
+vg_root(scene: ptr) -> ptr {
+    return mk_node(scene, null)
+}
+
+// node_element(node) — the *AevgElement a shape node wraps (for tests /
+// callers that want the element after drawing). null for the vg root / g.
+node_element(p: ptr) -> ptr { return node_payload(p) }
+
+// ─── view_box(x, y, w, h) — typed viewBox constructor ────────────
+//
+// Returns the SVG viewBox string ("x y w h"). Kept as a constructor so
+// hand-authored code reads `view_box(0,0,100,100)` (typed, compile-checked)
+// not a stringly-typed "0 0 100 100". The transpiler emits this form too.
+
+view_box(x: float, y: float, w: float, h: float) -> string {
+    a = string.from_float(x)
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(y))
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(w))
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(h))
+    return a
+}
+
+// ─── shape verbs ─────────────────────────────────────────────────
+//
+// Each reads _ctx (a VgNode), pulls the scene, builds an attrs map from the
+// positional geometry, dispatches via grammar_shapes.shape_*, and returns a
+// new VgNode wrapping the element — pushed as _ctx so the trailing block's
+// fill/stroke/opacity modify this element, and a nested shape still finds the
+// scene. The scene rides along, so depth doesn't matter.
+
+circle(_ctx: ptr, cx: float, cy: float, r: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "cx", cx)
+    put_f(a, "cy", cy)
+    put_f(a, "r",  r)
+    el = grammar_shapes.shape_circle(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+rect(_ctx: ptr, x: float, y: float, w: float, h: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "x", x)
+    put_f(a, "y", y)
+    put_f(a, "width",  w)
+    put_f(a, "height", h)
+    el = grammar_shapes.shape_rectangle(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+line(_ctx: ptr, x1: float, y1: float, x2: float, y2: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "x1", x1)
+    put_f(a, "y1", y1)
+    put_f(a, "x2", x2)
+    put_f(a, "y2", y2)
+    el = grammar_shapes.shape_line(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+path(_ctx: ptr, d: string) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    _ = map.put(a, "d", d)
+    el = grammar_shapes.shape_path(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+// text differs from the other shapes: grammar_shapes.shape_text takes a
+// parsed SvgNode (it reads node_attrs + node_text), not an attrs map — it
+// has to handle <tspan> children. So we build a minimal <text> element
+// string and parse it into a real node, then dispatch (same as the loader).
+text(_ctx: ptr, x: float, y: float, content: string) -> ptr {
+    scene = node_scene(_ctx)
+    s = "<svg><text x='"
+    s = string.concat(s, string.from_float(x))
+    s = string.concat(s, "' y='")
+    s = string.concat(s, string.from_float(y))
+    s = string.concat(s, "'>")
+    s = string.concat(s, content)
+    s = string.concat(s, "</text></svg>")
+    root = parser.parse_svg(s)
+    node_h = parser.node_child_at(root, 0)
+    el = grammar_shapes.shape_text(scene_ctx(scene), scene_backend(scene), node_h)
+    return mk_node(scene, el)
+}
+
+// g() { … } — a style/transform scope. Pushes a VgNode carrying the scene so
+// nested shapes draw into it. The group's style (fill/stroke set in its
+// block) cascades to children via the context's style stack — handled by
+// grammar_shapes.shape_group, which we invoke with the block as its body.
+//
+// Note: grammar_shapes.shape_group(ctx, attrs, body) pushes style+transform,
+// runs `body`, then pops. Here the block IS the body, so we expose g as a
+// trailing-block builder whose pushed _ctx lets children draw, and the
+// style-stack push/pop is driven by group_open/group_close around the block.
+g(_ctx: ptr) -> ptr {
+    scene = node_scene(_ctx)
+    // First cut: g() is a passthrough scope that threads the scene so
+    // `g() { circle(…) }` nests structurally. The shapes draw into the same
+    // scene. Group-level style/transform CASCADE (fill set on the g applying
+    // to children) is deferred — it needs an after-block pop hook, which a
+    // regular trailing block lacks; it lands when g moves to a builder form.
+    return mk_node(scene, null)
+}
+
+// ─── in-block modifiers ──────────────────────────────────────────
+//
+// Read _ctx (the current element's VgNode) and set the cached property the
+// renderer / backend reads. Mirror bg_color/onclick on a widget.
+
+fill(_ctx: ptr, color: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        grammar_element.element_set_fill(el, color)
+    }
+}
+
+stroke(_ctx: ptr, color: string, width: float) {
+    el = node_payload(_ctx)
+    if el != null {
+        grammar_element.element_set_stroke(el, color, width)
+    }
+}
+
+opacity(_ctx: ptr, value: float) {
+    el = node_payload(_ctx)
+    if el != null {
+        grammar_element.element_set_opacity(el, value)
+    }
+}
+
+// ─── helpers ─────────────────────────────────────────────────────
+
+put_f(m: ptr, k: string, v: float) {
+    _ = map.put(m, k, string.from_float(v))
+}

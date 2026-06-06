@@ -1,0 +1,90 @@
+// aevg/test_vg.ae — the vg drawing DSL's shape verbs + in-block modifiers.
+//
+// Headless: drives the vg shape verbs against a scene wired to the RECORDING
+// backend (no GTK / display), so it runs in Phase 0. The verbs take their
+// _ctx (a VgNode) explicitly here — _ctx auto-injection only happens inside a
+// trailing block; called directly, we pass the node. This exercises the same
+// code the `vg { … }` block runs, minus the live GTK canvas the `vg` scene
+// verb (vg_live.ae) creates.
+
+import std.string
+import vg
+import grammar_context
+import grammar_element
+import aevg_backend
+import transform
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_near(label: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 0.5 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return grammar_context.new_context(m)
+}
+
+parse_opt(bk: ptr, i: int, key: string) -> float {
+    s = aevg_backend.backend_opt_get(bk, i, key)
+    v, _ = string.to_double(s)
+    return v
+}
+
+main() {
+    println("=== test_vg ===")
+
+    ctx = mk_ctx()
+    bk = aevg_backend.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    root = vg.vg_root(scene)
+
+    vb = vg.view_box(0.0, 0.0, 100.0, 100.0)
+    assert_eq_str("view_box string", vb, "0 0 100 100")
+
+    cnode = vg.circle(root, 50.0, 50.0, 20.0)
+    assert_eq_str("circle dispatched", aevg_backend.backend_kind(bk, 0), "circle")
+    assert_near("circle bbox x (identity viewBox)", parse_opt(bk, 0, "x"), 30.0)
+    vg.fill(cnode, "#F00")
+    assert_eq_str("fill cached on element",
+                  grammar_element.element_last_fill(vg.node_element(cnode)), "#F00")
+
+    rnode = vg.rect(root, 10.0, 10.0, 40.0, 30.0)
+    assert_eq_str("rect dispatched", aevg_backend.backend_kind(bk, 1), "rectangle")
+    vg.stroke(rnode, "#000", 2.0)
+    rel = vg.node_element(rnode)
+    assert_eq_str("rect stroke cached", grammar_element.element_last_stroke_color(rel), "#000")
+    assert_near("rect stroke width", grammar_element.element_last_stroke_width(rel), 2.0)
+
+    _ln = vg.line(root, 0.0, 0.0, 100.0, 100.0)
+    assert_eq_str("line dispatched", aevg_backend.backend_kind(bk, 2), "line")
+
+    pnode = vg.path(root, "M 0 0 L 100 0 L 100 100 Z")
+    assert_eq_str("path dispatched", aevg_backend.backend_kind(bk, 3), "path")
+    vg.fill(pnode, "green")
+    assert_eq_str("path fill cached",
+                  grammar_element.element_last_fill(vg.node_element(pnode)), "green")
+
+    _tn = vg.text(root, 10.0, 20.0, "Hi")
+    assert_eq_str("text dispatched", aevg_backend.backend_kind(bk, 4), "text")
+
+    onode = vg.circle(root, 5.0, 5.0, 5.0)
+    vg.opacity(onode, 0.5)
+    assert_near("opacity cached",
+                grammar_element.element_last_opacity(vg.node_element(onode)), 0.5)
+
+    gnode = vg.g(root)
+    _gc = vg.circle(gnode, 1.0, 1.0, 1.0)
+    assert_eq_str("circle under g dispatched", aevg_backend.backend_kind(bk, 6), "circle")
+
+    println("=== test_vg passed ===")
+}
