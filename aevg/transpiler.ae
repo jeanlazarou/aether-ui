@@ -273,7 +273,9 @@ emit_kids_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr) {
         root_attr_or(node, "fill"),
         root_attr_or(node, "stroke"),
         root_attr_or(node, "stroke-width"),
-        root_attr_or(node, "opacity"))
+        root_attr_or(node, "opacity"),
+        root_attr_or(node, "stroke-linecap"),
+        root_attr_or(node, "stroke-linejoin"))
 }
 
 // The root <svg>'s presentation attr (or inline style), "" if absent.
@@ -283,12 +285,12 @@ root_attr_or(node: ptr, key: string) -> string {
 
 emit_kids_explicit_t(sb: ptr, node: ptr, indent: int, ctr: ptr,
                      in_tf: string, in_fill: string, in_stroke: string, in_sw: string,
-                     in_op: string) {
+                     in_op: string, in_lc: string, in_lj: string) {
     nch = parser.node_child_count(node)
     i = 0
     while i < nch {
         emit_node_explicit(sb, parser.node_child_at(node, i), indent, ctr,
-                           in_tf, in_fill, in_stroke, in_sw, in_op)
+                           in_tf, in_fill, in_stroke, in_sw, in_op, in_lc, in_lj)
         i = i + 1
     }
 }
@@ -300,24 +302,26 @@ struct VarCounter {
 
 emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
                    in_tf: string, in_fill: string, in_stroke: string, in_sw: string,
-                   in_op: string) {
+                   in_op: string, in_lc: string, in_lj: string) {
     tag = parser.node_tag(node)
     if string.equals(tag, "desc") == 1 { return }
     if string.equals(tag, "title") == 1 { return }
     if string.equals(tag, "defs") == 1 { return }   // definitions, not drawn directly
     if string.equals(tag, "g") == 1 {
-        // Flatten: compose this g's transform + fill/stroke + opacity onto the
-        // inherited context, then recurse. transform composes left-to-right,
-        // fill/stroke override, opacity MULTIPLIES (nested group opacities
-        // multiply per SVG). The flattened form has no group layer, so a g's
-        // opacity must ride on each descendant shape — without it the ubuntu
-        // shadow group (<g opacity='0.125'>) lost its shadow entirely.
+        // Flatten: compose this g's transform + fill/stroke + opacity + cap/join
+        // onto the inherited context, then recurse. transform composes
+        // left-to-right, fill/stroke/cap/join override, opacity MULTIPLIES
+        // (nested group opacities multiply per SVG). The flattened form has no
+        // group layer, so a g's attrs must ride on each descendant shape — e.g.
+        // ubuntu's <g opacity='0.125'> shadow, vnu's <g stroke-linecap='round'>.
         emit_kids_explicit_t(sb, node, indent, ctr,
             compose_transform(in_tf, node),
             inherit_or(node, "fill", in_fill),
             inherit_or(node, "stroke", in_stroke),
             inherit_or(node, "stroke-width", in_sw),
-            compose_opacity(in_op, node))
+            compose_opacity(in_op, node),
+            inherit_or(node, "stroke-linecap", in_lc),
+            inherit_or(node, "stroke-linejoin", in_lj))
         return
     }
     if string.equals(tag, "use") == 1 {
@@ -333,7 +337,9 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
             inherit_or(node, "fill", in_fill),
             inherit_or(node, "stroke", in_stroke),
             inherit_or(node, "stroke-width", in_sw),
-            compose_opacity(in_op, node))
+            compose_opacity(in_op, node),
+            inherit_or(node, "stroke-linecap", in_lc),
+            inherit_or(node, "stroke-linejoin", in_lj))
         return
     }
     is_shape = 0
@@ -344,7 +350,7 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
     if string.equals(tag, "ellipse") == 1 { is_shape = 1 }
     if string.equals(tag, "text") == 1 { is_shape = 1 }
     if is_shape == 0 {
-        emit_kids_explicit_t(sb, node, indent, ctr, in_tf, in_fill, in_stroke, in_sw, in_op)
+        emit_kids_explicit_t(sb, node, indent, ctr, in_tf, in_fill, in_stroke, in_sw, in_op, in_lc, in_lj)
         return
     }
 
@@ -354,6 +360,8 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
     eff_stroke = inherit_or(node, "stroke", in_stroke)
     eff_sw = inherit_or(node, "stroke-width", in_sw)
     eff_op = compose_opacity(in_op, node)
+    eff_lc = inherit_or(node, "stroke-linecap", in_lc)
+    eff_lj = inherit_or(node, "stroke-linejoin", in_lj)
 
     any = 0
     if string.length(eff_tf) > 0 { any = 1 }
@@ -384,7 +392,7 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
     }
 
     if any == 1 {
-        emit_eff_style_explicit(sb, indent, vn, eff_fill, eff_stroke, eff_sw, eff_op, eff_tf)
+        emit_eff_style_explicit(sb, indent, vn, eff_fill, eff_stroke, eff_sw, eff_op, eff_tf, eff_lc, eff_lj)
     }
 }
 
@@ -455,7 +463,7 @@ emit_geom_args_explicit(sb: ptr, node: ptr, tag: string) {
 // values (shape's own, cascaded under any flattened ancestor <g>s).
 emit_eff_style_explicit(sb: ptr, indent: int, vn: string,
                         fillv: string, strokev: string, sw_in: string,
-                        opv: string, eff_tf: string) {
+                        opv: string, eff_tf: string, eff_lc: string, eff_lj: string) {
     if string.length(fillv) > 0 {
         pad(sb, indent)
         _ = strbuilder.append(sb, "vg.fill(")
@@ -493,6 +501,25 @@ emit_eff_style_explicit(sb: ptr, indent: int, vn: string,
         _ = strbuilder.append(sb, ", \"")
         _ = strbuilder.append(sb, escape_str(eff_tf))
         _ = strbuilder.append(sb, "\")\n")
+    }
+    // Only emit cap/join when a stroke is actually present (no effect otherwise).
+    if string.length(strokev) > 0 {
+        if string.length(eff_lc) > 0 {
+            pad(sb, indent)
+            _ = strbuilder.append(sb, "vg.linecap(")
+            _ = strbuilder.append(sb, vn)
+            _ = strbuilder.append(sb, ", \"")
+            _ = strbuilder.append(sb, escape_str(eff_lc))
+            _ = strbuilder.append(sb, "\")\n")
+        }
+        if string.length(eff_lj) > 0 {
+            pad(sb, indent)
+            _ = strbuilder.append(sb, "vg.linejoin(")
+            _ = strbuilder.append(sb, vn)
+            _ = strbuilder.append(sb, ", \"")
+            _ = strbuilder.append(sb, escape_str(eff_lj))
+            _ = strbuilder.append(sb, "\")\n")
+        }
     }
 }
 

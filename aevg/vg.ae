@@ -40,7 +40,7 @@
 exports (
     view_box,
     circle, rect, line, path, text, g,
-    fill, stroke, opacity, transform,
+    fill, stroke, opacity, transform, linecap, linejoin,
     // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
     scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
     scene_set_canvas, scene_canvas, scene_set_ctx, mk_node,
@@ -313,6 +313,22 @@ transform(_ctx: ptr, t: string) {
     }
 }
 
+// linecap("round")/linejoin("round") — stroke cap/join, folded into the
+// dispatch attrs at flush so the backend honours them (SVG defaults butt/miter;
+// the transpiler emits these from a <g stroke-linecap=…> or element attr).
+linecap(_ctx: ptr, v: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        grammar_element.element_set_linecap(el, v)
+    }
+}
+linejoin(_ctx: ptr, v: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        grammar_element.element_set_linejoin(el, v)
+    }
+}
+
 // ─── deferred recording + flush (live path) ──────────────────────
 //
 // record_shape / record_text build a placeholder element (the fill/stroke/
@@ -429,6 +445,14 @@ apply_cached_style(a: ptr, el: ptr) {
     tf = grammar_element.element_last_transform(el)
     if string.length(tf) > 0 {
         _ = map.put(a, "transform", tf)
+    }
+    lc = grammar_element.element_last_linecap(el)
+    if string.length(lc) > 0 {
+        _ = map.put(a, "stroke-linecap", lc)
+    }
+    lj = grammar_element.element_last_linejoin(el)
+    if string.length(lj) > 0 {
+        _ = map.put(a, "stroke-linejoin", lj)
     }
 }
 

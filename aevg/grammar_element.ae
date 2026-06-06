@@ -93,6 +93,8 @@ exports (
     element_has_stroke,
     element_set_opacity, element_last_opacity, element_has_opacity,
     element_set_transform, element_last_transform,
+    element_set_linecap, element_last_linecap,
+    element_set_linejoin, element_last_linejoin,
     element_set_text, element_last_text,
     element_set_pos_props, element_last_pos_props,
 
@@ -175,6 +177,8 @@ struct AevgElement {
     last_text: string
     last_pos_props: ptr       // std.map string→string of last bindPos result
     last_transform: string    // SVG transform string (e.g. "scale(0.1)"), "" if none
+    last_linecap: string      // stroke-linecap ("round"/"square"/"butt"), "" if none
+    last_linejoin: string     // stroke-linejoin ("round"/"bevel"/"miter"), "" if none
 
     // ─── Shape geometry state (for bindPos → bounds recompute) ──
     // shape_type: 0=none/unknown, 1=circle, 2=rect, 3=line.
@@ -243,6 +247,8 @@ element_new(underlying: ptr) -> ptr {
     e.last_text = ""
     e.last_pos_props = null
     e.last_transform = ""
+    e.last_linecap = ""
+    e.last_linejoin = ""
     e.shape_type = 0
     e.geo0 = 0.0
     e.geo1 = 0.0
@@ -593,6 +599,29 @@ element_set_transform(p: ptr, t: string) {
 element_last_transform(p: ptr) -> string {
     e = p as *AevgElement
     return e.last_transform
+}
+
+// stroke-linecap / stroke-linejoin caches. Folded into the dispatch attrs at
+// flush (apply_cached_style) so shape_path's emit_stroke_caps reaches cairo.
+element_set_linecap(p: ptr, v: string) {
+    e = p as *AevgElement
+    cp = string.copy(v)
+    string_retain(cp)
+    e.last_linecap = cp
+}
+element_last_linecap(p: ptr) -> string {
+    e = p as *AevgElement
+    return e.last_linecap
+}
+element_set_linejoin(p: ptr, v: string) {
+    e = p as *AevgElement
+    cp = string.copy(v)
+    string_retain(cp)
+    e.last_linejoin = cp
+}
+element_last_linejoin(p: ptr) -> string {
+    e = p as *AevgElement
+    return e.last_linejoin
 }
 
 element_set_text(p: ptr, content: string) {
