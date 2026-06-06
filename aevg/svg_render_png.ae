@@ -1,60 +1,55 @@
-// aevg/svg_render_png.ae — render an SVG (read from stdin) to a PNG.
+// aevg/svg_render_png.ae — render an SVG file to a PNG. CLI:
 //
-// The conformance/parity harness (aevg/test/svg-compare-aevg.py) shells out to
-// this once per SVG: it pipes the SVG source on stdin and sets two env vars:
+//   ./build/svg_render <in.svg> <out.png> [size]
 //
-//   AEVG_OUT   — output PNG path (required)
-//   AEVG_SIZE  — square render size in px (default 400, matching the librsvg
-//                reference render in the harness)
-//
-// We read stdin → SVG string, build a GTK-backed canvas at SIZE×SIZE, run the
-// full loader pipeline (parse → context → dispatch every shape), and write the
+// size defaults to 400 (matches the librsvg reference in the parity harness).
+// Reads the SVG via std.fs, builds a GTK-backed canvas at size×size, runs the
+// full loader pipeline (parse → context → dispatch every shape), and writes the
 // command buffer to a PNG headless via canvas_write_png (pure cairo image
-// surface — no window/display needed). Aether's main() takes no args, so the
-// stdin+env convention keeps the binary CLI-free; see the harness.
+// surface — no window/display needed).
+//
+// Uses std.os argv accessors (aether_args_*) — main() reads the OS argv the
+// generated entrypoint captured. (Earlier this tool used a stdin+env
+// convention as a workaround; std.os exposes argv directly, so it's a normal
+// CLI now.)
 //
 //   build:  ./build.sh aevg/svg_render_png.ae build/svg_render
-//   run:    AEVG_OUT=/tmp/x.png AEVG_SIZE=400 ./build/svg_render < heart.svg
+//   run:    ./build/svg_render heart.svg /tmp/heart.png 400
 
 import aether_ui
 import aether_ui (canvas_create, canvas_write_png)
 import loader
 import aevg_gtk_backend
 import std.string
-import std.strbuilder
+import std.os
+import std.os (aether_args_count, aether_args_get)
+import std.fs
+import std.fs (read)
 
-extern getchar() -> int
-extern getenv(name: string) -> string
 extern exit(code: int)
 
-// Read all of stdin into a string (byte by byte; getchar returns -1 at EOF).
-read_stdin() -> string {
-    out = strbuilder.new(4096)
-    c = getchar()
-    while c >= 0 {
-        _ = strbuilder.append_byte(out, c)
-        c = getchar()
-    }
-    return strbuilder.finish(out)
-}
-
 main() {
-    out_path = getenv("AEVG_OUT")
-    if string.length(out_path) == 0 {
-        println("svg_render: AEVG_OUT not set")
+    n = aether_args_count()
+    if n < 3 {
+        println("usage: svg_render <in.svg> <out.png> [size]")
         exit(2)
     }
+    in_path = aether_args_get(1)
+    out_path = aether_args_get(2)
 
     size = 400
-    size_str = getenv("AEVG_SIZE")
-    if string.length(size_str) > 0 {
-        v, ok = string.to_int(size_str)
+    if n >= 4 {
+        v, ok = string.to_int(aether_args_get(3))
         if ok == 1 { size = v }
     }
 
-    svg = read_stdin()
+    svg, err = read(in_path)
+    if string.length(err) > 0 {
+        println("svg_render: cannot read ${in_path}: ${err}")
+        exit(2)
+    }
     if string.length(svg) == 0 {
-        println("svg_render: empty SVG on stdin")
+        println("svg_render: empty SVG: ${in_path}")
         exit(2)
     }
 

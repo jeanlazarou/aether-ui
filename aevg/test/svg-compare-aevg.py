@@ -76,17 +76,15 @@ def _composite_white(png_path: Path) -> Image.Image:
 
 
 def render_loader(svg_path: Path, output_path: Path) -> bool:
-    """Render SVG via the AeVG loader binary (stdin SVG, env out+size)."""
+    """Render SVG via the AeVG loader binary: svg_render <in> <out> <size>."""
     if not RENDER_BIN.exists():
         return False
     env = os.environ.copy()
     env['AETHER_UI_HEADLESS'] = '1'
-    env['AEVG_OUT'] = str(output_path)
-    env['AEVG_SIZE'] = str(SIZE)
     try:
-        svg_bytes = svg_path.read_bytes()
-        r = subprocess.run([str(RENDER_BIN)], input=svg_bytes, env=env,
-                           capture_output=True, timeout=30)
+        r = subprocess.run(
+            [str(RENDER_BIN), str(svg_path), str(output_path), str(SIZE)],
+            env=env, capture_output=True, timeout=30)
         return r.returncode == 0 and output_path.exists()
     except subprocess.TimeoutExpired:
         print(f'  loader render timed out: {svg_path.name}', file=sys.stderr)
