@@ -164,6 +164,11 @@ transpile_svg_to_png_harness(svg: string) -> string {
     _ = strbuilder.append(sb, "))\n")
     _ = strbuilder.append(sb, "    grammar_factories.opts_set_width(opts, sz / 1.0)\n")
     _ = strbuilder.append(sb, "    grammar_factories.opts_set_height(opts, sz / 1.0)\n")
+    // Intrinsic viewport from the root width/height (non-%), so a viewBox whose
+    // aspect differs from width/height letterboxes correctly — mirrors
+    // loader.load_svg. Without it the viewBox maps straight onto the square
+    // canvas and the content zooms/crops (compuserver/gump-bench/faux-art).
+    emit_viewport(sb, root)
     _ = strbuilder.append(sb, "    ctx = grammar_factories.create_aevg_context(opts)\n")
     // Register the original SVG's gradient/filter/clipPath defs so the shapes'
     // url(#id) fills resolve (the flattened shapes below have no <defs>).
@@ -536,6 +541,27 @@ root_px(root: ptr, attr: string, vb: string, vb_index: int) -> string {
         i = i + 1
     }
     return "400"
+}
+
+// Emit opts_set_viewport(opts, w, h) from the root's width/height attrs when
+// both are present and non-% — drives the viewBox→viewport→canvas two-step so
+// a width/height aspect ≠ viewBox aspect letterboxes (matches loader.load_svg).
+emit_viewport(sb: ptr, root: ptr) {
+    if parser.node_has_attr(root, "width") == 0 { return }
+    if parser.node_has_attr(root, "height") == 0 { return }
+    wstr = string.trim(parser.node_attr(root, "width"))
+    hstr = string.trim(parser.node_attr(root, "height"))
+    if string.ends_with(wstr, "%") == 1 { return }
+    if string.ends_with(hstr, "%") == 1 { return }
+    wpx = grammar_utils.parse_length_to_px(wstr)
+    hpx = grammar_utils.parse_length_to_px(hstr)
+    if wpx <= 0.0 { return }
+    if hpx <= 0.0 { return }
+    _ = strbuilder.append(sb, "    grammar_factories.opts_set_viewport(opts, ")
+    _ = strbuilder.append(sb, string.from_float(wpx))
+    _ = strbuilder.append(sb, ", ")
+    _ = strbuilder.append(sb, string.from_float(hpx))
+    _ = strbuilder.append(sb, ")\n")
 }
 
 // Integer part of a numeric string ("400.0" → "400", "300" → "300").
