@@ -43,6 +43,7 @@ import std.list
 import parser
 import normalizer
 import grammar_utils
+import bbox
 import std.floatarr
 
 // Attributes that carry no rendering meaning — omitted from output.
@@ -542,7 +543,32 @@ root_view_box(root: ptr) -> string {
             return a
         }
     }
+    // No viewBox and no width/height → intrinsic sizing from the content's
+    // bounding box (mirrors loader.intrinsic_view_box). Without this a bare
+    // <svg> whose coords sit outside 0..100 (circles1.svg: cx=6.5cm) is
+    // massively zoomed/cropped in the transpiled render.
+    ib = intrinsic_vb(root)
+    if string.length(ib) > 0 { return ib }
     return "0 0 100 100"
+}
+
+// Content-bbox viewBox "minx miny w h", or "" if empty/degenerate.
+intrinsic_vb(root: ptr) -> string {
+    b = bbox.compute_content_bounds(root)
+    if bbox.bounds_is_null(b) == 1 { return "" }
+    minx = bbox.bounds_min_x(b)
+    miny = bbox.bounds_min_y(b)
+    w = bbox.bounds_max_x(b) - minx
+    h = bbox.bounds_max_y(b) - miny
+    if w <= 0.0 { return "" }
+    if h <= 0.0 { return "" }
+    s = string.concat(string.from_float(minx), " ")
+    s = string.concat(s, string.from_float(miny))
+    s = string.concat(s, " ")
+    s = string.concat(s, string.from_float(w))
+    s = string.concat(s, " ")
+    s = string.concat(s, string.from_float(h))
+    return s
 }
 
 // The window/canvas pixel size for a dimension: the root width/height attr if
