@@ -34,7 +34,7 @@
 //   transpile_svg(svg) -> string
 //     just the vg(view_box(…), w, h) { … } scope (to embed in a surface)
 
-exports ( transpile_svg_to_module, transpile_svg, transpile_svg_to_png_harness )
+exports ( transpile_svg_to_module, transpile_svg, transpile_svg_to_png_harness, transpile_svg_to_render_fn )
 
 import std.string
 import std.strbuilder
@@ -136,11 +136,25 @@ transpile_svg(svg: string) -> string {
 // is no `vg { … }` builder block here to inject _ctx; we thread an explicit
 // `node` (the deferred-scene root) ourselves.
 transpile_svg_to_png_harness(svg: string) -> string {
-    root = parser.parse_svg(svg)
-    vb = root_view_box(root)
-
     sb = strbuilder.new(1024)
     _ = strbuilder.append(sb, "// Generated headless render harness (transpiler parity column).\n")
+    emit_harness_header(sb)
+    _ = strbuilder.append(sb, "main() {\n")
+    _ = strbuilder.append(sb, "    out = getenv(\"AEVG_OUT\")\n")
+    _ = strbuilder.append(sb, "    if string.length(out) == 0 { println(\"no AEVG_OUT\"); exit(2) }\n")
+    _ = strbuilder.append(sb, "    sz = 400\n")
+    _ = strbuilder.append(sb, "    szs = getenv(\"AEVG_SIZE\")\n")
+    _ = strbuilder.append(sb, "    if string.length(szs) > 0 { v, ok = string.to_int(szs); if ok == 1 { sz = v } }\n")
+    emit_render_body(sb, svg)
+    _ = strbuilder.append(sb, "    if ok2 == 1 { println(\"ok\") } else { println(\"png fail\"); exit(1) }\n")
+    _ = strbuilder.append(sb, "}\n")
+    return strbuilder.finish(sb)
+}
+
+// The shared imports + externs every harness needs. Emitted ONCE — both the
+// standalone form above and the combined-batch form (one render_<name> per
+// SVG, one shared main dispatching on AEVG_WHICH) reuse it.
+emit_harness_header(sb: ptr) {
     _ = strbuilder.append(sb, "import aether_ui\n")
     _ = strbuilder.append(sb, "import aether_ui (canvas_create, canvas_write_png)\n")
     _ = strbuilder.append(sb, "import vg\n")
@@ -151,12 +165,31 @@ transpile_svg_to_png_harness(svg: string) -> string {
     _ = strbuilder.append(sb, "import std.string\n")
     _ = strbuilder.append(sb, "extern getenv(name: string) -> string\n")
     _ = strbuilder.append(sb, "extern exit(code: int)\n\n")
-    _ = strbuilder.append(sb, "main() {\n")
-    _ = strbuilder.append(sb, "    out = getenv(\"AEVG_OUT\")\n")
-    _ = strbuilder.append(sb, "    if string.length(out) == 0 { println(\"no AEVG_OUT\"); exit(2) }\n")
-    _ = strbuilder.append(sb, "    sz = 400\n")
-    _ = strbuilder.append(sb, "    szs = getenv(\"AEVG_SIZE\")\n")
-    _ = strbuilder.append(sb, "    if string.length(szs) > 0 { v, ok = string.to_int(szs); if ok == 1 { sz = v } }\n")
+}
+
+// Emit one SVG as a render function `render_<fn_name>(out: string, sz: int)`,
+// with NO imports/externs/main — for the combined single-compile harness where
+// 208 of these are concatenated under one shared header + dispatching main().
+// One compile amortizes the per-file aetherc+link cost (~88% of a --transpile
+// run) across the whole corpus.
+transpile_svg_to_render_fn(svg: string, fn_name: string) -> string {
+    sb = strbuilder.new(1024)
+    _ = strbuilder.append(sb, "render_")
+    _ = strbuilder.append(sb, fn_name)
+    _ = strbuilder.append(sb, "(out: string, sz: int) {\n")
+    emit_render_body(sb, svg)
+    _ = strbuilder.append(sb, "    if ok2 == 0 { println(\"png fail\"); exit(1) }\n")
+    _ = strbuilder.append(sb, "}\n")
+    return strbuilder.finish(sb)
+}
+
+// The render body proper: assumes `out` (string) and `sz` (int) are already in
+// scope (env-read in the standalone main, or params in a render_<name> fn).
+// Builds a detached deferred scene, runs the transpiled explicit-node shapes,
+// flushes, writes the PNG, and leaves the result in `ok2`.
+emit_render_body(sb: ptr, svg: string) {
+    root = parser.parse_svg(svg)
+    vb = root_view_box(root)
     _ = strbuilder.append(sb, "    cid = canvas_create(sz, sz)\n")
     _ = strbuilder.append(sb, "    backend = aevg_gtk_backend.gtk_backend_new(cid)\n")
     _ = strbuilder.append(sb, "    opts = grammar_factories.opts_new()\n")
@@ -184,9 +217,6 @@ transpile_svg_to_png_harness(svg: string) -> string {
     emit_children_explicit(sb, root, 1)
     _ = strbuilder.append(sb, "    vg.vg_flush(scene)\n")
     _ = strbuilder.append(sb, "    ok2 = canvas_write_png(cid, out, sz, sz)\n")
-    _ = strbuilder.append(sb, "    if ok2 == 1 { println(\"ok\") } else { println(\"png fail\"); exit(1) }\n")
-    _ = strbuilder.append(sb, "}\n")
-    return strbuilder.finish(sb)
 }
 
 // Emit the `vg(view_box(minx, miny, w, h), W, H) {` opener at `indent`.

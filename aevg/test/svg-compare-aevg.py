@@ -94,6 +94,7 @@ def render_loader(svg_path: Path, output_path: Path) -> bool:
 # Tools for the transpiled column (built on demand).
 TRANSPILE_MODULE_BIN = AEVG_ROOT / 'build' / 'svg_transpile_module'   # vg{} source (for display)
 TRANSPILE_HARNESS_BIN = AEVG_ROOT / 'build' / 'svg_transpile_harness' # PNG harness emitter
+TRANSPILE_RENDERFN_BIN = AEVG_ROOT / 'build' / 'svg_transpile_render_fn'  # one render_<name> fn emitter
 
 
 def _ensure_built(src_rel: str, bin_path: Path) -> bool:
@@ -163,6 +164,155 @@ def render_transpiled(svg_path: Path, output_path: Path, work: Path) -> bool:
     finally:
         gen_ae.unlink(missing_ok=True)
         gen_bin.unlink(missing_ok=True)
+
+
+def _fn_name(svg_path: Path) -> str:
+    """Aether-identifier-safe render-fn suffix for an SVG (stem; digit-led →
+    prefixed). Must be unique across the corpus — stems are."""
+    s = ''.join(c if (c.isalnum() or c == '_') else '_' for c in svg_path.stem)
+    if not s or s[0].isdigit():
+        s = 'svg_' + s
+    return s
+
+
+_COMBINED_HEADER = (
+    '// Generated COMBINED transpiler-parity harness batch (one compile, N renders).\n'
+    'import aether_ui\n'
+    'import aether_ui (canvas_create, canvas_write_png)\n'
+    'import vg\n'
+    'import vg (view_box)\n'
+    'import grammar_factories\n'
+    'import aevg_gtk_backend\n'
+    'import loader\n'
+    'import std.string\n'
+    'extern getenv(name: string) -> string\n'
+    'extern exit(code: int)\n\n'
+)
+
+# aetherc caps a source file at ~50k tokens. One mega-module for all 208 SVGs
+# blows past it, so we bin-pack the emitted render functions into batches under
+# a byte budget (a proxy for token count) and compile each batch once. 208 →
+# ~14 compiles. Empirically 300KB/batch packs cleanly with zero token-limit
+# failures; an emit bigger than the budget on its own seeds its own batch and
+# still compiles (the budget governs only what we ADD to a started batch).
+_COMBINED_BATCH_BUDGET = 300_000
+
+
+def _compile_combined_batch(idx: int, entries) -> dict:
+    """entries: list of (svg_name, fn_name, body). Emit one batch module +
+    dispatch, compile it. Returns {bin: Path, names: [svg_name,...]} on
+    success, or {} if the batch failed to compile (caller falls those SVGs
+    back to the per-file path)."""
+    bin_path = AEVG_ROOT / 'build' / f'_gen_batch{idx}'
+    gen_ae = AEVG_ROOT / 'aevg' / f'_gen_batch{idx}.ae'
+    dispatch = [
+        f'    if string.equals(which, "{nm}") == 1 '
+        f'{{ render_{fn}(out, sz); println("ok"); exit(0) }}'
+        for nm, fn, _ in entries
+    ]
+    main_fn = (
+        'main() {\n'
+        '    out = getenv("AEVG_OUT")\n'
+        '    if string.length(out) == 0 { println("no AEVG_OUT"); exit(2) }\n'
+        '    sz = 400\n'
+        '    szs = getenv("AEVG_SIZE")\n'
+        '    if string.length(szs) > 0 { v, ok = string.to_int(szs); if ok == 1 { sz = v } }\n'
+        '    which = getenv("AEVG_WHICH")\n'
+        + '\n'.join(dispatch) + '\n'
+        '    println("unknown AEVG_WHICH"); exit(3)\n'
+        '}\n'
+    )
+    gen_ae.write_text(_COMBINED_HEADER + '\n'.join(b for _, _, b in entries) + '\n' + main_fn)
+    try:
+        b = subprocess.run([str(BUILD_SH), f'aevg/_gen_batch{idx}.ae', f'build/_gen_batch{idx}'],
+                           cwd=str(AEVG_ROOT), capture_output=True, text=True, timeout=600)
+        if not bin_path.exists():
+            tok = 'maximum token limit' in (b.stdout + b.stderr)
+            print(f'  batch {idx} compile FAILED ({"token limit" if tok else "error"}) — '
+                  f'{len(entries)} SVGs fall back to per-file', file=sys.stderr)
+            return {}
+    finally:
+        gen_ae.unlink(missing_ok=True)
+    return {'bin': bin_path, 'names': [nm for nm, _, _ in entries]}
+
+
+def build_combined_harness(svgs) -> dict:
+    """Emit one render_<name>() per SVG, bin-pack them into batch modules under
+    a byte budget, and compile each batch ONCE. The per-file aetherc+link is
+    ~88% of a --transpile run; ~14 batch compiles instead of 208 per-file
+    compiles cuts a full run from ~7min to ~90s.
+
+    Returns {ok, routes: {svg_name: bin_path}} — routes maps each SVG to the
+    batch binary that can render it (via AEVG_WHICH). SVGs whose emit failed,
+    or whose batch failed to compile, are absent from routes and fall back to
+    the per-file render_transpiled path. ok=False (nothing routable) → full
+    per-file fallback."""
+    if not _ensure_built('aevg/svg_transpile_render_fn.ae', TRANSPILE_RENDERFN_BIN):
+        return {'ok': False, 'routes': {}}
+
+    # 1. Emit every render fn, recording body size for packing.
+    emitted = []  # (svg_name, fn_name, body, size)
+    for svg in svgs:
+        fn = _fn_name(svg)
+        try:
+            r = subprocess.run([str(TRANSPILE_RENDERFN_BIN)],
+                               input=svg.read_bytes(),
+                               env={**os.environ, 'AEVG_FN': fn},
+                               capture_output=True, timeout=20)
+        except Exception:
+            continue
+        if r.returncode != 0 or not r.stdout:
+            continue
+        body = r.stdout.decode('utf-8', 'replace')
+        if f'render_{fn}(' not in body:
+            continue
+        emitted.append((svg.name, fn, body, len(body)))
+
+    if not emitted:
+        return {'ok': False, 'routes': {}}
+
+    # 2. Greedy bin-pack biggest-first under the byte budget.
+    emitted.sort(key=lambda e: -e[3])
+    bins = []  # list of {'sz': int, 'entries': [(name, fn, body)]}
+    for name, fn, body, sz in emitted:
+        placed = False
+        for bn in bins:
+            if bn['sz'] + sz <= _COMBINED_BATCH_BUDGET:
+                bn['entries'].append((name, fn, body)); bn['sz'] += sz; placed = True; break
+        if not placed:
+            bins.append({'sz': sz, 'entries': [(name, fn, body)]})
+
+    # 3. Compile each batch; build the route table from successes.
+    routes = {}
+    for i, bn in enumerate(bins):
+        res = _compile_combined_batch(i, bn['entries'])
+        for nm in res.get('names', []):
+            routes[nm] = res['bin']
+    print(f'  combined: {len(bins)} batches, {len(routes)}/{len(emitted)} SVGs routed', flush=True)
+    return {'ok': bool(routes), 'routes': routes}
+
+
+def cleanup_combined(routes) -> None:
+    """Remove the batch binaries + their .c after the run."""
+    for bin_path in set(routes.values()):
+        bin_path.unlink(missing_ok=True)
+        bin_path.with_suffix('.c').unlink(missing_ok=True)
+
+
+def render_transpiled_combined(bin_path: Path, svg_name: str, output_path: Path) -> bool:
+    """Render one SVG via its prebuilt batch binary, selected by AEVG_WHICH."""
+    if not bin_path.exists():
+        return False
+    env = os.environ.copy()
+    env['AETHER_UI_HEADLESS'] = '1'
+    env['AEVG_OUT'] = str(output_path)
+    env['AEVG_SIZE'] = str(SIZE)
+    env['AEVG_WHICH'] = svg_name
+    try:
+        rr = subprocess.run([str(bin_path)], env=env, capture_output=True, timeout=30)
+        return rr.returncode == 0 and output_path.exists()
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def png_to_data_uri(png_path: Path) -> str:
@@ -307,6 +457,9 @@ def main():
     ap.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
     ap.add_argument('--limit', type=int, default=0, help='only first N (smoke)')
     ap.add_argument('--transpile', action='store_true', help='also build+render transpiled column')
+    ap.add_argument('--no-combined', action='store_true',
+                    help='disable the single-compile combined transpiled harness '
+                         '(use the slower per-file compile path)')
     ap.add_argument('--no-open', action='store_true')
     args = ap.parse_args()
 
@@ -333,6 +486,18 @@ def main():
     if not svgs:
         print('No SVGs found'); return 1
 
+    # Build the combined single-compile transpiled harness once (default for
+    # --transpile). One aetherc+link for the whole corpus instead of one per
+    # SVG — the per-file compile is ~88% of a --transpile run. Falls back to
+    # the per-file render_transpiled path if the combined compile fails.
+    combined = {'ok': False, 'routes': {}}
+    if args.transpile and not args.no_combined:
+        print(f'Building combined transpiled harness ({len(svgs)} renders, batched compiles)…',
+              flush=True)
+        combined = build_combined_harness(svgs)
+        if not combined['ok']:
+            print('  combined harness unavailable — per-file fallback', flush=True)
+
     results = []
     for i, svg in enumerate(svgs):
         name = svg.name
@@ -358,7 +523,15 @@ def main():
         transpiled_source = transpile_to_source(svg) if args.transpile else ''
         if args.transpile:
             tpng = out / f'{svg.stem}_transpiled.png'
-            if render_transpiled(svg, tpng, out):
+            # Prefer the combined binary (dispatch by name); fall back to the
+            # per-file compile when this SVG isn't in the combined build.
+            rendered = False
+            route = combined['routes'].get(svg.name) if combined['ok'] else None
+            if route is not None:
+                rendered = render_transpiled_combined(route, svg.name, tpng)
+            if not rendered:
+                rendered = render_transpiled(svg, tpng, out)
+            if rendered:
                 transpiled_uri = png_to_data_uri(tpng)
                 try:
                     transpiled_mae = pixel_mae(ref, _composite_white(tpng))
@@ -379,6 +552,8 @@ def main():
             'svg_source': svg.read_text(encoding='utf-8', errors='replace'),
             'transpiled_source': transpiled_source,
         })
+
+    cleanup_combined(combined['routes'])
 
     results.sort(key=lambda r: r['loader_mae'] if r['loader_mae'] >= 0 else 999, reverse=True)
 
