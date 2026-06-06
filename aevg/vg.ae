@@ -43,7 +43,7 @@ exports (
     fill, stroke, opacity, transform, linecap, linejoin,
     // Interaction modifiers (attach a handler to the shape's element).
     on_click, on_hover, on_double_click, on_right_click, cursor, tooltip,
-    on_click_recolor,
+    on_click_recolor, visible_when,
     // Re-exported element mutators so a handler can recolor the element it
     // captured: vg.element_set_fill(el, "#0f0") inside an on_click closure.
     element_set_fill, element_set_stroke, element_set_opacity,
@@ -53,7 +53,7 @@ exports (
     scene_set_event_state, scene_event_state,
     // Deferred flush (the live path): record shapes during the block, then
     // dispatch them with their final cached style after the block closes.
-    scene_set_deferred, scene_is_deferred, vg_flush
+    scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh
 )
 
 import std.string
@@ -62,6 +62,7 @@ import std.list
 import grammar_shapes
 import grammar_element
 import grammar_events
+import grammar_reactive
 import parser
 
 extern malloc(size: int) -> ptr
@@ -412,6 +413,15 @@ on_click_recolor(_ctx: ptr, color: string) {
     }
 }
 
+// visible_when(pred) — conditional rendering. `pred` is a `fn -> int` (1 = show,
+// 0 = hide), re-evaluated on scene refresh. A hidden element is not drawn and
+// not hit-tested (clicks fall through). CVG names this `when`; Aether reserves
+// that word, so the DSL spells it visible_when.
+visible_when(_ctx: ptr, pred: fn) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_set_when(el, pred) }
+}
+
 cursor(_ctx: ptr, c: string) {
     el = node_payload(_ctx)
     if el != null { grammar_element.element_set_cursor(el, c) }
@@ -490,6 +500,24 @@ vg_flush(scene: ptr) {
     }
 }
 
+// scene_refresh(scene) — re-evaluate every tracked element's when()/bindings
+// (visibility, reactive fill/pos/opacity), then re-render. This is the state-
+// changed → repaint entry point: a click handler that flips a `when` predicate
+// or a bound value calls scene_refresh to make the change show. Returns the
+// number of elements whose bindings fired (telemetry). The caller (live path)
+// pairs this with canvas_clear + canvas_redraw around the flush.
+scene_refresh(scene: ptr) -> int {
+    s = scene as *VgScene
+    // Ensure elements are tracked before re-evaluating (tracking happens at
+    // flush; on a never-flushed scene refresh would otherwise see an empty
+    // list and never run when()/bindings). Flush → refresh → flush so the
+    // re-evaluated visibility/values take effect on the visible buffer.
+    vg_flush(scene)
+    n = grammar_reactive.refresh_all_elements(s.ctx)
+    vg_flush(scene)
+    return n
+}
+
 // Fold the placeholder element's cached fill/stroke/opacity into the attrs
 // map (as presentation attributes — highest priority in resolve_style), then
 // dispatch via the same grammar_shapes path the eager mode uses.
@@ -510,6 +538,23 @@ flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
         flush_text(ctx, be, pend)
         return
     }
+    // Track interactive elements regardless of visibility, so the tracked list
+    // is stable across when() toggles. A hidden element's hit-test returns 0
+    // (clicks fall through); when shown again it hit-tests live.
+    if es != null {
+        if element_is_interactive(el) == 1 {
+            if pend.tracked == 0 {
+                grammar_events.track_element(ctx, el)
+                pend.tracked = 1
+            }
+        }
+    }
+    // Conditional rendering: a when()=false element is hidden — don't draw it
+    // (and don't refresh its bounds; the stale bounds don't matter while
+    // invisible since hit_test short-circuits on visible==0).
+    if grammar_element.element_is_visible(el) == 0 {
+        return
+    }
     a = pend.attrs
     apply_cached_style(a, el)
     drawn = null
@@ -517,28 +562,22 @@ flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
     if pend.kind == 1 { drawn = grammar_shapes.shape_rectangle(ctx, be, a) }
     if pend.kind == 2 { drawn = grammar_shapes.shape_line(ctx, be, a) }
     if pend.kind == 3 { drawn = grammar_shapes.shape_path(ctx, be, a) }
-    if es != null {
-        if element_is_interactive(el) == 1 {
-            if drawn != null {
-                if grammar_element.element_has_bounds(drawn) == 1 {
-                    grammar_element.element_set_bounds(el,
-                        grammar_element.element_bounds_x(drawn),
-                        grammar_element.element_bounds_y(drawn),
-                        grammar_element.element_bounds_width(drawn),
-                        grammar_element.element_bounds_height(drawn))
-                }
-            }
-            // Track once: re-flush (after a click recolor) must not re-add.
-            if pend.tracked == 0 {
-                grammar_events.track_element(ctx, el)
-                pend.tracked = 1
-            }
+    // Refresh the placeholder's hit-test bounds from the drawn element.
+    if drawn != null {
+        if grammar_element.element_has_bounds(drawn) == 1 {
+            grammar_element.element_set_bounds(el,
+                grammar_element.element_bounds_x(drawn),
+                grammar_element.element_bounds_y(drawn),
+                grammar_element.element_bounds_width(drawn),
+                grammar_element.element_bounds_height(drawn))
         }
     }
 }
 
-// An element participates in hit-testing if it has any handler, cursor, or
-// tooltip (the union grammar_events.find_topmost_hoverable / *_with_click use).
+// An element needs tracking if it participates in hit-testing (any handler,
+// cursor, or tooltip — the union grammar_events.find_topmost_hoverable /
+// *_with_click use) OR it has a when() predicate (so scene_refresh's
+// refresh_all_elements, which walks the tracked list, re-evaluates it).
 element_is_interactive(el: ptr) -> int {
     if grammar_element.element_click_handler(el) != null { return 1 }
     if grammar_element.element_hover_handler(el) != null { return 1 }
@@ -546,6 +585,7 @@ element_is_interactive(el: ptr) -> int {
     if grammar_element.element_right_click_handler(el) != null { return 1 }
     if string.length(grammar_element.element_cursor(el)) > 0 { return 1 }
     if string.length(grammar_element.element_tooltip(el)) > 0 { return 1 }
+    if grammar_element.element_when_predicate(el) != null { return 1 }
     return 0
 }
 
