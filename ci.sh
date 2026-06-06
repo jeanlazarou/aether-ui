@@ -234,6 +234,18 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_aevg_anim.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    # Live-region composite: build + RUN headless (writes a PNG; no window), so
+    # CI exercises the raster-blit + draw-region compose path, not just the link.
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_live_png.ae build/aevg_live_png \
+            > /tmp/ci_build_aevg_live_png.log 2>&1 \
+            && AEVG_OUT=/tmp/ci_live.png build/aevg_live_png > /tmp/ci_run_aevg_live_png.log 2>&1 \
+            && [ -f /tmp/ci_live.png ]; then
+        echo "  OK   aevg_live_png (live raster + draw region composite)"
+    else
+        echo "  FAIL aevg_live_png"
+        tail -15 /tmp/ci_build_aevg_live_png.log /tmp/ci_run_aevg_live_png.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then
