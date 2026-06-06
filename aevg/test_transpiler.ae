@@ -162,6 +162,21 @@ main() {
     assert_not_contains("ellipse: no ellipse verb", out_el, "ellipse(")
     assert_contains("ellipse: fill preserved", out_el, "fill(\"#4488cc\")")
 
+    // ─── <polyline>/<polygon> → path() with points as M/L ─────
+    // Both were silently dropped before (shapes-polyline-01-t blank): the
+    // shape lists omitted poly, so they fell through to container-recurse.
+    svg_pl = "<svg viewBox='0 0 100 100'><polyline points='0,0 10,0 10,10' fill='none' stroke='red'/></svg>"
+    out_pl = transpiler.transpile_svg(svg_pl)
+    assert_contains("polyline → path", out_pl, "path(\"M 0 0")
+    assert_not_contains("polyline: open (no Z)", out_pl, "Z\")")
+    svg_pg = "<svg viewBox='0 0 100 100'><polygon points='0,0 10,0 10,10' fill='blue'/></svg>"
+    out_pg = transpiler.transpile_svg(svg_pg)
+    assert_contains("polygon → path", out_pg, "path(\"M 0 0")
+    assert_contains("polygon: closed (Z)", out_pg, "Z\")")
+    // harness (explicit-node) form must emit them too.
+    out_plh = transpiler.transpile_svg_to_png_harness(svg_pl)
+    assert_contains("harness polyline → vg.path", out_plh, "vg.path(node, \"M 0 0")
+
     // ─── <use href> inlines the target with translate(x y) ────
     // (headless harness form — where <use> resolution lives.)
     svg_use = "<svg viewBox='0 0 100 100'><defs><circle id='c' cx='10' cy='10' r='5' fill='red'/></defs><use href='#c' x='20' y='0'/></svg>"

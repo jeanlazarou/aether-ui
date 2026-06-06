@@ -349,6 +349,8 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
     if string.equals(tag, "line") == 1 { is_shape = 1 }
     if string.equals(tag, "path") == 1 { is_shape = 1 }
     if string.equals(tag, "ellipse") == 1 { is_shape = 1 }
+    if string.equals(tag, "polyline") == 1 { is_shape = 1 }
+    if string.equals(tag, "polygon") == 1 { is_shape = 1 }
     if string.equals(tag, "text") == 1 { is_shape = 1 }
     if is_shape == 0 {
         emit_kids_explicit_t(sb, node, indent, ctr, in_tf, in_fill, in_stroke, in_sw, in_op, in_lc, in_lj)
@@ -385,11 +387,29 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
         _ = strbuilder.append(sb, escape_str(ellipse_d(node)))
         _ = strbuilder.append(sb, "\")\n")
     } else {
-        _ = strbuilder.append(sb, "vg.")
-        _ = strbuilder.append(sb, tag)
-        _ = strbuilder.append(sb, "(node")
-        emit_geom_args_explicit(sb, node, tag)
-        _ = strbuilder.append(sb, ")\n")
+        is_poly = 0
+        if string.equals(tag, "polyline") == 1 { is_poly = 1 }
+        if string.equals(tag, "polygon") == 1 { is_poly = 1 }
+        if is_poly == 1 {
+            // polyline/polygon → vg.path with points converted to M/L (Z for
+            // polygon), normalized — mirrors the loader's emit_poly. Without
+            // this the transpiler dropped them entirely (shapes-polyline-01-t).
+            closed = 0
+            if string.equals(tag, "polygon") == 1 { closed = 1 }
+            d = ""
+            if parser.node_has_attr(node, "points") == 1 {
+                d = normalize_d_to_string(grammar_utils.points_to_path(parser.node_attr(node, "points"), closed))
+            }
+            _ = strbuilder.append(sb, "vg.path(node, \"")
+            _ = strbuilder.append(sb, escape_str(d))
+            _ = strbuilder.append(sb, "\")\n")
+        } else {
+            _ = strbuilder.append(sb, "vg.")
+            _ = strbuilder.append(sb, tag)
+            _ = strbuilder.append(sb, "(node")
+            emit_geom_args_explicit(sb, node, tag)
+            _ = strbuilder.append(sb, ")\n")
+        }
     }
 
     if any == 1 {
@@ -676,6 +696,14 @@ emit_node(sb: ptr, node: ptr, indent: int) {
         emit_ellipse(sb, node, indent)
         return
     }
+    if string.equals(tag, "polyline") == 1 {
+        emit_poly_t(sb, node, indent, 0)
+        return
+    }
+    if string.equals(tag, "polygon") == 1 {
+        emit_poly_t(sb, node, indent, 1)
+        return
+    }
     if string.equals(tag, "text") == 1 {
         emit_text(sb, node, indent)
         return
@@ -766,6 +794,22 @@ emit_text(sb: ptr, node: ptr, indent: int) {
 // the same conversion; this keeps transpiled output a pure vg{} shape.
 emit_ellipse(sb: ptr, node: ptr, indent: int) {
     d = ellipse_d(node)
+    pad(sb, indent)
+    _ = strbuilder.append(sb, "path(\"")
+    _ = strbuilder.append(sb, escape_str(d))
+    _ = strbuilder.append(sb, "\")")
+    emit_style_block(sb, node)
+    _ = strbuilder.append(sb, "\n")
+}
+
+// <polyline>/<polygon> → path("<points as M/L[ Z]>") { style }. closed=1
+// appends Z (polygon). Mirrors the loader's emit_poly so both columns draw
+// the same geometry (shapes-polyline-01-t dropped these entirely before).
+emit_poly_t(sb: ptr, node: ptr, indent: int, closed: int) {
+    d = ""
+    if parser.node_has_attr(node, "points") == 1 {
+        d = normalize_d_to_string(grammar_utils.points_to_path(parser.node_attr(node, "points"), closed))
+    }
     pad(sb, indent)
     _ = strbuilder.append(sb, "path(\"")
     _ = strbuilder.append(sb, escape_str(d))
@@ -880,7 +924,19 @@ compose_opacity(inherited: string, node: ptr) -> string {
         v2, e2 = string.to_double(own)
         if e2 == "" { ov = v2 }
     }
-    prod = iv * ov
+    // Fold the shape's own fill-opacity into the element opacity. The flatten
+    // has no separate fill-alpha channel (no vg.fill_opacity), so for the
+    // common fill-only shape this multiplies through to the right final alpha
+    // — mouseEvents' rects (opacity .5 × fill-opacity .5) were ~4× too opaque
+    // without it. Pure float math here (no string-returning map helper) to
+    // dodge the Aether helper-string-corruption bug that the bake approach hit.
+    fov = 1.0
+    fo = style_attr(node, "fill-opacity")
+    if string.length(fo) > 0 {
+        v3, e3 = string.to_double(fo)
+        if e3 == "" { fov = v3 }
+    }
+    prod = iv * ov * fov
     if prod >= 0.999 { return "" }
     return string.from_float(prod)
 }
