@@ -3,6 +3,10 @@
 //   - mutable captures (closures write straight to `num`, `prev`, `op`)
 //   - closure-as-operator (`op` holds a |a,b| closure; equals dispatches
 //     via `call(op, prev, num)` — no opcode ints or if/else chain)
+//   - DSL-with-Scope surface: `window(…) { vstack(…) { … } }` — the
+//     window block builds the tree, then its builder body runs the loop.
+//     No `root` handle, no trailing app_run: in-block modifiers
+//     (`margin`, `enable_test_server`) act on the ambient element/surface.
 
 import aether_ui (
     window, vstack, hstack, btn, button,
@@ -24,7 +28,8 @@ main() {
     clear    = ||        { num = 0; prev = 0; ui_set(display, 0) }
 
     window("Calculator", 280, 260) {
-        root = vstack(4) {
+        vstack(4) {
+            margin(12, 12, 12, 12)
             text_bound(display, " ", "")
             divider()
             hstack(4) {
@@ -78,11 +83,10 @@ main() {
                 }
             }
         }
-        margin(root, 12, 12, 12, 12)
 
         test_port = os_getenv("AETHER_UI_TEST_PORT")
         if test_port != null {
-            enable_test_server(9222, root)
+            enable_test_server(9222)
         }
     }
 }

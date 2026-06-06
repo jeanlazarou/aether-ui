@@ -29,7 +29,7 @@ exports (
     style_bg_gradient, style_corner_radius, style_opacity,
     style_enabled, style_tooltip,
     edge_insets, width, height, distribution, alignment,
-    fill_width, fill_height, margin,
+    fill_width, fill_height, margin, margin_of,
     alert, clipboard_write, open_url, is_dark_mode,
     timer, timer_cancel,
     window_create, window_set_body, window_show, window_close,
@@ -41,7 +41,7 @@ exports (
     canvas_draw_image, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
-    enable_test_server, seal_widget, seal_subtree,
+    enable_test_server, enable_test_server_root, seal_widget, seal_subtree,
     menu_bar, menu, menu_item, menu_separator,
     menu_bar_add, attach_menu_bar, menu_popup,
     root_grid, grid, grid_place,
@@ -149,6 +149,8 @@ extern aether_ui_set_alignment(handle: int, alignment: int)
 extern aether_ui_match_parent_width(handle: int)
 extern aether_ui_match_parent_height(handle: int)
 extern aether_ui_set_margin(handle: int, top: int, right: int, bottom: int, left: int)
+extern aether_ui_set_margin_ctx(ctx: ptr, top: int, right: int, bottom: int, left: int)
+extern aether_ui_enable_test_server_ctx(port: int, ctx: ptr)
 
 // Alignment constants (matching perry/macOS NSLayoutAttribute values)
 const ALIGN_LEADING  = 5
@@ -711,7 +713,20 @@ fill_height(handle: int) {
     aether_ui_match_parent_height(handle)
 }
 
-margin(handle: int, top: int, right: int, bottom: int, left: int) {
+// margin — in-block modifier: applies to the ambient element (_ctx).
+// Inside `vstack(4) { margin(12, 12, 12, 12); … }` it pads the vstack,
+// no named handle needed (parallels bg_color / onclick). Outside a
+// block, `_ctx` is 0 and the call is a no-op; use margin_of for an
+// explicit target.
+margin(_ctx: ptr, top: int, right: int, bottom: int, left: int) {
+    if _ctx != 0 {
+        aether_ui_set_margin_ctx(_ctx, top, right, bottom, left)
+    }
+}
+
+// margin_of — explicit-target form: pad a specific widget handle
+// (e.g. a child captured by name, not the ambient one).
+margin_of(handle: int, top: int, right: int, bottom: int, left: int) {
     aether_ui_set_margin(handle, top, right, bottom, left)
 }
 
@@ -910,7 +925,19 @@ clear_children(handle: int) {
 // Enable the AetherUIDriver server. Injects an "Under Remote Control"
 // banner into the root widget and starts an HTTP server on the given port.
 // The banner cannot be removed or hidden via the test API.
-enable_test_server(port: int, root_handle: int) {
+// enable_test_server — in-block form: arms the AetherUIDriver test
+// server against the ambient surface root (_ctx). Inside a surface
+// block you just write `enable_test_server(9222)` — no named handle.
+// Outside a block (_ctx == 0) it's a no-op; use
+// enable_test_server_root for an explicit root.
+enable_test_server(_ctx: ptr, port: int) {
+    if _ctx != 0 {
+        aether_ui_enable_test_server_ctx(port, _ctx)
+    }
+}
+
+// enable_test_server_root — explicit-root form (pre-built trees).
+enable_test_server_root(port: int, root_handle: int) {
     aether_ui_enable_test_server_impl(port, root_handle)
 }
 

@@ -1026,6 +1026,16 @@ void aether_ui_set_margin(int handle, int top, int right, int bottom, int left) 
     gtk_widget_set_margin_start(w, left);
 }
 
+// _ctx variant: the ambient builder-context handle arrives as a void*.
+void aether_ui_set_margin_ctx(void* ctx, int top, int right, int bottom, int left) {
+    aether_ui_set_margin((int)(intptr_t)ctx, top, right, bottom, left);
+}
+
+// Enable the AetherUIDriver test server against the ambient root (_ctx).
+void aether_ui_enable_test_server_ctx(int port, void* ctx) {
+    aether_ui_enable_test_server_impl(port, (int)(intptr_t)ctx);
+}
+
 // ---------------------------------------------------------------------------
 // System integration (Group 5)
 // ---------------------------------------------------------------------------

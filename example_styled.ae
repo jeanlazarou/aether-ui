@@ -59,7 +59,7 @@ main() {
             aether_ui.height(bg, 80)
 
             label = aether_ui.text("Overlaid text on colored background")
-            aether_ui.margin(label, 20, 20, 20, 20)
+            aether_ui.margin_of(label, 20, 20, 20, 20)
         }
         aether_ui.height(overlay, 80)
 
@@ -89,6 +89,6 @@ main() {
         }
     }
 
-    aether_ui.margin(root, 0, 12, 12, 12)
+    aether_ui.margin_of(root, 0, 12, 12, 12)
     }
 }

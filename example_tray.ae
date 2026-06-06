@@ -62,7 +62,7 @@ main() {
         // root_vstack and let the driver enumerate /tray + /notifications
         // independently. The banner is invisible in headless mode.
         dummy = aether_ui.root_vstack(0)
-        aether_ui.enable_test_server(9234, dummy)
+        aether_ui.enable_test_server_root(9234, dummy)
         println("AetherUIDriver listening for tray + notifications")
     }
 

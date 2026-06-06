@@ -46,10 +46,10 @@ main() {
         }
         aether_ui.seal_widget(danger)
     }
-    aether_ui.margin(root, 12, 12, 12, 12)
+    aether_ui.margin_of(root, 12, 12, 12, 12)
 
     // Enable test server on port 9222 — injects "Under Remote Control" banner
-    aether_ui.enable_test_server(9222, root)
+    aether_ui.enable_test_server_root(9222, root)
 
     }
 }

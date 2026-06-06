@@ -73,7 +73,7 @@ main() {
             aether_ui.spacer()
         }
     }
-    aether_ui.margin(root, 12, 12, 12, 12)
+    aether_ui.margin_of(root, 12, 12, 12, 12)
 
     }
 }

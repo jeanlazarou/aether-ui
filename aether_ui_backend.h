@@ -111,6 +111,8 @@ void aether_ui_set_alignment(int handle, int alignment);
 void aether_ui_match_parent_width(int handle);
 void aether_ui_match_parent_height(int handle);
 void aether_ui_set_margin(int handle, int top, int right, int bottom, int left);
+void aether_ui_set_margin_ctx(void* ctx, int top, int right, int bottom, int left);
+void aether_ui_enable_test_server_ctx(int port, void* ctx);
 
 // System integration (Group 5)
 void aether_ui_alert_impl(const char* title, const char* message);

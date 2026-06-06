@@ -997,6 +997,12 @@ void aether_ui_set_margin(int handle, int top, int right, int bottom, int left) 
 void aether_ui_set_bg_color_ctx(void* ctx, double r, double g, double b, double a) {
     aether_ui_set_bg_color((int)(intptr_t)ctx, r, g, b, a);
 }
+void aether_ui_set_margin_ctx(void* ctx, int top, int right, int bottom, int left) {
+    aether_ui_set_margin((int)(intptr_t)ctx, top, right, bottom, left);
+}
+void aether_ui_enable_test_server_ctx(int port, void* ctx) {
+    aether_ui_enable_test_server_impl(port, (int)(intptr_t)ctx);
+}
 void aether_ui_set_text_color_ctx(void* ctx, double r, double g, double b) {
     aether_ui_set_text_color((int)(intptr_t)ctx, r, g, b);
 }
