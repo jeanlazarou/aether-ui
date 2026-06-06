@@ -57,7 +57,8 @@ exports (
     scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh,
     bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start,
     animate, scene_animation_manager, scene_is_animating, scene_tick, scene_advance,
-    scene_add_live_region, scene_live_regions, scene_render_live_draws, render_one_draw
+    scene_add_live_region, scene_live_regions, scene_render_live_draws, render_one_draw,
+    scene_set_refreshing, scene_is_refreshing, scene_eval_bindings
 )
 
 import std.string
@@ -102,6 +103,9 @@ struct VgScene {
     event_state: ptr // *grammar_events.EventState — shared hover/drag/click state
     anim_mgr: ptr   // *grammar_animations.AnimationManager (null until animate)
     live_regions: ptr // std.list of *live_region.LiveRegion (null until first)
+    refreshing: int // 1 = the live loop re-evaluates bind_pos/when bindings each
+                    //   frame (the live analogue of CVG's poll()); set by a
+                    //   binding-driven scene like a clock.
 }
 
 // One deferred shape: enough to dispatch it after its style is known.
@@ -172,7 +176,7 @@ scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
 // canvas" (headless / recording). vg_root wraps it as the root VgNode the
 // shape verbs accept as _ctx.
 scene_new(ctx: ptr, backend: ptr) -> ptr {
-    s = malloc(80) as *VgScene
+    s = malloc(96) as *VgScene
     s.ctx = ctx
     s.backend = backend
     s.canvas_id = 0
@@ -181,8 +185,15 @@ scene_new(ctx: ptr, backend: ptr) -> ptr {
     s.event_state = null
     s.anim_mgr = null
     s.live_regions = null
+    s.refreshing = 0
     return s
 }
+
+// scene_set_refreshing(scene, 1) — make the live loop re-evaluate bind_pos/when
+// bindings every frame (the live analogue of CVG's poll()). A binding-driven
+// scene (e.g. a clock whose hands use bind_pos) turns this on so it ticks.
+scene_set_refreshing(p: ptr, on: int) { s = p as *VgScene; s.refreshing = on }
+scene_is_refreshing(p: ptr) -> int    { s = p as *VgScene; return s.refreshing }
 
 // event_state — the scene's shared hover/drag/click state. vg_live creates one
 // (grammar_events.event_state_new) so the canvas click handler and shape
@@ -591,10 +602,20 @@ scene_refresh(scene: ptr) -> int {
     // Order mirrors refresh.ae: regions first (they add/remove elements), then
     // the per-element pass walks the updated tracked list.
     vg_flush(scene)
-    grammar_bind.refresh_all(s.ctx)
-    n = grammar_reactive.refresh_all_elements(s.ctx)
+    n = scene_eval_bindings(scene)
     vg_flush(scene)
     return n
+}
+
+// scene_eval_bindings(scene) — re-evaluate binding regions + per-element
+// when()/bind_pos/bind_fill bindings, WITHOUT flushing (the caller flushes).
+// The live loop calls this each frame for a refreshing scene, then runs its own
+// _flush_live; headless scene_refresh wraps it in flush/flush. Assumes elements
+// are already tracked (true after the first flush).
+scene_eval_bindings(scene: ptr) -> int {
+    s = scene as *VgScene
+    grammar_bind.refresh_all(s.ctx)
+    return grammar_reactive.refresh_all_elements(s.ctx)
 }
 
 // ─── animation (continuous, timer-driven) ───────────────────────

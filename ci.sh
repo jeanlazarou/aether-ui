@@ -274,6 +274,26 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_aevg_video.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    # Analog clock: build the live window + build+RUN the headless one-frame PNG
+    # (face + markers + bound hands).
+    if "$SCRIPT_DIR/build.sh" aevg/analog_clock.ae build/analog_clock \
+            > /tmp/ci_build_analog_clock.log 2>&1; then
+        echo "  OK   analog_clock (declarative clock, bind_pos hands)"
+    else
+        echo "  FAIL analog_clock"
+        tail -15 /tmp/ci_build_analog_clock.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
+    if "$SCRIPT_DIR/build.sh" aevg/analog_clock_png.ae build/analog_clock_png \
+            > /tmp/ci_build_analog_clock_png.log 2>&1 \
+            && AEVG_OUT=/tmp/ci_clock.png build/analog_clock_png > /tmp/ci_run_analog_clock_png.log 2>&1 \
+            && [ -f /tmp/ci_clock.png ]; then
+        echo "  OK   analog_clock_png (one-frame clock render)"
+    else
+        echo "  FAIL analog_clock_png"
+        tail -15 /tmp/ci_build_analog_clock_png.log /tmp/ci_run_analog_clock_png.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then

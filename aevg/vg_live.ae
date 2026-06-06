@@ -114,9 +114,17 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // the current monotonic time, re-renders (clear + clip + flush), and
     // redraws. The animations are registered by vg.animate inside the block.
     _tid = aether_ui.timer(16) callback {
-        if vg.scene_is_animating(scene) == 1 {
+        live = 0
+        if vg.scene_is_animating(scene) == 1 { live = 1 }
+        if vg.scene_is_refreshing(scene) == 1 { live = 1 }
+        if live == 1 {
             now = now_monotonic_ms()
             ran = vg.scene_advance(scene, now)
+            // Refreshing scenes (bind_pos/when-driven, e.g. a clock) re-evaluate
+            // their bindings each frame — the live analogue of CVG's poll().
+            if vg.scene_is_refreshing(scene) == 1 {
+                _ = vg.scene_eval_bindings(scene)
+            }
             aether_ui.canvas_clear(canvas_id)
             // t = seconds since an arbitrary epoch (monotonic), a
             // continuously-growing clock the live-draw callbacks key off.
