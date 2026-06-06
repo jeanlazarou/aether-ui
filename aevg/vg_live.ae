@@ -50,6 +50,8 @@ import grammar_events
 import grammar_context
 import grammar_rendering
 import transform
+import std.os
+import std.os (now_monotonic_ms)
 
 extern malloc(size: int) -> ptr
 
@@ -104,6 +106,18 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
         vg.scene_set_ctx(scene, new_ctx)
         aether_ui.canvas_clear(canvas_id)
         _flush_clipped(scene, canvas_id)
+    }
+    // Animation loop: a ~60fps timer drives the scene's animations. It no-ops
+    // when nothing is animating (cheap idle), and otherwise advances them to
+    // the current monotonic time, re-renders (clear + clip + flush), and
+    // redraws. The animations are registered by vg.animate inside the block.
+    _tid = aether_ui.timer(16) callback {
+        if vg.scene_is_animating(scene) == 1 {
+            ran = vg.scene_advance(scene, now_monotonic_ms())
+            aether_ui.canvas_clear(canvas_id)
+            _flush_clipped(scene, canvas_id)
+            aether_ui.canvas_redraw(canvas_id)
+        }
     }
     return vg.vg_root(scene)
 }

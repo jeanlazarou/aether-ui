@@ -11,6 +11,7 @@ import aether_ui (window, enable_test_server)
 import vg_live (vg)
 import vg
 import vg (view_box, rect, fill)
+import std.os
 import std.os (os_getenv)
 
 main() {

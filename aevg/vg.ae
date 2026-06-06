@@ -55,7 +55,8 @@ exports (
     // Deferred flush (the live path): record shapes during the block, then
     // dispatch them with their final cached style after the block closes.
     scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh,
-    bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start
+    bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start,
+    animate, scene_animation_manager, scene_is_animating, scene_tick, scene_advance
 )
 
 import std.string
@@ -66,6 +67,7 @@ import grammar_element
 import grammar_events
 import grammar_reactive
 import grammar_bind
+import grammar_animations
 import parser
 
 extern malloc(size: int) -> ptr
@@ -96,6 +98,7 @@ struct VgScene {
     deferred: int   // 1 = record into `pending` + flush after block
     pending: ptr    // std.list of *VgPending (draw order); null until deferred
     event_state: ptr // *grammar_events.EventState — shared hover/drag/click state
+    anim_mgr: ptr   // *grammar_animations.AnimationManager (null until animate)
 }
 
 // One deferred shape: enough to dispatch it after its style is known.
@@ -166,13 +169,14 @@ scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
 // canvas" (headless / recording). vg_root wraps it as the root VgNode the
 // shape verbs accept as _ctx.
 scene_new(ctx: ptr, backend: ptr) -> ptr {
-    s = malloc(56) as *VgScene
+    s = malloc(64) as *VgScene
     s.ctx = ctx
     s.backend = backend
     s.canvas_id = 0
     s.deferred = 0
     s.pending = null
     s.event_state = null
+    s.anim_mgr = null
     return s
 }
 
@@ -585,6 +589,60 @@ scene_refresh(scene: ptr) -> int {
     vg_flush(scene)
     grammar_bind.refresh_all(s.ctx)
     n = grammar_reactive.refresh_all_elements(s.ctx)
+    vg_flush(scene)
+    return n
+}
+
+// ─── animation (continuous, timer-driven) ───────────────────────
+//
+// animate(node, duration_ms, loop, yoyo) callback |el, t| { ... } registers a
+// per-frame animation on the scene's manager. The tick closure is
+// fn(el: ptr, t: float): `el` is THIS shape's element (passed in so the closure
+// captures no block-locals — a captured block-local would dangle once the
+// vg{} block returns and the timer fires later), `t` is raw in [0,1] (apply
+// easing yourself). Mutate via vg.element_set_*(el, …). On a live window
+// vg_live runs a 16ms timer that advances + re-renders while is_animating;
+// headless callers drive scene_tick(scene, now_ms). Mirrors CVG's .transition.
+animate(_ctx: ptr, duration_ms: long, loop: int, yoyo: int, tick: fn) {
+    el = node_payload(_ctx)
+    if el == null { return }
+    mgr = scene_anim_mgr_of_node(_ctx)
+    if mgr == null { return }
+    _ = grammar_animations.add_animation(mgr, el, duration_ms, 0, loop, yoyo, 0, tick)
+}
+
+// The scene's animation manager (lazily created). node carries the scene.
+scene_anim_mgr_of_node(_ctx: ptr) -> ptr {
+    scene = node_scene(_ctx)
+    return scene_animation_manager(scene)
+}
+
+scene_animation_manager(scene: ptr) -> ptr {
+    s = scene as *VgScene
+    if s.anim_mgr == null { s.anim_mgr = grammar_animations.manager_new() }
+    return s.anim_mgr
+}
+
+scene_is_animating(scene: ptr) -> int {
+    s = scene as *VgScene
+    if s.anim_mgr == null { return 0 }
+    return grammar_animations.is_animating(s.anim_mgr)
+}
+
+// scene_advance(scene, now_ms) — advance animations to `now_ms` WITHOUT
+// re-rendering (the tick closures mutate element state). The live loop calls
+// this then does its own clear + clip + flush + redraw. Returns the count that
+// ticked.
+scene_advance(scene: ptr, now_ms: long) -> int {
+    s = scene as *VgScene
+    if s.anim_mgr == null { return 0 }
+    return grammar_animations.tick_animations(s.anim_mgr, now_ms)
+}
+
+// scene_tick(scene, now_ms) — advance + re-flush (no canvas clear/redraw).
+// Convenience for headless tests that inspect element state after a tick.
+scene_tick(scene: ptr, now_ms: long) -> int {
+    n = scene_advance(scene, now_ms)
     vg_flush(scene)
     return n
 }

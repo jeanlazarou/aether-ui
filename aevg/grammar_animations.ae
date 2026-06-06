@@ -43,7 +43,8 @@ exports (
     add_animation, add_animation_impl, manager_new,
     remove_animation, stop_all_animations,
     is_animating, animation_count, tick_animations,
-    handle_id, handle_stopped, handle_completed
+    handle_id, handle_stopped, handle_completed,
+    invoke_tick_el
 )
 
 import std.list
@@ -255,6 +256,19 @@ inner_call_tick(cb: fn, t: float) {
     cb(t)
 }
 
+// Element-passing tick: the closure receives (element, t), so it need NOT
+// capture the element. Capturing a block-local element ptr into a tick that
+// fires later (from the live timer, after the vg{} block has returned) reads
+// freed closure state and segfaults — passing the element through dodges it.
+// The engine stores a.element already; this just threads it to the closure.
+invoke_tick_el(p: ptr, el: ptr, t: float) {
+    inner_call_tick_el(p, el, t)
+}
+
+inner_call_tick_el(cb: fn, el: ptr, t: float) {
+    cb(el, t)
+}
+
 // API note: the animation manager passes the RAW t (in [0, 1]) to
 // the tick closure. The closure is responsible for applying its
 // chosen easing function. This sidesteps an Aether codegen bug:
@@ -325,7 +339,7 @@ tick_animations(mgr: ptr, now_ms: long) -> int {
                 }
 
                 // Pass raw t in [0, 1]; closure applies easing.
-                invoke_tick(a.tick_fn, raw_t)
+                invoke_tick_el(a.tick_fn, a.element, raw_t)
                 invoked = invoked + 1
 
                 // Completion check (non-looping, non-yoyo).
@@ -334,7 +348,7 @@ tick_animations(mgr: ptr, now_ms: long) -> int {
                         if elapsed >= a.duration_ms {
                             // Snap to final value: t = 1.0 (raw;
                             // closure applies easing(1) itself).
-                            invoke_tick(a.tick_fn, 1.0)
+                            invoke_tick_el(a.tick_fn, a.element, 1.0)
                             h.completed = 1
                             _ = list.add(to_remove, a)
                         }

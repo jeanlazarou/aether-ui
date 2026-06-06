@@ -6,7 +6,7 @@
 // usage in the eventual backend wiring would pass the actual
 // monotonic clock value once per frame.
 //
-// Tick functions are inline `callback |t: float| { ... }` closures
+// Tick functions are inline `callback |el: ptr, t: float| { ... }` closures
 // that capture a per-scenario *Recorder ptr. This exercises the
 // v0.193+1 fn ↔ ptr coercion fix — captured-state closures survive
 // storage in the manager's `tick_fn: ptr` field and invocation
@@ -58,7 +58,7 @@ main() {
     h_a = grammar_animations.add_animation(
         mgr_a, el_sentinel,
         1000, 0, 0, 0, 0
-    ) callback |t: float| {
+    ) callback |el: ptr, t: float| {
         // Linear: store t as-is.
         rec_a.last_t = t
         rec_a.call_count = rec_a.call_count + 1
@@ -85,7 +85,7 @@ main() {
     _h_b = grammar_animations.add_animation(
         mgr_b, el_sentinel,
         1000, 0, 0, 0, 0
-    ) callback |t: float| {
+    ) callback |el: ptr, t: float| {
         // Apply ease_in inside the closure.
         rec_b.last_t = easing.ease_in(t)
         rec_b.call_count = rec_b.call_count + 1
@@ -101,7 +101,7 @@ main() {
     _h_c = grammar_animations.add_animation(
         mgr_c, el_sentinel,
         1000, 200, 0, 0, 0
-    ) callback |t: float| {
+    ) callback |el: ptr, t: float| {
         rec_c.last_t = t
         rec_c.call_count = rec_c.call_count + 1
     }
@@ -121,14 +121,14 @@ main() {
     h_d1 = grammar_animations.add_animation(
         mgr_d, el_sentinel,
         1000, 0, 0, 0, 0
-    ) callback |t: float| {
+    ) callback |el: ptr, t: float| {
         rec_d.last_t = t
         rec_d.call_count = rec_d.call_count + 1
     }
     _h_d2 = grammar_animations.add_animation(
         mgr_d, el_sentinel,
         1000, 0, 0, 0, 0
-    ) callback |t: float| {
+    ) callback |el: ptr, t: float| {
         rec_d.last_t = t
         rec_d.call_count = rec_d.call_count + 1
     }

@@ -13,6 +13,7 @@ import aether_ui (window, enable_test_server)   // companion — bare names
 import vg_live (vg)
 import vg                         // full — vg_live uses vg.scene_new transitively
 import vg (view_box, circle, rect, text, fill, stroke, on_click_recolor)
+import std.os
 import std.os (os_getenv)
 
 main() {

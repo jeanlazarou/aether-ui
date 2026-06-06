@@ -1,0 +1,79 @@
+// aevg/test_vg_anim.ae — continuous animation via vg.animate + scene_tick.
+//
+// Registers an opacity fade on a circle, drives the scene clock with
+// scene_tick at t=0 / mid / end, and asserts the element's opacity follows the
+// raw t the tick closure receives, the animation reports animating until it
+// completes, then drops out. This is the headless half of the timer-driven
+// loop (vg_live runs scene_tick from a 16ms timer on a live window).
+
+import vg
+import aevg_backend
+import grammar_context
+import grammar_element
+import transform
+import std.string
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_near(label: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 0.01 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return grammar_context.new_context(m)
+}
+
+main() {
+    println("=== test_vg_anim ===")
+
+    ctx = mk_ctx()
+    bk = aevg_backend.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    cnode = vg.circle(root, 50.0, 50.0, 20.0)
+    cel = vg.node_element(cnode)
+    vg.fill(cnode, "#ff0000")
+    vg.vg_flush(scene)
+
+    // A 1000ms opacity fade 0→1, linear (t passed straight to opacity). The
+    // tick receives the element (el) — no capture of block-locals, which would
+    // dangle once the defining scope returns.
+    vg.animate(cnode, 1000, 0, 0) callback |el: ptr, t: float| {
+        vg.element_set_opacity(el, t)
+    }
+
+    assert_eq_int("animating after register", vg.scene_is_animating(scene), 1)
+
+    // t=0 → opacity 0.
+    n0 = vg.scene_tick(scene, 0)
+    assert_eq_int("tick @0: 1 anim ran", n0, 1)
+    assert_near("opacity @0", grammar_element.element_last_opacity(cel), 0.0)
+
+    // t=500ms (halfway) → opacity 0.5.
+    _ = vg.scene_tick(scene, 500)
+    assert_near("opacity @500", grammar_element.element_last_opacity(cel), 0.5)
+
+    // t=1000ms (end) → opacity 1.0; animation completes + drops out.
+    _ = vg.scene_tick(scene, 1000)
+    assert_near("opacity @1000", grammar_element.element_last_opacity(cel), 1.0)
+    assert_eq_int("not animating after complete", vg.scene_is_animating(scene), 0)
+
+    // A further tick is a harmless no-op (nothing left to run).
+    nn = vg.scene_tick(scene, 1500)
+    assert_eq_int("tick after complete: 0 ran", nn, 0)
+
+    println("=== test_vg_anim passed ===")
+}
