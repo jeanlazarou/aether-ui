@@ -35,13 +35,13 @@ main() {
             bg = rect(0, 0, 100, 100) { fill("#101018") }
 
             // RASTER under the cube: a plasma (generated frame source) covering
-            // viewBox (20,20)..(80,80). Its pixel buffer is sized to the
-            // canvas-px extent (viewBox 60 × 360/100 = 216px) so it fills the
-            // region 1:1. Pushed once — a colourful backdrop the live cube
-            // composites over each frame. (Re-pushing per frame to animate the
-            // plasma too needs a capture-free per-frame source hook — follow-on.)
-            pr = video_region(_root_of(bg), 20.0, 20.0, 216, 216)
-            push_plasma(pr, 216, 216, 0.0)
+            // viewBox (20,20)..(80,80). The buffer is a small 64×64 frame; the
+            // blit SCALES it to fill the region's canvas-px extent (so a frame's
+            // resolution is decoupled from its on-screen size — as a video
+            // would be). Pushed once — a colourful backdrop the live cube
+            // composites over each frame.
+            pr = video_region(_root_of(bg), 20.0, 20.0, 64, 64)
+            push_plasma(pr, 64, 64, 0.0)
 
             // DRAW region: the tumbling wireframe cube, recomputed from t every
             // frame and composited over the raster — glitch-free via the one

@@ -200,6 +200,11 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
 void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
                                        int iw, int ih,
                                        const unsigned char* rgba, int byte_len);
+// As draw_image but scales the iw×ih source to a dw×dh dest rect at (x,y) —
+// for a frame whose pixel resolution differs from the target region extent.
+void aether_ui_canvas_draw_image_scaled_impl(int canvas_id, double x, double y,
+                                       double dw, double dh, int iw, int ih,
+                                       const unsigned char* rgba, int byte_len);
 // extend: SVG spreadMethod → 0=pad, 1=reflect, 2=repeat.
 void aether_ui_canvas_fill_linear_gradient_impl(int canvas_id,
         double x1, double y1, double x2, double y2,

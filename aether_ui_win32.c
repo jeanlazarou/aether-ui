@@ -2454,6 +2454,15 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
     canvas_add_cmd(canvas_id, c);
 }
 
+// Scaled draw — Win32 blits 1:1 for now (ignores dw/dh); the GTK backend
+// scales. Keeps the ABI total; proper Win32 scaling is a later port.
+void aether_ui_canvas_draw_image_scaled_impl(int canvas_id, double x, double y,
+                                       double dw, double dh, int iw, int ih,
+                                       const unsigned char* rgba, int byte_len) {
+    (void)dw; (void)dh;
+    aether_ui_canvas_draw_image_impl(canvas_id, x, y, iw, ih, rgba, byte_len);
+}
+
 extern double floatarr_get_unchecked(void* arr, int i);
 
 static void win32_copy_stops(CanvasCmd* c, int n_stops,

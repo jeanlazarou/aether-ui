@@ -1421,8 +1421,26 @@ static void canvas_replay(cairo_t* cr, CanvasState* cs) {
                         cairo_surface_t* surf = cairo_image_surface_create_for_data(
                             conv, CAIRO_FORMAT_ARGB32, c->iw, c->ih, stride);
                         if (cairo_surface_status(surf) == CAIRO_STATUS_SUCCESS) {
-                            cairo_set_source_surface(cr, surf, c->x, c->y);
+                            // c->w / c->h, when > 0, are the DESTINATION extent
+                            // (canvas px). If they differ from the source pixel
+                            // dims (iw/ih), scale the source surface to fit —
+                            // e.g. a 640x480 video frame into a smaller region.
+                            // w/h <= 0 means blit 1:1 at native size.
+                            int have_dest = (c->w > 0.0 && c->h > 0.0);
+                            cairo_save(cr);
+                            if (have_dest) {
+                                cairo_translate(cr, c->x, c->y);
+                                cairo_scale(cr, c->w / (double)c->iw,
+                                                c->h / (double)c->ih);
+                                cairo_set_source_surface(cr, surf, 0, 0);
+                            } else {
+                                cairo_set_source_surface(cr, surf, c->x, c->y);
+                            }
+                            // Nearest/good filtering for scaled video frames.
+                            cairo_pattern_set_filter(cairo_get_source(cr),
+                                                     CAIRO_FILTER_GOOD);
                             cairo_paint(cr);
+                            cairo_restore(cr);
                             cairo_set_source_rgba(cr, 0, 0, 0, 1); // reset source
                         }
                         cairo_surface_destroy(surf);
@@ -1681,6 +1699,23 @@ void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
     memcpy(owned, rgba, iw * ih * 4);
     canvas_add_cmd(canvas_id, (CanvasCmd){
         .type = CANVAS_DRAW_IMAGE, .x = x, .y = y,
+        .pixels = owned, .iw = iw, .ih = ih
+    });
+}
+
+// As draw_image, but scale the iw×ih source to a dw×dh destination rect at
+// (x,y) — for a video/raster frame whose pixel resolution differs from the
+// region's canvas-px extent. dw/dh <= 0 falls back to a 1:1 native blit.
+void aether_ui_canvas_draw_image_scaled_impl(int canvas_id, double x, double y,
+                                       double dw, double dh, int iw, int ih,
+                                       const unsigned char* rgba, int byte_len) {
+    if (iw <= 0 || ih <= 0 || !rgba) return;
+    if (byte_len < iw * ih * 4) return;
+    unsigned char* owned = (unsigned char*)malloc(iw * ih * 4);
+    if (!owned) return;
+    memcpy(owned, rgba, iw * ih * 4);
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_DRAW_IMAGE, .x = x, .y = y, .w = dw, .h = dh,
         .pixels = owned, .iw = iw, .ih = ih
     });
 }

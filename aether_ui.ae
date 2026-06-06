@@ -39,7 +39,7 @@ exports (
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clip_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
-    canvas_draw_image, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
+    canvas_draw_image, canvas_draw_image_scaled, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
     enable_test_server, enable_test_server_root, seal_widget, seal_subtree,
@@ -221,6 +221,9 @@ extern aether_ui_canvas_fill_text_impl(canvas_id: int, text: string,
                                        r: float, g: float, b: float, a: float)
 extern aether_ui_canvas_draw_image_impl(canvas_id: int, x: float, y: float,
                                         iw: int, ih: int,
+                                        rgba: string, byte_len: int)
+extern aether_ui_canvas_draw_image_scaled_impl(canvas_id: int, x: float, y: float,
+                                        dw: float, dh: float, iw: int, ih: int,
                                         rgba: string, byte_len: int)
 extern aether_ui_canvas_fill_linear_gradient_impl(canvas_id: int,
         x1: float, y1: float, x2: float, y2: float,
@@ -916,6 +919,14 @@ canvas_fill_text(cid: int, text: string, x: float, y: float, font_size: float,
 canvas_draw_image(cid: int, x: float, y: float, iw: int, ih: int,
                   rgba: string, byte_len: int) {
     aether_ui_canvas_draw_image_impl(cid, x, y, iw, ih, rgba, byte_len)
+}
+
+// canvas_draw_image_scaled — blit an iw×ih RGBA frame scaled to a dw×dh dest
+// rect at (x,y). AeVG live raster regions use this to fit a frame's pixel
+// resolution to the region's canvas-px extent.
+canvas_draw_image_scaled(cid: int, x: float, y: float, dw: float, dh: float,
+                  iw: int, ih: int, rgba: string, byte_len: int) {
+    aether_ui_canvas_draw_image_scaled_impl(cid, x, y, dw, dh, iw, ih, rgba, byte_len)
 }
 
 // Paint the current path with a linear gradient from (x1,y1) to

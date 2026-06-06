@@ -213,15 +213,21 @@ _blit_live_rasters(scene: ptr, canvas_id: int) {
             if flen > 0 {
                 rx = live_region.region_x(item)
                 ry = live_region.region_y(item)
-                // Region top-left → canvas px (the blit dest). The frame's
-                // pixel dims (pw×ph) are its own resolution; canvas_draw_image
-                // places it at the mapped origin at that pixel size.
+                rw = live_region.region_w(item)
+                rh = live_region.region_h(item)
+                // Region rect (viewBox) → canvas px: the DEST extent. The
+                // frame's own pixel dims (pw×ph) are the SOURCE; the blit
+                // scales source→dest so a frame of any resolution fills the
+                // region's mapped extent.
                 p_tl = grammar_rendering.map_point(ctx, rx, ry)
+                p_br = grammar_rendering.map_point(ctx, rx + rw, ry + rh)
                 cx0 = transform.pt_x(p_tl)
                 cy0 = transform.pt_y(p_tl)
+                dw = transform.pt_x(p_br) - cx0
+                dh = transform.pt_y(p_br) - cy0
                 pw = live_region.region_pw(item)
                 ph = live_region.region_ph(item)
-                aether_ui.canvas_draw_image(canvas_id, cx0, cy0, pw, ph, frame, flen)
+                aether_ui.canvas_draw_image_scaled(canvas_id, cx0, cy0, dw, dh, pw, ph, frame, flen)
             }
         }
         i = i + 1
