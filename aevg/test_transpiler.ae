@@ -177,6 +177,22 @@ main() {
     out_plh = transpiler.transpile_svg_to_png_harness(svg_pl)
     assert_contains("harness polyline → vg.path", out_plh, "vg.path(node, \"M 0 0")
 
+    // ─── rounded rect (rx/ry) → path() with arc corners ───────
+    // vg.rect has no radius arg, so a rounded rect must become a path or it
+    // renders square (rectangles.svg / rfeed.svg lost their rounded frame).
+    svg_rr = "<svg viewBox='0 0 200 200'><rect x='25' y='25' width='150' height='150' rx='20' ry='20' fill='yellow'/></svg>"
+    out_rr = transpiler.transpile_svg(svg_rr)
+    assert_contains("rounded rect → path", out_rr, "path(\"M ")
+    assert_contains("rounded rect: arc corners", out_rr, " A 20 20 0 0 1 ")
+    assert_not_contains("rounded rect: no rect verb", out_rr, "rect(25")
+    // plain rect (no rx) stays a rect verb.
+    svg_pr = "<svg viewBox='0 0 200 200'><rect x='5' y='5' width='10' height='10'/></svg>"
+    out_pr = transpiler.transpile_svg(svg_pr)
+    assert_contains("plain rect stays rect verb", out_pr, "rect(5.0, 5.0, 10.0, 10.0)")
+    // harness form rounds too.
+    out_rrh = transpiler.transpile_svg_to_png_harness(svg_rr)
+    assert_contains("harness rounded rect → vg.path", out_rrh, "vg.path(node, \"M ")
+
     // ─── <use href> inlines the target with translate(x y) ────
     // (headless harness form — where <use> resolution lives.)
     svg_use = "<svg viewBox='0 0 100 100'><defs><circle id='c' cx='10' cy='10' r='5' fill='red'/></defs><use href='#c' x='20' y='0'/></svg>"

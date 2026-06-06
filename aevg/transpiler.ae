@@ -390,6 +390,8 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
         is_poly = 0
         if string.equals(tag, "polyline") == 1 { is_poly = 1 }
         if string.equals(tag, "polygon") == 1 { is_poly = 1 }
+        is_round = 0
+        if string.equals(tag, "rect") == 1 { is_round = rect_is_rounded(node) }
         if is_poly == 1 {
             // polyline/polygon → vg.path with points converted to M/L (Z for
             // polygon), normalized — mirrors the loader's emit_poly. Without
@@ -404,11 +406,21 @@ emit_node_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr,
             _ = strbuilder.append(sb, escape_str(d))
             _ = strbuilder.append(sb, "\")\n")
         } else {
-            _ = strbuilder.append(sb, "vg.")
-            _ = strbuilder.append(sb, tag)
-            _ = strbuilder.append(sb, "(node")
-            emit_geom_args_explicit(sb, node, tag)
-            _ = strbuilder.append(sb, ")\n")
+            if is_round == 1 {
+                // Rounded rect (rx/ry) → vg.path with an arc-corner d, mirroring
+                // the loader's rounded_rect_path. vg.rect has no corner-radius
+                // arg, so a plain vg.rect would render square corners
+                // (rectangles.svg / rfeed.svg lost their rounded frame).
+                _ = strbuilder.append(sb, "vg.path(node, \"")
+                _ = strbuilder.append(sb, escape_str(rounded_rect_d(node)))
+                _ = strbuilder.append(sb, "\")\n")
+            } else {
+                _ = strbuilder.append(sb, "vg.")
+                _ = strbuilder.append(sb, tag)
+                _ = strbuilder.append(sb, "(node")
+                emit_geom_args_explicit(sb, node, tag)
+                _ = strbuilder.append(sb, ")\n")
+            }
         }
     }
 
@@ -734,6 +746,15 @@ emit_circle(sb: ptr, node: ptr, indent: int) {
 
 emit_rect(sb: ptr, node: ptr, indent: int) {
     pad(sb, indent)
+    if rect_is_rounded(node) == 1 {
+        // rx/ry → path() with arc corners (the vg rect verb has no radius).
+        _ = strbuilder.append(sb, "path(\"")
+        _ = strbuilder.append(sb, escape_str(rounded_rect_d(node)))
+        _ = strbuilder.append(sb, "\")")
+        emit_style_block(sb, node)
+        _ = strbuilder.append(sb, "\n")
+        return
+    }
     _ = strbuilder.append(sb, "rect(")
     emit_num_attr(sb, node, "x", 0)
     _ = strbuilder.append(sb, ", ")
@@ -835,6 +856,58 @@ ellipse_attr(node: ptr, key: string) -> float {
     v, e = string.to_double(string.trim(parser.node_attr(node, key)))
     if e != "" { return 0.0 }
     return v
+}
+
+// A rect has rounded corners when rx or ry resolves to a positive radius.
+rect_is_rounded(node: ptr) -> int {
+    if ellipse_attr(node, "rx") > 0.0 { return 1 }
+    if ellipse_attr(node, "ry") > 0.0 { return 1 }
+    return 0
+}
+
+// rx/ry corner radii with SVG fallback: a missing axis takes the other's
+// value; each clamps to half the side. Mirrors the loader's resolution so
+// both columns round identically.
+rect_corner(node: ptr, key: string, other_key: string, half: float) -> float {
+    r = ellipse_attr(node, key)
+    if r <= 0.0 { r = ellipse_attr(node, other_key) }
+    if r < 0.0 { r = 0.0 }
+    if r > half { r = half }
+    return r
+}
+
+// Rounded-rect path data — same arc-corner shape as grammar_shapes.
+// rounded_rect_path (M, L, A ×4, Z), built here to keep the transpiler off
+// grammar_shapes' heavy import graph.
+rounded_rect_d(node: ptr) -> string {
+    px = ellipse_attr(node, "x")
+    py = ellipse_attr(node, "y")
+    pw = ellipse_attr(node, "width")
+    ph = ellipse_attr(node, "height")
+    cx = rect_corner(node, "rx", "ry", pw / 2.0)
+    cy = rect_corner(node, "ry", "rx", ph / 2.0)
+    sb = strbuilder.new(128)
+    _ = strbuilder.append(sb, "M "); rr_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " L "); rr_xy(sb, px + pw - cx, py)
+    _ = strbuilder.append(sb, " A "); rr_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); rr_xy(sb, px + pw, py + cy)
+    _ = strbuilder.append(sb, " L "); rr_xy(sb, px + pw, py + ph - cy)
+    _ = strbuilder.append(sb, " A "); rr_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); rr_xy(sb, px + pw - cx, py + ph)
+    _ = strbuilder.append(sb, " L "); rr_xy(sb, px + cx, py + ph)
+    _ = strbuilder.append(sb, " A "); rr_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); rr_xy(sb, px, py + ph - cy)
+    _ = strbuilder.append(sb, " L "); rr_xy(sb, px, py + cy)
+    _ = strbuilder.append(sb, " A "); rr_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); rr_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " Z")
+    return strbuilder.finish(sb)
+}
+
+rr_xy(sb: ptr, x: float, y: float) {
+    _ = strbuilder.append(sb, string.from_float(x))
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, string.from_float(y))
 }
 
 // ─── style → block modifiers ─────────────────────────────────────
