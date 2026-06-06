@@ -1,0 +1,129 @@
+// aevg/test_vg_bindto.ae — data-driven shapes via vg.bind_to.
+//
+// Headless port of svg-bindto.test.ts: a bind_to region renders one shape per
+// data item, keyed by trackby. On scene_refresh it diffs: new keys render,
+// vanished keys destroy + untrack (their shapes stop drawing and stop being
+// hit-tested), survivors persist. Mirrors CVG's .bindTo(data, render).
+
+import vg
+import aevg_backend
+import grammar_context
+import grammar_element
+import grammar_events
+import grammar_bind
+import transform
+import std.string
+import std.list
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return grammar_context.new_context(m)
+}
+
+// Data item: an id string + a cx (so each renders at a distinct spot).
+struct Item { id: string cx: float }
+mk_item(id: string, cx: float) -> *Item {
+    it = malloc(16) as *Item
+    it.id = string.copy(id)
+    it.cx = cx
+    return it
+}
+item_id(p: ptr) -> string { it = p as *Item; return it.id }
+item_cx(p: ptr) -> float  { it = p as *Item; return it.cx }
+
+main() {
+    println("=== test_vg_bindto ===")
+
+    ctx = mk_ctx()
+    bk = aevg_backend.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    es = grammar_events.event_state_new()
+    vg.scene_set_event_state(scene, es)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    // Mutable data list the items() callback returns. Start with a, b, c.
+    data = list.new()
+    a = mk_item("a", 20.0)
+    b = mk_item("b", 50.0)
+    c = mk_item("c", 80.0)
+    _ = list.add(data, a)
+    _ = list.add(data, b)
+    _ = list.add(data, c)
+
+    // bind_to: one clickable circle per item, at its cx. The render closure
+    // captures `root` to draw into the scene and returns the element.
+    region = vg.bind_to(scene)
+    vg.bind_items(region) callback {
+        return data
+    }
+    vg.bind_trackby(region) callback |it: ptr| {
+        return item_id(it)
+    }
+    vg.bind_render(region) callback |it: ptr, idx: int| {
+        node = vg.circle(root, item_cx(it), 50.0, 10.0)
+        vg.fill(node, "#888888")
+        vg.on_click_recolor(node, "#00ff00")
+        return vg.node_element(node)
+    }
+    vg.bind_start(scene, region)
+
+    // region_init rendered all three (recorded into pending). Flush draws +
+    // tracks them (they're interactive via on_click_recolor).
+    vg.vg_flush(scene)
+    assert_eq_int("initial: 3 tracked",
+                  list.size(grammar_context.ctx_tracked_elements(ctx)), 3)
+
+    // Click item 'b' at (50,50) → it recolors green; a and c untouched.
+    grammar_events.dispatch_click(es, ctx, 50.0, 50.0)
+    elb = grammar_bind_el(region, "b")
+    assert_eq_str("clicked b is green", grammar_element.element_last_fill(elb), "#00ff00")
+
+    // Remove 'b' from the data, refresh → b destroyed (invisible, untracked).
+    _ = list.remove(data, 1)   // drop b (index 1)
+    vg.scene_refresh(scene)
+    assert_eq_int("after remove: b not visible",
+                  grammar_element.element_is_visible(elb), 0)
+    // A click where b was now falls through (b destroyed; nothing else there).
+    // Re-fetch a's fill to confirm it's unaffected.
+    ela = grammar_bind_el(region, "a")
+    assert_eq_str("a still grey", grammar_element.element_last_fill(ela), "#888888")
+
+    // Add a new item 'd', refresh → d rendered (4th, but b gone → 3 live).
+    d = mk_item("d", 35.0)
+    _ = list.add(data, d)
+    vg.scene_refresh(scene)
+    eld = grammar_bind_el(region, "d")
+    if eld != null {
+        println("  PASS: d rendered after add")
+    } else {
+        println("  FAIL: d not rendered"); exit(1)
+    }
+    assert_eq_str("d initial grey", grammar_element.element_last_fill(eld), "#888888")
+
+    // Click the new d at its cx (35,50) → recolors, proving freshly-bound
+    // shapes are hit-testable.
+    grammar_events.dispatch_click(es, ctx, 35.0, 50.0)
+    assert_eq_str("clicked d is green", grammar_element.element_last_fill(eld), "#00ff00")
+
+    println("=== test_vg_bindto passed ===")
+}
+
+// Fetch a region entry's element by trackby key.
+grammar_bind_el(region: ptr, key: string) -> ptr {
+    return grammar_bind.region_current_get_el(region, key)
+}

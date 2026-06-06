@@ -53,7 +53,8 @@ exports (
     scene_set_event_state, scene_event_state,
     // Deferred flush (the live path): record shapes during the block, then
     // dispatch them with their final cached style after the block closes.
-    scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh
+    scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh,
+    bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start
 )
 
 import std.string
@@ -63,6 +64,7 @@ import grammar_shapes
 import grammar_element
 import grammar_events
 import grammar_reactive
+import grammar_bind
 import parser
 
 extern malloc(size: int) -> ptr
@@ -500,6 +502,38 @@ vg_flush(scene: ptr) {
     }
 }
 
+// ─── data-driven shapes (bindTo) ─────────────────────────────────
+//
+// CVG's .bindTo(data, render): one shape per data item, diffed by a stable
+// key on refresh (new → render, vanished → destroy+untrack, survivor →
+// update). Aether allows only ONE trailing-callback per call, so the three
+// callbacks are wired with separate setter calls (mirroring grammar_bind's
+// own API), then bind_start kicks off the initial render:
+//
+//   r = vg.bind_to(scene)
+//   vg.bind_items(r)   callback { return my_list }
+//   vg.bind_trackby(r) callback |it| { return key_of(it) }
+//   vg.bind_render(r)  callback |it, idx| {
+//       n = vg.circle(root, ...); vg.fill(n, ...); return vg.node_element(n)
+//   }
+//   vg.bind_update(r)  callback |it, el| { ... }   // optional
+//   vg.bind_start(scene, r)
+//
+// Thereafter vg.scene_refresh(scene) re-diffs the region. The render closure
+// captures the scene's vg_root to draw into the scene.
+
+bind_to(scene: ptr) -> ptr {
+    return grammar_bind.new_region()
+}
+bind_items(region: ptr, cb: fn)   { grammar_bind.region_set_items(region, cb) }
+bind_trackby(region: ptr, cb: fn) { grammar_bind.region_set_trackby(region, cb) }
+bind_render(region: ptr, cb: fn)  { grammar_bind.region_set_render(region, cb) }
+bind_update(region: ptr, cb: fn)  { grammar_bind.region_set_update(region, cb) }
+bind_start(scene: ptr, region: ptr) {
+    s = scene as *VgScene
+    grammar_bind.region_init(s.ctx, region)
+}
+
 // scene_refresh(scene) — re-evaluate every tracked element's when()/bindings
 // (visibility, reactive fill/pos/opacity), then re-render. This is the state-
 // changed → repaint entry point: a click handler that flips a `when` predicate
@@ -510,9 +544,12 @@ scene_refresh(scene: ptr) -> int {
     s = scene as *VgScene
     // Ensure elements are tracked before re-evaluating (tracking happens at
     // flush; on a never-flushed scene refresh would otherwise see an empty
-    // list and never run when()/bindings). Flush → refresh → flush so the
-    // re-evaluated visibility/values take effect on the visible buffer.
+    // list and never run when()/bindings). Flush → diff regions → re-eval
+    // per-element bindings → flush so the changes take effect on the buffer.
+    // Order mirrors refresh.ae: regions first (they add/remove elements), then
+    // the per-element pass walks the updated tracked list.
     vg_flush(scene)
+    grammar_bind.refresh_all(s.ctx)
     n = grammar_reactive.refresh_all_elements(s.ctx)
     vg_flush(scene)
     return n
