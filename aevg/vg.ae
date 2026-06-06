@@ -131,7 +131,26 @@ scene_backend(p: ptr) -> ptr { s = p as *VgScene; return s.backend }
 // resize: rebuild the mapping for the new canvas size, swap it in, then
 // re-run vg_flush so the recorded shapes re-dispatch at the new scale. The
 // pending list lives on the scene, not the context, so it survives the swap.
-scene_set_ctx(p: ptr, ctx: ptr) { s = p as *VgScene; s.ctx = ctx }
+//
+// Tracked elements, however, live in the CONTEXT's tracked list — so a swap
+// orphans them in the old ctx (clicks then hit-test an empty new ctx). Reset
+// each pending entry's `tracked` flag so the next vg_flush re-registers the
+// elements into the new ctx. (Also recompute their bounds at the new scale,
+// which the re-flush does via the dispatched element's bounds copy.)
+scene_set_ctx(p: ptr, ctx: ptr) {
+    s = p as *VgScene
+    s.ctx = ctx
+    if s.pending != null {
+        n = list.size(s.pending)
+        i = 0
+        while i < n {
+            item, _ = list.get(s.pending, i)
+            pe = item as *VgPending
+            pe.tracked = 0
+            i = i + 1
+        }
+    }
+}
 
 // canvas_id accessors — the live vg verb (vg_live.ae) stores the aether_ui
 // canvas handle here so vg_redraw can present it. 0 = headless / recording.

@@ -103,5 +103,35 @@ main() {
     grammar_events.dispatch_click(es2, ctx2, 50.0, 50.0)
     assert_eq_str("recolor: after click", grammar_element.element_last_fill(rcel), "#ffffff")
 
+    // ─── ctx swap (resize) must keep elements hit-testable ──────
+    // The live window rebuilds the AevgContext on its first real allocation
+    // (resize hook) and scene_set_ctx swaps it in. Tracked elements live in the
+    // context's list, so the swap must re-track them into the new ctx — else
+    // clicks hit-test an empty ctx (the bug that made the demo unresponsive).
+    ctx3 = mk_ctx()
+    bk3 = aevg_backend.backend_new()
+    scene3 = vg.scene_new(ctx3, bk3)
+    es3 = grammar_events.event_state_new()
+    vg.scene_set_event_state(scene3, es3)
+    vg.scene_set_deferred(scene3, 1)
+    root3 = vg.vg_root(scene3)
+    snode = vg.circle(root3, 50.0, 50.0, 20.0)
+    sel = vg.node_element(snode)
+    vg.fill(snode, "#000000")
+    vg.on_click_recolor(snode, "#ffffff")
+    vg.vg_flush(scene3)
+    assert_eq_int("pre-swap: tracked in ctx3",
+                  list.size(grammar_context.ctx_tracked_elements(ctx3)), 1)
+
+    // Swap to a fresh context (what resize does) + re-flush.
+    ctx3b = mk_ctx()
+    vg.scene_set_ctx(scene3, ctx3b)
+    vg.vg_flush(scene3)
+    assert_eq_int("post-swap: re-tracked into new ctx",
+                  list.size(grammar_context.ctx_tracked_elements(ctx3b)), 1)
+    // A click against the NEW ctx now hits and recolors.
+    grammar_events.dispatch_click(es3, ctx3b, 50.0, 50.0)
+    assert_eq_str("post-swap click recolors", grammar_element.element_last_fill(sel), "#ffffff")
+
     println("=== test_vg_interactive passed ===")
 }
