@@ -21,6 +21,11 @@ assert_eq_str(label: string, got: string, want: string) {
     else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
 }
 
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
 assert_near(label: string, got: float, want: float) {
     d = got - want
     if d < 0.0 { d = 0.0 - d }
@@ -85,6 +90,32 @@ main() {
     gnode = vg.g(root)
     _gc = vg.circle(gnode, 1.0, 1.0, 1.0)
     assert_eq_str("circle under g dispatched", aevg_backend.backend_kind(bk, 6), "circle")
+
+    // ── deferred mode (the live path's colour fix) ──────────────────
+    // In a deferred scene, a shape RECORDS instead of dispatching; its
+    // trailing fill() runs after; vg_flush then dispatches with the final
+    // colour folded in. This is what fixes "everything renders black": the
+    // backend call must carry the fill, and the fill is only known post-block.
+    dctx = mk_ctx()
+    dbk = aevg_backend.backend_new()
+    dscene = vg.scene_new(dctx, dbk)
+    vg.scene_set_deferred(dscene, 1)
+    droot = vg.vg_root(dscene)
+
+    dcircle = vg.circle(droot, 50.0, 50.0, 20.0)
+    vg.fill(dcircle, "#abc123")
+    // NOT dispatched yet — recording, no backend call.
+    assert_eq_int("deferred: no dispatch before flush",
+                  aevg_backend.backend_call_count(dbk), 0)
+
+    vg.vg_flush(dscene)
+    assert_eq_int("deferred: dispatched after flush",
+                  aevg_backend.backend_call_count(dbk), 1)
+    assert_eq_str("deferred: circle dispatched on flush",
+                  aevg_backend.backend_kind(dbk, 0), "circle")
+    // The fill set AFTER the shape reached the backend call — the bug's fix.
+    assert_eq_str("deferred: final fill folded into dispatch",
+                  aevg_backend.backend_opt_get(dbk, 0, "fillColor"), "#abc123")
 
     println("=== test_vg passed ===")
 }

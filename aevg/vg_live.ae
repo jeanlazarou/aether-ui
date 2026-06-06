@@ -17,10 +17,20 @@
 //
 // `vg` is a *regular* trailing-block builder (function-first): it runs before
 // the block, creating the canvas + scene, and returns the VgNode pushed as
-// _ctx so the block's shapes draw into it. Nothing needs to run after the
-// block — the cairo command buffer is built as shapes draw; the surface
-// presents it. (Contrast the surface verbs window/render_to/record, which use
-// `builder … with` because their loop/flush body must run after.)
+// _ctx so the block's shapes draw into it.
+//
+// DEFERRED FLUSH (the colour fix): in immediate mode the backend draws a shape
+// the instant it's dispatched, but a shape's trailing `fill("#F00")` runs AFTER
+// the shape — so an eager dispatch draws it black (the default), and the fill
+// only updates a cache nothing re-reads. So the live scene is DEFERRED: shapes
+// record themselves (with a placeholder element the trailing modifiers write
+// onto) instead of drawing, and vg registers a flush closure with the backend.
+// The enclosing surface body (window/render_to/record) drains the registry
+// after its block closes — when every shape's fill is finally known — and
+// vg.vg_flush dispatches them all with their final colours. This is the "vg
+// records, window flushes" wiring: vg keeps the canvas-attach (it has the
+// surface _ctx as a function-first builder); the surface body supplies the
+// after-the-whole-block hook a function-first builder lacks.
 //
 // IMPORT PREAMBLE GOTCHA: a consumer that wants the bare DSL names (`window`,
 // `circle`, `fill`, …) AND links this module needs the companion-import
@@ -59,6 +69,14 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // stored on the scene (vg.scene_set_canvas) so vg_redraw can present it.
     scene = vg.scene_new(ctx, backend)
     vg.scene_set_canvas(scene, canvas_id)
+    // Deferred mode: shapes record instead of drawing; the surface body
+    // flushes them with final colours. Register the flush closure now — it
+    // captures `scene` + `canvas_id` and fires after the block (see header).
+    vg.scene_set_deferred(scene, 1)
+    aether_ui.register_deferred_flush() callback {
+        vg.vg_flush(scene)
+        aether_ui.canvas_redraw(canvas_id)
+    }
     return vg.vg_root(scene)
 }
 

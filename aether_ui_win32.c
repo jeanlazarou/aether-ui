@@ -1090,10 +1090,35 @@ int aether_ui_surface_container_new_impl(int kind) {
     return container;
 }
 
+// Deferred-flush registry — see aether_ui_backend.h. Mirrors the GTK backend
+// so the AeVG `vg { … }` deferred-colour fix works identically on Win32.
+static AeClosure** deferred_flushes = NULL;
+static int deferred_flush_count = 0;
+static int deferred_flush_capacity = 0;
+
+void aether_ui_register_deferred_flush_impl(void* boxed_closure) {
+    if (!boxed_closure) return;
+    if (deferred_flush_count >= deferred_flush_capacity) {
+        deferred_flush_capacity = deferred_flush_capacity == 0 ? 4
+                                  : deferred_flush_capacity * 2;
+        deferred_flushes = realloc(deferred_flushes,
+                                   sizeof(AeClosure*) * deferred_flush_capacity);
+    }
+    deferred_flushes[deferred_flush_count++] = (AeClosure*)boxed_closure;
+}
+
+void aether_ui_surface_flush_deferred_impl(void) {
+    for (int i = 0; i < deferred_flush_count; i++) {
+        invoke_closure(deferred_flushes[i]);
+    }
+    deferred_flush_count = 0;
+}
+
 void aether_ui_surface_run_impl(int container_handle,
                                 const char* title, int width, int height) {
     SurfaceEntry* s = surface_for_container(container_handle);
     if (!s || s->kind != AUI_SURFACE_WINDOW) return;
+    aether_ui_surface_flush_deferred_impl();
     int app = aether_ui_app_create(title, width, height);
     s->app_handle = app;
     aether_ui_app_set_body(app, container_handle);

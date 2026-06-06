@@ -43,6 +43,15 @@ void aether_ui_surface_run_impl(int container_handle,
 int aether_ui_surface_note_interactive_impl(int container_handle);
 int aether_ui_surface_diag_count_impl(int container_handle);
 
+// Deferred-flush registry — AeVG `vg { … }` records shapes during its block
+// (so a shape's trailing fill()/stroke() is known before the backend call)
+// and registers a boxed flush closure here. The surface body drains the
+// registry after its block closes (window: before the loop), so each scene's
+// command buffer is built with final colours. register adds one closure;
+// flush_deferred invokes all and clears.
+void aether_ui_register_deferred_flush_impl(void* boxed_closure);
+void aether_ui_surface_flush_deferred_impl(void);
+
 // Widget creation
 int aether_ui_text_create(const char* text);
 int aether_ui_button_create(const char* label, void* boxed_closure);

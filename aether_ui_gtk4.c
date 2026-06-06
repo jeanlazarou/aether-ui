@@ -212,6 +212,43 @@ static SurfaceEntry* surface_add(int container_handle, int kind, int app_handle)
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Deferred-flush registry — the AeVG `vg { … }` block records its shapes
+// without drawing (so a shape's trailing fill()/stroke() is known before the
+// backend call), then registers a boxed Aether closure that flushes the
+// recorded scene. The enclosing surface body (window / render_to / record)
+// drains this registry after its block closes, BEFORE the window's event loop
+// blocks — so the scene's command buffer is built with final colours. This
+// keeps the layering clean: aether_ui owns the registry of opaque closures and
+// invokes them; only the vg layer knows what a scene is.
+// ---------------------------------------------------------------------------
+static AeClosure** deferred_flushes = NULL;
+static int deferred_flush_count = 0;
+static int deferred_flush_capacity = 0;
+
+void aether_ui_register_deferred_flush_impl(void* boxed_closure) {
+    if (!boxed_closure) return;
+    if (deferred_flush_count >= deferred_flush_capacity) {
+        deferred_flush_capacity = deferred_flush_capacity == 0 ? 4
+                                  : deferred_flush_capacity * 2;
+        deferred_flushes = realloc(deferred_flushes,
+                                   sizeof(AeClosure*) * deferred_flush_capacity);
+    }
+    deferred_flushes[deferred_flush_count++] = (AeClosure*)boxed_closure;
+}
+
+// Invoke every registered flush closure, then clear the registry (each scene
+// flushes exactly once per surface). Called by the surface bodies.
+void aether_ui_surface_flush_deferred_impl(void) {
+    for (int i = 0; i < deferred_flush_count; i++) {
+        AeClosure* c = deferred_flushes[i];
+        if (c && c->fn) {
+            ((void(*)(void*))c->fn)(c->env);
+        }
+    }
+    deferred_flush_count = 0;
+}
+
 // Create a surface container of the given kind: a detached root vstack the
 // block's children attach to (pushed as _ctx). No app/loop is created here —
 // the zero-arg `with` factory runs BEFORE the block and doesn't know the
@@ -231,6 +268,9 @@ void aether_ui_surface_run_impl(int container_handle,
                                 const char* title, int width, int height) {
     SurfaceEntry* s = surface_for_container(container_handle);
     if (!s || s->kind != AUI_SURFACE_WINDOW) return;
+    // Flush any deferred AeVG scenes recorded during the block, so their
+    // command buffers are built with final colours before the loop starts.
+    aether_ui_surface_flush_deferred_impl();
     int app = aether_ui_app_create(title, width, height);
     s->app_handle = app;
     aether_ui_app_set_body(app, container_handle);

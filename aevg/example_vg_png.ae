@@ -33,6 +33,11 @@ main() {
     g(node) { circle(45.0, 25.0, 5.0) { fill("#ddaa22") } }
     text(node, 8.0, 90.0, "Hello AeVG") { fill("#222222") }
 
+    // Deferred path: the shapes above only RECORDED (their fill ran after each
+    // shape). Flush now dispatches them with final colours — the same flush the
+    // live window body runs. Without this the PNG would be all-black fills.
+    vg.vg_flush(vg.node_scene(node))
+
     ok = canvas_write_png(cid, out, 400, 300)
     if ok == 1 { println("wrote ${out}") } else { println("PNG write FAILED"); }
 }
@@ -50,5 +55,8 @@ vg_make_scene(cid: int) -> ptr {
     ctx = grammar_factories.create_aevg_context(opts)
     scene = vg.scene_new(ctx, backend)
     vg.scene_set_canvas(scene, cid)
+    // Deferred mode mirrors the live `vg { … }` path: shapes record, then the
+    // caller flushes (here, explicitly before canvas_write_png).
+    vg.scene_set_deferred(scene, 1)
     return vg.vg_root(scene)
 }

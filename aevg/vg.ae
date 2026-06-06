@@ -43,23 +43,58 @@ exports (
     fill, stroke, opacity,
     // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
     scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
-    scene_set_canvas, scene_canvas, mk_node
+    scene_set_canvas, scene_canvas, mk_node,
+    // Deferred flush (the live path): record shapes during the block, then
+    // dispatch them with their final cached style after the block closes.
+    scene_set_deferred, scene_is_deferred, vg_flush
 )
 
 import std.string
 import std.map
+import std.list
 import grammar_shapes
 import grammar_element
 import parser
 
 extern malloc(size: int) -> ptr
 
-// ─── VgNode: the _ctx value threaded through a vg subtree ────────
-
+// ─── VgScene: the shared drawing target ──────────────────────────
+//
+// Two dispatch modes:
+//   deferred = 0 (recording / headless tests, example_vg_png):
+//       shapes dispatch EAGERLY to `backend` as they run — call order is
+//       observable (test_vg asserts backend_kind(bk,0)=="circle"). The
+//       trailing-block fill() only updates the element's cache (the
+//       recording stub doesn't re-read it; tests inspect last_fill directly).
+//   deferred = 1 (the live `vg { … }` path, vg_live.ae):
+//       shapes do NOT dispatch during the block — they build a placeholder
+//       element + record a VgPending entry into `pending`. The trailing
+//       block's fill()/stroke()/opacity() write the FINAL style onto that
+//       element. After the block, vg_flush(scene) walks `pending` and
+//       dispatches each shape for real, injecting the cached style into the
+//       attrs so the backend draws the right colour. This is the fix for the
+//       "everything renders black" ordering bug: in immediate mode the colour
+//       must be known BEFORE the backend call, but fill() runs AFTER the
+//       shape — so we defer the call until the block (and its fill) is done.
 struct VgScene {
     ctx: ptr        // *AevgContext (viewBox→canvas mapping)
     backend: ptr    // *backend_dispatch.Dispatch (the GTK canvas adapter)
     canvas_id: int  // aether_ui canvas handle (for redraw)
+    deferred: int   // 1 = record into `pending` + flush after block
+    pending: ptr    // std.list of *VgPending (draw order); null until deferred
+}
+
+// One deferred shape: enough to dispatch it after its style is known.
+// kind: 0=circle 1=rect 2=line 3=path 4=text. attrs holds the geometry
+// (and, for path, "d"); element carries the final cached fill/stroke/opacity
+// that vg_flush folds back into attrs before dispatch.
+struct VgPending {
+    kind: int
+    attrs: ptr      // std.map of geometry attrs (built by the shape verb)
+    element: ptr    // *AevgElement placeholder (style cache target)
+    tx: float       // text only: x
+    ty: float       // text only: y
+    content: string // text only: the string
 }
 
 // PAYLOAD_NONE / ELEMENT / GROUP — what the VgNode's payload is.
@@ -91,12 +126,25 @@ scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
 // canvas" (headless / recording). vg_root wraps it as the root VgNode the
 // shape verbs accept as _ctx.
 scene_new(ctx: ptr, backend: ptr) -> ptr {
-    s = malloc(24) as *VgScene
+    s = malloc(48) as *VgScene
     s.ctx = ctx
     s.backend = backend
     s.canvas_id = 0
+    s.deferred = 0
+    s.pending = null
     return s
 }
+
+// scene_set_deferred(scene, 1) — switch the scene to deferred mode (live
+// path). Allocates the pending list. Idempotent.
+scene_set_deferred(p: ptr, on: int) {
+    s = p as *VgScene
+    s.deferred = on
+    if on == 1 {
+        if s.pending == null { s.pending = list.new() }
+    }
+}
+scene_is_deferred(p: ptr) -> int { s = p as *VgScene; return s.deferred }
 vg_root(scene: ptr) -> ptr {
     return mk_node(scene, null)
 }
@@ -136,6 +184,9 @@ circle(_ctx: ptr, cx: float, cy: float, r: float) -> ptr {
     put_f(a, "cx", cx)
     put_f(a, "cy", cy)
     put_f(a, "r",  r)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 0, a)
+    }
     el = grammar_shapes.shape_circle(scene_ctx(scene), scene_backend(scene), a)
     return mk_node(scene, el)
 }
@@ -147,6 +198,9 @@ rect(_ctx: ptr, x: float, y: float, w: float, h: float) -> ptr {
     put_f(a, "y", y)
     put_f(a, "width",  w)
     put_f(a, "height", h)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 1, a)
+    }
     el = grammar_shapes.shape_rectangle(scene_ctx(scene), scene_backend(scene), a)
     return mk_node(scene, el)
 }
@@ -158,6 +212,9 @@ line(_ctx: ptr, x1: float, y1: float, x2: float, y2: float) -> ptr {
     put_f(a, "y1", y1)
     put_f(a, "x2", x2)
     put_f(a, "y2", y2)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 2, a)
+    }
     el = grammar_shapes.shape_line(scene_ctx(scene), scene_backend(scene), a)
     return mk_node(scene, el)
 }
@@ -166,6 +223,9 @@ path(_ctx: ptr, d: string) -> ptr {
     scene = node_scene(_ctx)
     a = map.new()
     _ = map.put(a, "d", d)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 3, a)
+    }
     el = grammar_shapes.shape_path(scene_ctx(scene), scene_backend(scene), a)
     return mk_node(scene, el)
 }
@@ -176,6 +236,9 @@ path(_ctx: ptr, d: string) -> ptr {
 // string and parse it into a real node, then dispatch (same as the loader).
 text(_ctx: ptr, x: float, y: float, content: string) -> ptr {
     scene = node_scene(_ctx)
+    if scene_is_deferred(scene) == 1 {
+        return record_text(scene, x, y, content)
+    }
     s = "<svg><text x='"
     s = string.concat(s, string.from_float(x))
     s = string.concat(s, "' y='")
@@ -231,6 +294,121 @@ opacity(_ctx: ptr, value: float) {
     el = node_payload(_ctx)
     if el != null {
         grammar_element.element_set_opacity(el, value)
+    }
+}
+
+// ─── deferred recording + flush (live path) ──────────────────────
+//
+// record_shape / record_text build a placeholder element (the fill/stroke/
+// opacity modifiers in the trailing block write their cache onto it) and
+// append a VgPending entry. The shape is NOT drawn yet. After the block,
+// vg_flush walks the pending list in draw order, folds each element's final
+// cached style into its attrs, and dispatches for real.
+
+record_shape(scene: ptr, kind: int, attrs: ptr) -> ptr {
+    s = scene as *VgScene
+    el = grammar_element.element_new(null)
+    p = malloc(48) as *VgPending
+    p.kind = kind
+    p.attrs = attrs
+    p.element = el
+    p.content = ""
+    _ = list.add(s.pending, p)
+    return mk_node(scene, el)
+}
+
+record_text(scene: ptr, x: float, y: float, content: string) -> ptr {
+    s = scene as *VgScene
+    el = grammar_element.element_new(null)
+    p = malloc(48) as *VgPending
+    p.kind = 4
+    p.attrs = null
+    p.element = el
+    p.tx = x
+    p.ty = y
+    p.content = content
+    _ = list.add(s.pending, p)
+    return mk_node(scene, el)
+}
+
+// vg_flush(scene) — dispatch every recorded shape with its final style.
+// Called by the live surface after the vg block closes (vg_live.ae registers
+// the scene; the enclosing window/render_to/record body drains it). No-op for
+// an eager (non-deferred) scene or an empty pending list.
+vg_flush(scene: ptr) {
+    s = scene as *VgScene
+    if s.deferred == 0 { return }
+    if s.pending == null { return }
+    ctx = s.ctx
+    be = s.backend
+    n = list.size(s.pending)
+    i = 0
+    while i < n {
+        item, _ = list.get(s.pending, i)
+        p = item as *VgPending
+        flush_one(ctx, be, p)
+        i = i + 1
+    }
+}
+
+// Fold the placeholder element's cached fill/stroke/opacity into the attrs
+// map (as presentation attributes — highest priority in resolve_style), then
+// dispatch via the same grammar_shapes path the eager mode uses.
+flush_one(ctx: ptr, be: ptr, p: ptr) {
+    pend = p as *VgPending
+    el = pend.element
+    if pend.kind == 4 {
+        // text rebuilds an SvgNode (shape_text takes a parsed node, not attrs).
+        flush_text(ctx, be, pend)
+        return
+    }
+    a = pend.attrs
+    apply_cached_style(a, el)
+    if pend.kind == 0 { _ = grammar_shapes.shape_circle(ctx, be, a) }
+    if pend.kind == 1 { _ = grammar_shapes.shape_rectangle(ctx, be, a) }
+    if pend.kind == 2 { _ = grammar_shapes.shape_line(ctx, be, a) }
+    if pend.kind == 3 { _ = grammar_shapes.shape_path(ctx, be, a) }
+}
+
+flush_text(ctx: ptr, be: ptr, p: ptr) {
+    pend = p as *VgPending
+    el = pend.element
+    s = "<svg><text x='"
+    s = string.concat(s, string.from_float(pend.tx))
+    s = string.concat(s, "' y='")
+    s = string.concat(s, string.from_float(pend.ty))
+    fillc = grammar_element.element_last_fill(el)
+    if string.length(fillc) > 0 {
+        s = string.concat(s, "' fill='")
+        s = string.concat(s, fillc)
+    }
+    s = string.concat(s, "'>")
+    s = string.concat(s, pend.content)
+    s = string.concat(s, "</text></svg>")
+    root = parser.parse_svg(s)
+    node_h = parser.node_child_at(root, 0)
+    _ = grammar_shapes.shape_text(ctx, be, node_h)
+}
+
+// Write the element's cached fill/stroke/opacity as presentation attrs.
+// resolve_style reads attrs["fill"]/["stroke"]/["stroke-width"] at highest
+// priority, so this is exactly the "own fill" cascade the trailing block set.
+apply_cached_style(a: ptr, el: ptr) {
+    fillc = grammar_element.element_last_fill(el)
+    if string.length(fillc) > 0 {
+        _ = map.put(a, "fill", fillc)
+    }
+    if grammar_element.element_has_stroke(el) == 1 {
+        sc = grammar_element.element_last_stroke_color(el)
+        if string.length(sc) > 0 {
+            _ = map.put(a, "stroke", sc)
+            sw = grammar_element.element_last_stroke_width(el)
+            _ = map.put(a, "stroke-width", string.from_float(sw))
+        }
+    }
+    if grammar_element.element_has_opacity(el) == 1 {
+        ov = grammar_element.element_last_opacity(el)
+        _ = map.put(a, "opacity", string.from_float(ov))
     }
 }
 
