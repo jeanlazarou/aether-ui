@@ -258,7 +258,22 @@ ctr_root(ctr: ptr) -> ptr { c = ctr as *VarCounter; return c.root }
 // separate params (not a struct) to sidestep struct-string lifetime issues.
 
 emit_kids_explicit(sb: ptr, node: ptr, indent: int, ctr: ptr) {
-    emit_kids_explicit_t(sb, node, indent, ctr, "", "", "", "", "")
+    // Seed the inherited paint from the root <svg>'s OWN presentation attrs, so
+    // they cascade to every descendant — mirrors loader.seed_root_style. Without
+    // this a root stroke="#000" is ignored: caution.svg's outline + fill-less
+    // exclamation-bar paths (which carry only stroke-width) lose their stroke
+    // and vanish, same as the loader bug fixed earlier.
+    emit_kids_explicit_t(sb, node, indent, ctr,
+        "",
+        root_attr_or(node, "fill"),
+        root_attr_or(node, "stroke"),
+        root_attr_or(node, "stroke-width"),
+        root_attr_or(node, "opacity"))
+}
+
+// The root <svg>'s presentation attr (or inline style), "" if absent.
+root_attr_or(node: ptr, key: string) -> string {
+    return style_attr(node, key)
 }
 
 emit_kids_explicit_t(sb: ptr, node: ptr, indent: int, ctr: ptr,
