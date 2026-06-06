@@ -74,7 +74,8 @@ main() {
     ctx = grammar_context.new_context(m)
     assert_not_null("ctx non-null", ctx)
     assert_eq_int("ctx initial transform-stack depth", grammar_context.transform_depth(ctx), 1)
-    assert_eq_int("ctx initial style-stack depth",     grammar_context.style_depth(ctx), 0)
+    // Style stack is seeded with one empty base frame (matches TS [{}]).
+    assert_eq_int("ctx initial style-stack depth",     grammar_context.style_depth(ctx), 1)
     assert_eq_int("ctx initial when-stack depth",      grammar_context.when_depth(ctx), 0)
     assert_not_null("ctx mapping accessor", grammar_context.ctx_mapping(ctx))
 
@@ -123,18 +124,21 @@ main() {
     // ─── Style stack ─────────────────────────────────────────────
     style_a = transform.affine_translate(100.0, 0.0)
     style_b = transform.affine_translate(200.0, 0.0)
+    // (Depths are +1 vs the raw push count because of the seeded base frame.)
     grammar_context.style_push(ctx, style_a)
-    assert_eq_int("style stack depth 1", grammar_context.style_depth(ctx), 1)
-    grammar_context.style_push(ctx, style_b)
     assert_eq_int("style stack depth 2", grammar_context.style_depth(ctx), 2)
+    grammar_context.style_push(ctx, style_b)
+    assert_eq_int("style stack depth 3", grammar_context.style_depth(ctx), 3)
     top = grammar_context.style_top(ctx)
     assert_near("style top .e (b)", transform.affine_e(top), 200.0)
     grammar_context.style_pop(ctx)
-    assert_eq_int("style depth after pop", grammar_context.style_depth(ctx), 1)
+    assert_eq_int("style depth after pop", grammar_context.style_depth(ctx), 2)
     top2 = grammar_context.style_top(ctx)
     assert_near("style top after pop .e (a)", transform.affine_e(top2), 100.0)
 
-    // Pop past empty → no-op (stack stays at 0, no crash).
+    // Raw style_pop empties fully (the bottom-preserve guard lives in the
+    // higher-level pop_style, not here). Pop past empty → no-op, no crash.
+    grammar_context.style_pop(ctx)
     grammar_context.style_pop(ctx)
     grammar_context.style_pop(ctx)
     assert_eq_int("style depth after over-pop", grammar_context.style_depth(ctx), 0)

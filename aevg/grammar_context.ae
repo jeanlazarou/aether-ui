@@ -160,6 +160,14 @@ new_context(mapping_handle: ptr) -> ptr {
     id_xform = transform.affine_identity()
     _ = list.add(c.transform_stack, id_xform)
 
+    // Seed the style stack with an empty base frame (matches TS:
+    // styleStack: SvgStyle[] = [{}]). Without this the first push_style sits at
+    // depth 1, and pop_style (which preserves the bottom by only popping when
+    // depth > 1) never removes it — so a <g opacity=…>'s style leaks onto every
+    // following sibling (ubuntu.svg: the whole logo washed out at the shadow
+    // group's 0.125 opacity).
+    _ = list.add(c.style_stack, map.new())
+
     return c
 }
 
