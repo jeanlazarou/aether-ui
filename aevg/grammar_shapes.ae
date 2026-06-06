@@ -95,6 +95,17 @@ opt_set_s(opts: ptr, k: string, v: string) {
     }
 }
 
+// Emit stroke-linecap / stroke-linejoin opts from the resolved style, so the
+// backend can set the cairo cap/join (SVG defaults butt/miter; we previously
+// hardcoded round, fattening arrowheads/corners — mars.svg). Only emits when
+// the style actually specifies them (the backend defaults to butt/miter).
+emit_stroke_caps(opts: ptr, style: ptr) {
+    lc = grammar_style.style_get(style, "stroke-linecap")
+    if string.length(lc) > 0 { _ = map.put(opts, "strokeLinecap", lc) }
+    lj = grammar_style.style_get(style, "stroke-linejoin")
+    if string.length(lj) > 0 { _ = map.put(opts, "strokeLinejoin", lj) }
+}
+
 // ─── Transform-push helper (push only if attrs has transform) ────
 
 maybe_push_transform(ctx: ptr, attrs: ptr) -> int {
@@ -342,6 +353,7 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "fillColor",   fill_color)
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
 
     underlying = backend_dispatch.dispatch_circle(backend, opts)
 
@@ -457,6 +469,7 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "fillColor",   fill_color)
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
 
     underlying = backend_dispatch.dispatch_rectangle(backend, opts)
 
@@ -633,6 +646,7 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_f(opts, "y2", my2)
     opt_set_s(opts, "strokeColor", stroke_color)
     opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
 
     underlying = backend_dispatch.dispatch_line(backend, opts)
 
@@ -752,6 +766,7 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     opt_set_s(opts, "d", d)                          // raw, for reference
     opt_set_s(opts, "points", strbuilder.finish(points))  // mapped polyline
     opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
     // Gradient fill takes precedence over a solid fill color; gradient
     // stroke over a solid stroke color. Bbox drives objectBoundingBox.
     if has_pt == 1 {

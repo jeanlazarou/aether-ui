@@ -160,11 +160,19 @@ canvas_circle(p: ptr, opts: ptr) -> ptr {
     y2 = opt_f(opts, "y2", 0.0)
     cx = (x + x2) / 2.0
     cy = (y + y2) / 2.0
-    r  = (x2 - x) / 2.0
 
     fill = opt_s(opts, "fillColor")
     stroke = opt_s(opts, "strokeColor")
     sw = opt_f(opts, "strokeWidth", 1.0)
+
+    // The opts bbox (x..x2) INCLUDES the stroke (shape_circle emits
+    // x = cx - r - sw/2). The stroke path radius is the GEOMETRIC radius, so
+    // subtract half the stroke width back out — otherwise a stroked circle
+    // draws at r + sw/2 (too big; mars.svg's ring was inflated by half a
+    // stroke). Fill uses the same geometric radius (the bbox half-width minus
+    // the stroke padding).
+    r = (x2 - x) / 2.0 - sw / 2.0
+    if r < 0.0 { r = (x2 - x) / 2.0 }
 
     two_pi = math.tau()
 
@@ -179,8 +187,7 @@ canvas_circle(p: ptr, opts: ptr) -> ptr {
     if string.length(stroke) > 0 {
         aether_ui.canvas_begin_path(cid)
         aether_ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
-        aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
-                                     color_b01(stroke), color_a01(stroke), sw)
+        stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
 }
@@ -214,8 +221,7 @@ canvas_rectangle(p: ptr, opts: ptr) -> ptr {
         aether_ui.canvas_line_to(cid, x2, y2)
         aether_ui.canvas_line_to(cid, x, y2)
         aether_ui.canvas_close_path(cid)
-        aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
-                                     color_b01(stroke), color_a01(stroke), sw)
+        stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
 }
@@ -237,8 +243,7 @@ canvas_line(p: ptr, opts: ptr) -> ptr {
         aether_ui.canvas_begin_path(cid)
         aether_ui.canvas_move_to(cid, x1, y1)
         aether_ui.canvas_line_to(cid, x2, y2)
-        aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
-                                     color_b01(stroke), color_a01(stroke), sw)
+        stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
 }
@@ -293,8 +298,7 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
     } else {
         if string.length(stroke) > 0 {
             replay_path(cid, pts)
-            aether_ui.canvas_stroke(cid, color_r01(stroke), color_g01(stroke),
-                                         color_b01(stroke), color_a01(stroke), sw)
+            stroke_path(cid, stroke, sw, opts)
         }
     }
     return fresh_handle()
@@ -361,6 +365,29 @@ spread_to_extend(spread: string) -> int {
     if string.equals(spread, "reflect") == 1 { return 1 }
     if string.equals(spread, "repeat") == 1 { return 2 }
     return 0
+}
+
+// stroke-linecap → cap code (0=butt default, 1=round, 2=square).
+linecap_code(opts: ptr) -> int {
+    v = opt_s(opts, "strokeLinecap")
+    if string.equals(v, "round") == 1 { return 1 }
+    if string.equals(v, "square") == 1 { return 2 }
+    return 0
+}
+// stroke-linejoin → join code (0=miter default, 1=round, 2=bevel).
+linejoin_code(opts: ptr) -> int {
+    v = opt_s(opts, "strokeLinejoin")
+    if string.equals(v, "round") == 1 { return 1 }
+    if string.equals(v, "bevel") == 1 { return 2 }
+    return 0
+}
+
+// Stroke the current path with the resolved colour + width, honouring the
+// stroke-linecap/linejoin opts (SVG defaults butt/miter).
+stroke_path(cid: int, stroke: string, sw: float, opts: ptr) {
+    aether_ui.canvas_stroke_cj(cid, color_r01(stroke), color_g01(stroke),
+        color_b01(stroke), color_a01(stroke), sw,
+        linecap_code(opts), linejoin_code(opts))
 }
 
 // Replay a polyline token stream into the canvas as a path (no

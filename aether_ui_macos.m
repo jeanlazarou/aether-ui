@@ -1507,9 +1507,10 @@ void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y) {
 }
 
 void aether_ui_canvas_stroke_impl(int canvas_id, double r, double g, double b,
-                                  double a, double line_width) {
+                                  double a, double line_width, int cap, int join) {
     canvas_add_cmd(canvas_id, (CanvasCmd){
-        .type = CANVAS_STROKE, .r = r, .g = g, .b = b, .a = a, .x = line_width
+        .type = CANVAS_STROKE, .r = r, .g = g, .b = b, .a = a, .x = line_width,
+        .iw = cap, .ih = join
     });
 }
 

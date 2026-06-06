@@ -2385,7 +2385,8 @@ void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y) {
 }
 
 void aether_ui_canvas_stroke_impl(int canvas_id, double r, double g, double b,
-                                   double a, double line_width) {
+                                   double a, double line_width, int cap, int join) {
+    (void)cap; (void)join; // stroke cap/join not yet honored on GDI+ (round default)
     CanvasCmd c = {0};
     c.k = CV_STROKE; c.cr = r; c.cg = g; c.cb = b; c.calpha = a; c.p0 = line_width;
     canvas_add_cmd(canvas_id, c);

@@ -37,7 +37,7 @@ exports (
     sheet_create, sheet_set_body, sheet_present, sheet_dismiss,
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
-    canvas_stroke, canvas_fill_rect, canvas_clear, canvas_redraw, canvas_write_png,
+    canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
     canvas_draw_image, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
@@ -210,7 +210,7 @@ extern aether_ui_canvas_begin_path_impl(canvas_id: int)
 extern aether_ui_canvas_move_to_impl(canvas_id: int, x: float, y: float)
 extern aether_ui_canvas_line_to_impl(canvas_id: int, x: float, y: float)
 extern aether_ui_canvas_stroke_impl(canvas_id: int, r: float, g: float, b: float,
-                               a: float, line_width: float)
+                               a: float, line_width: float, cap: int, join: int)
 extern aether_ui_canvas_arc_impl(canvas_id: int, cx: float, cy: float,
                                  radius: float, start_angle: float, end_angle: float)
 extern aether_ui_canvas_close_path_impl(canvas_id: int)
@@ -851,8 +851,17 @@ canvas_line_to(cid: int, x: float, y: float) {
     aether_ui_canvas_line_to_impl(cid, x, y)
 }
 
+// Default cap/join (butt/miter — the SVG defaults). For explicit caps/joins
+// use canvas_stroke_cj.
 canvas_stroke(cid: int, r: float, g: float, b: float, a: float, line_width: float) {
-    aether_ui_canvas_stroke_impl(cid, r, g, b, a, line_width)
+    aether_ui_canvas_stroke_impl(cid, r, g, b, a, line_width, 0, 0)
+}
+
+// Stroke with explicit line cap/join. cap: 0=butt 1=round 2=square.
+// join: 0=miter 1=round 2=bevel.
+canvas_stroke_cj(cid: int, r: float, g: float, b: float, a: float, line_width: float,
+                 cap: int, join: int) {
+    aether_ui_canvas_stroke_impl(cid, r, g, b, a, line_width, cap, join)
 }
 
 canvas_fill_rect(cid: int, x: float, y: float, w: float, h: float,

@@ -1347,8 +1347,13 @@ static void canvas_replay(cairo_t* cr, CanvasState* cs) {
             case CANVAS_STROKE:
                 cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
                 cairo_set_line_width(cr, c->x); // line_width stored in x
-                cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-                cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+                // cap/join from iw/ih (SVG defaults butt/miter).
+                if (c->iw == 1)      cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+                else if (c->iw == 2) cairo_set_line_cap(cr, CAIRO_LINE_CAP_SQUARE);
+                else                 cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
+                if (c->ih == 1)      cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+                else if (c->ih == 2) cairo_set_line_join(cr, CAIRO_LINE_JOIN_BEVEL);
+                else                 cairo_set_line_join(cr, CAIRO_LINE_JOIN_MITER);
                 cairo_stroke(cr);
                 break;
             case CANVAS_FILL_RECT:
@@ -1563,10 +1568,13 @@ void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y) {
     canvas_add_cmd(canvas_id, (CanvasCmd){ .type = CANVAS_LINE_TO, .x = x, .y = y });
 }
 
+// cap: 0=butt (SVG default), 1=round, 2=square. join: 0=miter (default),
+// 1=round, 2=bevel. Stored in the unused iw/ih int fields.
 void aether_ui_canvas_stroke_impl(int canvas_id, double r, double g, double b,
-                             double a, double line_width) {
+                             double a, double line_width, int cap, int join) {
     canvas_add_cmd(canvas_id, (CanvasCmd){
-        .type = CANVAS_STROKE, .r = r, .g = g, .b = b, .a = a, .x = line_width
+        .type = CANVAS_STROKE, .r = r, .g = g, .b = b, .a = a, .x = line_width,
+        .iw = cap, .ih = join
     });
 }
 

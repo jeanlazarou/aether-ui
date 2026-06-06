@@ -176,8 +176,9 @@ void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure);
 void aether_ui_canvas_begin_path_impl(int canvas_id);
 void aether_ui_canvas_move_to_impl(int canvas_id, double x, double y);
 void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y);
+// cap: 0=butt (SVG default) / 1=round / 2=square. join: 0=miter / 1=round / 2=bevel.
 void aether_ui_canvas_stroke_impl(int canvas_id, double r, double g, double b,
-                             double a, double line_width);
+                             double a, double line_width, int cap, int join);
 void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
                                 double w, double h,
                                 double r, double g, double b, double a);
