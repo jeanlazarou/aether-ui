@@ -7,10 +7,12 @@ For each SVG in the corpus, renders three ways and reports per-pixel MAE
 
   Reference  — librsvg (rsvg-convert), the "correct" answer.
   Loader     — AeVG loader.load_svg → canvas → PNG (the render pipeline).
-  Transpiled — SVG → AeVG vg{} source → compile → render → PNG (transpiler
-               fidelity). Requires the transpiler to emit compilable vg{} source
-               and a per-file build; skipped (column blank) if --no-transpile or
-               the build fails.
+  Transpiled — SVG → AeVG render fn → batched compile → render → PNG
+               (transpiler fidelity). All SVGs' render fns are bin-packed into
+               ~14 batch modules compiled once each (vs one compile per SVG).
+               There is NO per-file fallback: any emit/compile/render failure
+               raises TranspileError and aborts the run (exit 2), so a broken
+               transpiler can never produce a green-looking report.
 
 Produces a self-contained HTML report (sortable, worst-first) + CSVs.
 
@@ -93,7 +95,6 @@ def render_loader(svg_path: Path, output_path: Path) -> bool:
 
 # Tools for the transpiled column (built on demand).
 TRANSPILE_MODULE_BIN = AEVG_ROOT / 'build' / 'svg_transpile_module'   # vg{} source (for display)
-TRANSPILE_HARNESS_BIN = AEVG_ROOT / 'build' / 'svg_transpile_harness' # PNG harness emitter
 TRANSPILE_RENDERFN_BIN = AEVG_ROOT / 'build' / 'svg_transpile_render_fn'  # one render_<name> fn emitter
 
 
@@ -121,49 +122,6 @@ def transpile_to_source(svg_path: Path) -> str:
         return r.stdout.decode('utf-8', 'replace') if r.returncode == 0 else ''
     except Exception:
         return ''
-
-
-def render_transpiled(svg_path: Path, output_path: Path, work: Path) -> bool:
-    """Transpile the SVG to a headless PNG-render harness, BUILD it, RUN it →
-    PNG. This proves the generated vg{} source compiles and renders. Returns
-    True on success. Each SVG gets its own throwaway module + binary under
-    aevg/ (build.sh resolves imports relative to the source dir, so the .ae
-    must live there)."""
-    if not _ensure_built('aevg/svg_transpile_harness.ae', TRANSPILE_HARNESS_BIN):
-        return False
-    stem = svg_path.stem
-    # 1. Emit the harness .ae for this SVG.
-    try:
-        r = subprocess.run([str(TRANSPILE_HARNESS_BIN)],
-                           input=svg_path.read_bytes(),
-                           capture_output=True, timeout=20)
-        if r.returncode != 0 or not r.stdout:
-            return False
-    except Exception:
-        return False
-    # The generated module must sit in aevg/ for import resolution.
-    safe = ''.join(c if (c.isalnum() or c == '_') else '_' for c in stem)
-    gen_ae = AEVG_ROOT / 'aevg' / f'_gen_{safe}.ae'
-    gen_bin = AEVG_ROOT / 'build' / f'_gen_{safe}'
-    try:
-        gen_ae.write_bytes(r.stdout)
-        # 2. Build it.
-        b = subprocess.run([str(BUILD_SH), f'aevg/_gen_{safe}.ae', f'build/_gen_{safe}'],
-                           cwd=str(AEVG_ROOT), capture_output=True, text=True, timeout=120)
-        if not gen_bin.exists():
-            return False
-        # 3. Run it headless → PNG.
-        env = os.environ.copy()
-        env['AETHER_UI_HEADLESS'] = '1'
-        env['AEVG_OUT'] = str(output_path)
-        env['AEVG_SIZE'] = str(SIZE)
-        rr = subprocess.run([str(gen_bin)], env=env, capture_output=True, timeout=30)
-        return rr.returncode == 0 and output_path.exists()
-    except subprocess.TimeoutExpired:
-        return False
-    finally:
-        gen_ae.unlink(missing_ok=True)
-        gen_bin.unlink(missing_ok=True)
 
 
 def _fn_name(svg_path: Path) -> str:
@@ -198,11 +156,16 @@ _COMBINED_HEADER = (
 _COMBINED_BATCH_BUDGET = 300_000
 
 
-def _compile_combined_batch(idx: int, entries) -> dict:
+class TranspileError(Exception):
+    """A hard failure in the transpiled column. There is NO per-file fallback —
+    a failed emit, batch compile, or render aborts the whole run so a broken
+    transpiler can never masquerade as a passing report."""
+
+
+def _compile_combined_batch(idx: int, entries) -> Path:
     """entries: list of (svg_name, fn_name, body). Emit one batch module +
-    dispatch, compile it. Returns {bin: Path, names: [svg_name,...]} on
-    success, or {} if the batch failed to compile (caller falls those SVGs
-    back to the per-file path)."""
+    dispatch, compile it, return the binary path. Raises TranspileError if the
+    batch fails to compile — no fallback."""
     bin_path = AEVG_ROOT / 'build' / f'_gen_batch{idx}'
     gen_ae = AEVG_ROOT / 'aevg' / f'_gen_batch{idx}.ae'
     dispatch = [
@@ -226,14 +189,16 @@ def _compile_combined_batch(idx: int, entries) -> dict:
     try:
         b = subprocess.run([str(BUILD_SH), f'aevg/_gen_batch{idx}.ae', f'build/_gen_batch{idx}'],
                            cwd=str(AEVG_ROOT), capture_output=True, text=True, timeout=600)
-        if not bin_path.exists():
-            tok = 'maximum token limit' in (b.stdout + b.stderr)
-            print(f'  batch {idx} compile FAILED ({"token limit" if tok else "error"}) — '
-                  f'{len(entries)} SVGs fall back to per-file', file=sys.stderr)
-            return {}
     finally:
         gen_ae.unlink(missing_ok=True)
-    return {'bin': bin_path, 'names': [nm for nm, _, _ in entries]}
+    if not bin_path.exists():
+        tok = 'maximum token limit' in (b.stdout + b.stderr)
+        why = ('exceeded aetherc token limit — lower _COMBINED_BATCH_BUDGET'
+               if tok else 'aetherc/cc error')
+        raise TranspileError(
+            f'batch {idx} ({len(entries)} SVGs) failed to compile: {why}\n'
+            f'{(b.stdout + b.stderr)[-1500:]}')
+    return bin_path
 
 
 def build_combined_harness(svgs) -> dict:
@@ -242,15 +207,15 @@ def build_combined_harness(svgs) -> dict:
     ~88% of a --transpile run; ~14 batch compiles instead of 208 per-file
     compiles cuts a full run from ~7min to ~90s.
 
-    Returns {ok, routes: {svg_name: bin_path}} — routes maps each SVG to the
-    batch binary that can render it (via AEVG_WHICH). SVGs whose emit failed,
-    or whose batch failed to compile, are absent from routes and fall back to
-    the per-file render_transpiled path. ok=False (nothing routable) → full
-    per-file fallback."""
+    Returns {routes: {svg_name: bin_path}} covering EVERY input SVG. There is
+    no fallback: a failed emit or a failed batch compile raises TranspileError
+    and aborts the run (caller exits nonzero). A broken transpiler must never
+    produce a green-looking report."""
     if not _ensure_built('aevg/svg_transpile_render_fn.ae', TRANSPILE_RENDERFN_BIN):
-        return {'ok': False, 'routes': {}}
+        raise TranspileError(
+            f'could not build the render-fn emitter ({TRANSPILE_RENDERFN_BIN.name})')
 
-    # 1. Emit every render fn, recording body size for packing.
+    # 1. Emit every render fn (any failure aborts), recording size for packing.
     emitted = []  # (svg_name, fn_name, body, size)
     for svg in svgs:
         fn = _fn_name(svg)
@@ -259,17 +224,16 @@ def build_combined_harness(svgs) -> dict:
                                input=svg.read_bytes(),
                                env={**os.environ, 'AEVG_FN': fn},
                                capture_output=True, timeout=20)
-        except Exception:
-            continue
+        except Exception as e:
+            raise TranspileError(f'{svg.name}: render-fn emit crashed: {e}')
         if r.returncode != 0 or not r.stdout:
-            continue
+            raise TranspileError(
+                f'{svg.name}: render-fn emit failed (rc={r.returncode})\n'
+                f'{r.stderr.decode("utf-8", "replace")[-800:]}')
         body = r.stdout.decode('utf-8', 'replace')
         if f'render_{fn}(' not in body:
-            continue
+            raise TranspileError(f'{svg.name}: render-fn emit produced no render_{fn}()')
         emitted.append((svg.name, fn, body, len(body)))
-
-    if not emitted:
-        return {'ok': False, 'routes': {}}
 
     # 2. Greedy bin-pack biggest-first under the byte budget.
     emitted.sort(key=lambda e: -e[3])
@@ -282,14 +246,14 @@ def build_combined_harness(svgs) -> dict:
         if not placed:
             bins.append({'sz': sz, 'entries': [(name, fn, body)]})
 
-    # 3. Compile each batch; build the route table from successes.
+    # 3. Compile each batch (any failure aborts); build the full route table.
     routes = {}
     for i, bn in enumerate(bins):
-        res = _compile_combined_batch(i, bn['entries'])
-        for nm in res.get('names', []):
-            routes[nm] = res['bin']
-    print(f'  combined: {len(bins)} batches, {len(routes)}/{len(emitted)} SVGs routed', flush=True)
-    return {'ok': bool(routes), 'routes': routes}
+        bin_path = _compile_combined_batch(i, bn['entries'])
+        for nm, _, _ in bn['entries']:
+            routes[nm] = bin_path
+    print(f'  combined: {len(bins)} batches, {len(routes)} SVGs routed', flush=True)
+    return {'routes': routes}
 
 
 def cleanup_combined(routes) -> None:
@@ -299,10 +263,9 @@ def cleanup_combined(routes) -> None:
         bin_path.with_suffix('.c').unlink(missing_ok=True)
 
 
-def render_transpiled_combined(bin_path: Path, svg_name: str, output_path: Path) -> bool:
-    """Render one SVG via its prebuilt batch binary, selected by AEVG_WHICH."""
-    if not bin_path.exists():
-        return False
+def render_transpiled_combined(bin_path: Path, svg_name: str, output_path: Path) -> None:
+    """Render one SVG via its prebuilt batch binary, selected by AEVG_WHICH.
+    Raises TranspileError on any failure — no fallback."""
     env = os.environ.copy()
     env['AETHER_UI_HEADLESS'] = '1'
     env['AEVG_OUT'] = str(output_path)
@@ -310,9 +273,13 @@ def render_transpiled_combined(bin_path: Path, svg_name: str, output_path: Path)
     env['AEVG_WHICH'] = svg_name
     try:
         rr = subprocess.run([str(bin_path)], env=env, capture_output=True, timeout=30)
-        return rr.returncode == 0 and output_path.exists()
     except subprocess.TimeoutExpired:
-        return False
+        raise TranspileError(f'{svg_name}: transpiled render timed out')
+    if rr.returncode != 0 or not output_path.exists():
+        raise TranspileError(
+            f'{svg_name}: transpiled render failed (rc={rr.returncode})\n'
+            f'{rr.stdout.decode("utf-8", "replace")[-400:]}'
+            f'{rr.stderr.decode("utf-8", "replace")[-400:]}')
 
 
 def png_to_data_uri(png_path: Path) -> str:
@@ -457,9 +424,6 @@ def main():
     ap.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
     ap.add_argument('--limit', type=int, default=0, help='only first N (smoke)')
     ap.add_argument('--transpile', action='store_true', help='also build+render transpiled column')
-    ap.add_argument('--no-combined', action='store_true',
-                    help='disable the single-compile combined transpiled harness '
-                         '(use the slower per-file compile path)')
     ap.add_argument('--no-open', action='store_true')
     args = ap.parse_args()
 
@@ -486,17 +450,20 @@ def main():
     if not svgs:
         print('No SVGs found'); return 1
 
-    # Build the combined single-compile transpiled harness once (default for
-    # --transpile). One aetherc+link for the whole corpus instead of one per
-    # SVG — the per-file compile is ~88% of a --transpile run. Falls back to
-    # the per-file render_transpiled path if the combined compile fails.
-    combined = {'ok': False, 'routes': {}}
-    if args.transpile and not args.no_combined:
+    # Build the batched combined transpiled harness once: one aetherc+link per
+    # ~300KB batch (~14 for the corpus) instead of one per SVG (~88% of a
+    # --transpile run). There is NO per-file fallback — any emit/compile/render
+    # failure raises TranspileError and aborts, so a broken transpiler can never
+    # produce a green-looking report.
+    combined = {'routes': {}}
+    if args.transpile:
         print(f'Building combined transpiled harness ({len(svgs)} renders, batched compiles)…',
               flush=True)
-        combined = build_combined_harness(svgs)
-        if not combined['ok']:
-            print('  combined harness unavailable — per-file fallback', flush=True)
+        try:
+            combined = build_combined_harness(svgs)
+        except TranspileError as e:
+            print(f'\nTRANSPILE ABORT: {e}', file=sys.stderr)
+            return 2
 
     results = []
     for i, svg in enumerate(svgs):
@@ -523,20 +490,24 @@ def main():
         transpiled_source = transpile_to_source(svg) if args.transpile else ''
         if args.transpile:
             tpng = out / f'{svg.stem}_transpiled.png'
-            # Prefer the combined binary (dispatch by name); fall back to the
-            # per-file compile when this SVG isn't in the combined build.
-            rendered = False
-            route = combined['routes'].get(svg.name) if combined['ok'] else None
-            if route is not None:
-                rendered = render_transpiled_combined(route, svg.name, tpng)
-            if not rendered:
-                rendered = render_transpiled(svg, tpng, out)
-            if rendered:
-                transpiled_uri = png_to_data_uri(tpng)
-                try:
-                    transpiled_mae = pixel_mae(ref, _composite_white(tpng))
-                except ImportError:
-                    pass
+            # Every SVG must route to a batch binary; render via AEVG_WHICH.
+            # A missing route or a render failure aborts — no fallback.
+            route = combined['routes'].get(svg.name)
+            if route is None:
+                cleanup_combined(combined['routes'])
+                print(f'\nTRANSPILE ABORT: {svg.name} has no batch route', file=sys.stderr)
+                return 2
+            try:
+                render_transpiled_combined(route, svg.name, tpng)
+            except TranspileError as e:
+                cleanup_combined(combined['routes'])
+                print(f'\nTRANSPILE ABORT: {e}', file=sys.stderr)
+                return 2
+            transpiled_uri = png_to_data_uri(tpng)
+            try:
+                transpiled_mae = pixel_mae(ref, _composite_white(tpng))
+            except ImportError:
+                pass
 
         tag = ('?' if loader_mae < 0 else '✓' if loader_mae < 20
                else '~' if loader_mae < 40 else '✗')
