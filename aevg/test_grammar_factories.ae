@@ -109,6 +109,21 @@ main() {
     assert_near("letterbox map_y(0)",   grammar_rendering.map_y(ctx3, 0.0), 50.0)
     assert_near("letterbox map_y(50)",  grammar_rendering.map_y(ctx3, 50.0), 150.0)
 
+    // ─── viewBox + a mismatched-aspect viewport (the Inkscape case) ──
+    // viewBox 0 0 100 200 (1:2 tall), intrinsic viewport 200×100 (2:1 wide),
+    // canvas 400×400. Two-step: viewBox→viewport meet fits by height
+    // (100/200 = 0.5); viewport 200×100 → canvas fits by min(400/200,400/100)=2.
+    // Combined scale = 0.5 * 2 = 1.0. Without the viewport step (mapping viewBox
+    // straight to 400) the scale would be 2.0 — the compuserver/gump-bench bug.
+    o_vp = grammar_factories.opts_new()
+    grammar_factories.opts_set_view_box(o_vp, "0 0 100 200")
+    grammar_factories.opts_set_width(o_vp, 400.0)
+    grammar_factories.opts_set_height(o_vp, 400.0)
+    grammar_factories.opts_set_viewport(o_vp, 200.0, 100.0)
+    ctx_vp = grammar_factories.create_aevg_context(o_vp)
+    m_vp = grammar_context.ctx_mapping(ctx_vp)
+    assert_near("viewport two-step scale", grammar_context.mapping_scale(m_vp), 1.0)
+
     // ─── Non-origin viewBox "-10 -5 100 50" — origin offset ──────
     o4 = grammar_factories.opts_new()
     grammar_factories.opts_set_view_box(o4, "-10 -5 100 50")

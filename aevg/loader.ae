@@ -430,6 +430,30 @@ load_svg(backend: ptr, svg_string: string, canvas_w: float, canvas_h: float) -> 
         grammar_factories.opts_set_preserve_aspect_ratio(opts,
             attr_get(root, "preserveAspectRatio"))
     }
+    // The SVG's intrinsic viewport from its root width/height attrs (non-%).
+    // When their aspect differs from the viewBox, this drives the two-step
+    // viewBox→viewport→canvas mapping so the result is letterboxed like librsvg
+    // (Inkscape exports: width/height ≠ viewBox AR). Ignored when viewport ==
+    // canvas aspect (the common case), so no effect on square SVGs.
+    if attr_has(root, "width") == 1 {
+        if attr_has(root, "height") == 1 {
+            wstr = attr_get(root, "width")
+            hstr = attr_get(root, "height")
+            // Skip percentage sizes (e.g. width="100%") — those mean "fill the
+            // container", not an intrinsic aspect (matches TS's !includes('%')).
+            if string.ends_with(wstr, "%") == 0 {
+                if string.ends_with(hstr, "%") == 0 {
+                    svg_w = grammar_utils.parse_length_to_px(wstr)
+                    svg_h = grammar_utils.parse_length_to_px(hstr)
+                    if svg_w > 0.0 {
+                        if svg_h > 0.0 {
+                            grammar_factories.opts_set_viewport(opts, svg_w, svg_h)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     ctx = grammar_factories.create_aevg_context(opts)
 

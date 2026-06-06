@@ -34,7 +34,7 @@
 
 exports (
     AevgOptions, opts_new, opts_set_view_box, opts_set_width,
-    opts_set_height, opts_set_preserve_aspect_ratio,
+    opts_set_height, opts_set_preserve_aspect_ratio, opts_set_viewport,
     create_aevg_context, aevg
 )
 
@@ -54,18 +54,32 @@ extern malloc(size: int) -> ptr
 
 struct AevgOptions {
     view_box: string
-    width: float
-    height: float
+    width: float            // canvas width (px)
+    height: float           // canvas height (px)
     preserve_aspect_ratio: string
+    vp_w: float             // SVG intrinsic viewport width (root width attr); 0 = use canvas
+    vp_h: float             // SVG intrinsic viewport height (root height attr); 0 = use canvas
 }
 
 opts_new() -> ptr {
-    o = malloc(40) as *AevgOptions
+    o = malloc(64) as *AevgOptions
     o.view_box = ""
     o.width = 0.0
     o.height = 0.0
     o.preserve_aspect_ratio = ""
+    o.vp_w = 0.0
+    o.vp_h = 0.0
     return o
+}
+
+// Set the SVG's intrinsic viewport (its root width/height attrs). When these
+// differ in aspect from the viewBox, the viewBox→viewport→canvas two-step
+// produces the correct letterboxed result (e.g. Inkscape exports with
+// width/height ≠ viewBox aspect). 0 leaves viewport == canvas.
+opts_set_viewport(p: ptr, w: float, h: float) {
+    o = p as *AevgOptions
+    o.vp_w = w
+    o.vp_h = h
 }
 
 opts_set_view_box(p: ptr, vb: string) {
@@ -191,11 +205,15 @@ create_aevg_context(opts: ptr) -> ptr {
     align_y = grammar_utils.aspect_align_y(par)
     mos = grammar_utils.aspect_meet_or_slice(par)
 
-    // Without rootAttrs.width/height, viewport == canvas.
+    // The SVG's intrinsic viewport = its root width/height attrs (if set, and
+    // not %); else the canvas. When the viewport aspect differs from the
+    // viewBox aspect, the two-step mapping below letterboxes correctly —
+    // matching librsvg on Inkscape exports where width/height ≠ viewBox AR.
     vp_w = cw
     vp_h = ch
+    if o.vp_w > 0.0 { if o.vp_h > 0.0 { vp_w = o.vp_w   vp_h = o.vp_h } }
 
-    // Step 1: viewBox → viewport.
+    // Step 1: viewBox → viewport (preserveAspectRatio).
     scale_x_vb = vp_w / vb_w
     scale_y_vb = vp_h / vb_h
     scale_vb = scale_x_vb
@@ -211,10 +229,15 @@ create_aevg_context(opts: ptr) -> ptr {
     if string.equals(align_y, "Mid") == 1 { ty_vb = (vp_h - vb_h * scale_vb) / 2.0 }
     if string.equals(align_y, "Max") == 1 { ty_vb = vp_h - vb_h * scale_vb }
 
-    // Step 2: viewport → canvas (currently identity since vp == canvas).
-    scale_c = 1.0
-    tx_c = 0.0
-    ty_c = 0.0
+    // Step 2: viewport → canvas — uniform fit (min scale), centered. Identity
+    // when vp == canvas; when the SVG's width/height set a non-canvas viewport,
+    // this fits that intrinsic box into the canvas (preserving its aspect).
+    scale_x_c = cw / vp_w
+    scale_y_c = ch / vp_h
+    scale_c = scale_x_c
+    if scale_y_c < scale_c { scale_c = scale_y_c }
+    tx_c = (cw - vp_w * scale_c) / 2.0
+    ty_c = (ch - vp_h * scale_c) / 2.0
 
     // Combined affine: translate(offset) ∘ scale(scale) ∘ translate(-vb.min)
     scale = scale_c * scale_vb
