@@ -1,0 +1,89 @@
+// aevg/test_vg_interactive.ae — interactive fill: click an element, recolor it.
+//
+// Proves the imperative interaction loop end to end at the dispatch level
+// (headless, no window): a deferred vg scene attaches an on_click handler to a
+// circle whose body recolors the element via vg.element_set_fill; flushing the
+// scene track_element's the circle (with its canvas-px bounds); a synthetic
+// grammar_events.dispatch_click at the circle's centre fires the handler; and
+// the element's cached fill flips. Because vg_flush reads element_last_fill
+// LIVE at flush time (verified in vg.ae), a re-flush would repaint the new
+// colour — the windowed example_aevg_interactive demonstrates the actual
+// pixel; here we assert the state transition that drives it.
+//
+// Identity viewBox (mapping_new 100→100), so SVG (50,50) == canvas (50,50) and
+// the circle r=20 has canvas-px bounds (30,30,40,40): a click at (50,50) hits.
+
+import vg
+import aevg_backend
+import grammar_context
+import grammar_element
+import grammar_events
+import transform
+import std.string
+import std.list
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = grammar_context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return grammar_context.new_context(m)
+}
+
+main() {
+    println("=== test_vg_interactive ===")
+
+    ctx = mk_ctx()
+    bk = aevg_backend.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    es = grammar_events.event_state_new()
+    vg.scene_set_event_state(scene, es)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    // circle(50,50,20) { fill("#ff0000"); on_click { set_fill green } }
+    cnode = vg.circle(root, 50.0, 50.0, 20.0)
+    cel = vg.node_element(cnode)
+    vg.fill(cnode, "#ff0000")
+    vg.on_click(cnode) callback |x: float, y: float| {
+        vg.element_set_fill(cel, "#00ff00")
+    }
+
+    // A decorative neighbour with no handler — must NOT be tracked / hit.
+    dnode = vg.rect(root, 0.0, 0.0, 5.0, 5.0)
+    vg.fill(dnode, "blue")
+
+    assert_eq_str("initial fill red", grammar_element.element_last_fill(cel), "#ff0000")
+
+    // Flush: dispatches shapes, copies the circle's canvas-px bounds onto the
+    // placeholder, and tracks it (only the interactive circle).
+    vg.vg_flush(scene)
+
+    tracked = grammar_context.ctx_tracked_elements(ctx)
+    // Only the circle is interactive; the rect has no handler.
+    assert_eq_int("only interactive element tracked", list.size(tracked), 1)
+
+    // Click the circle's centre → handler recolors it green.
+    grammar_events.dispatch_click(es, ctx, 50.0, 50.0)
+    assert_eq_str("fill after click is green", grammar_element.element_last_fill(cel), "#00ff00")
+
+    // Click outside the circle → no change (still green, no crash).
+    grammar_events.dispatch_click(es, ctx, 95.0, 95.0)
+    assert_eq_str("click outside: unchanged", grammar_element.element_last_fill(cel), "#00ff00")
+
+    // Re-flush is safe and does not double-track (re-render path after recolor).
+    vg.vg_flush(scene)
+    assert_eq_int("re-flush: still one tracked", list.size(tracked), 1)
+
+    println("=== test_vg_interactive passed ===")
+}

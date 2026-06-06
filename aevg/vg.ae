@@ -41,9 +41,15 @@ exports (
     view_box,
     circle, rect, line, path, text, g,
     fill, stroke, opacity, transform, linecap, linejoin,
+    // Interaction modifiers (attach a handler to the shape's element).
+    on_click, on_hover, on_double_click, on_right_click, cursor, tooltip,
+    // Re-exported element mutators so a handler can recolor the element it
+    // captured: vg.element_set_fill(el, "#0f0") inside an on_click closure.
+    element_set_fill, element_set_stroke, element_set_opacity,
     // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
     scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
     scene_set_canvas, scene_canvas, scene_set_ctx, mk_node,
+    scene_set_event_state, scene_event_state,
     // Deferred flush (the live path): record shapes during the block, then
     // dispatch them with their final cached style after the block closes.
     scene_set_deferred, scene_is_deferred, vg_flush
@@ -54,6 +60,7 @@ import std.map
 import std.list
 import grammar_shapes
 import grammar_element
+import grammar_events
 import parser
 
 extern malloc(size: int) -> ptr
@@ -82,6 +89,7 @@ struct VgScene {
     canvas_id: int  // aether_ui canvas handle (for redraw)
     deferred: int   // 1 = record into `pending` + flush after block
     pending: ptr    // std.list of *VgPending (draw order); null until deferred
+    event_state: ptr // *grammar_events.EventState — shared hover/drag/click state
 }
 
 // One deferred shape: enough to dispatch it after its style is known.
@@ -95,6 +103,7 @@ struct VgPending {
     tx: float       // text only: x
     ty: float       // text only: y
     content: string // text only: the string
+    tracked: int    // 1 once track_element'd (re-flush must not double-track)
 }
 
 // PAYLOAD_NONE / ELEMENT / GROUP — what the VgNode's payload is.
@@ -132,14 +141,21 @@ scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
 // canvas" (headless / recording). vg_root wraps it as the root VgNode the
 // shape verbs accept as _ctx.
 scene_new(ctx: ptr, backend: ptr) -> ptr {
-    s = malloc(48) as *VgScene
+    s = malloc(56) as *VgScene
     s.ctx = ctx
     s.backend = backend
     s.canvas_id = 0
     s.deferred = 0
     s.pending = null
+    s.event_state = null
     return s
 }
+
+// event_state — the scene's shared hover/drag/click state. vg_live creates one
+// (grammar_events.event_state_new) so the canvas click handler and shape
+// tracking share it. null = no interaction wired (headless eager path).
+scene_set_event_state(p: ptr, es: ptr) { s = p as *VgScene; s.event_state = es }
+scene_event_state(p: ptr) -> ptr       { s = p as *VgScene; return s.event_state }
 
 // scene_set_deferred(scene, 1) — switch the scene to deferred mode (live
 // path). Allocates the pending list. Idempotent.
@@ -329,6 +345,55 @@ linejoin(_ctx: ptr, v: string) {
     }
 }
 
+// ─── interaction modifiers ───────────────────────────────────────
+//
+// Attach an event handler / cursor / tooltip to this shape's element. The
+// handler is stored on the placeholder element; at flush the element is
+// track_element'd into the context so dispatch_click/hover hit-test it. The
+// handler closure can capture the element (returned by the shape verb) and
+// recolor it: `c = circle(…) { fill("#f00") }; on_click(c) { ... set_fill }`.
+
+on_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_on_click(el, h) }
+}
+
+on_hover(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_on_hover(el, h) }
+}
+
+on_double_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_on_double_click(el, h) }
+}
+
+on_right_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_on_right_click(el, h) }
+}
+
+cursor(_ctx: ptr, c: string) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_set_cursor(el, c) }
+}
+
+tooltip(_ctx: ptr, t: string) {
+    el = node_payload(_ctx)
+    if el != null { grammar_element.element_set_tooltip(el, t) }
+}
+
+// ─── element mutators (re-exported for handler bodies) ───────────
+//
+// A handler recolors the element it captured. These forward to grammar_element
+// so callers need only `import vg`, not grammar_element too.
+
+element_set_fill(el: ptr, color: string) { grammar_element.element_set_fill(el, color) }
+element_set_stroke(el: ptr, color: string, width: float) {
+    grammar_element.element_set_stroke(el, color, width)
+}
+element_set_opacity(el: ptr, value: float) { grammar_element.element_set_opacity(el, value) }
+
 // ─── deferred recording + flush (live path) ──────────────────────
 //
 // record_shape / record_text build a placeholder element (the fill/stroke/
@@ -340,11 +405,12 @@ linejoin(_ctx: ptr, v: string) {
 record_shape(scene: ptr, kind: int, attrs: ptr) -> ptr {
     s = scene as *VgScene
     el = grammar_element.element_new(null)
-    p = malloc(48) as *VgPending
+    p = malloc(64) as *VgPending
     p.kind = kind
     p.attrs = attrs
     p.element = el
     p.content = ""
+    p.tracked = 0
     _ = list.add(s.pending, p)
     return mk_node(scene, el)
 }
@@ -352,13 +418,14 @@ record_shape(scene: ptr, kind: int, attrs: ptr) -> ptr {
 record_text(scene: ptr, x: float, y: float, content: string) -> ptr {
     s = scene as *VgScene
     el = grammar_element.element_new(null)
-    p = malloc(48) as *VgPending
+    p = malloc(64) as *VgPending
     p.kind = 4
     p.attrs = null
     p.element = el
     p.tx = x
     p.ty = y
     p.content = content
+    p.tracked = 0
     _ = list.add(s.pending, p)
     return mk_node(scene, el)
 }
@@ -373,12 +440,13 @@ vg_flush(scene: ptr) {
     if s.pending == null { return }
     ctx = s.ctx
     be = s.backend
+    es = s.event_state
     n = list.size(s.pending)
     i = 0
     while i < n {
         item, _ = list.get(s.pending, i)
         p = item as *VgPending
-        flush_one(ctx, be, p)
+        flush_one_tracked(ctx, be, p, es)
         i = i + 1
     }
 }
@@ -387,19 +455,59 @@ vg_flush(scene: ptr) {
 // map (as presentation attributes — highest priority in resolve_style), then
 // dispatch via the same grammar_shapes path the eager mode uses.
 flush_one(ctx: ptr, be: ptr, p: ptr) {
+    flush_one_tracked(ctx, be, p, null)
+}
+
+// As flush_one, but if `es` (the scene's EventState) is non-null and the
+// placeholder element carries any interaction (handler/cursor/tooltip), copy
+// the freshly-dispatched element's canvas-px bounds onto the placeholder and
+// track it so dispatch_click/hover can hit-test it. The placeholder is the
+// event entity (it holds the user's handlers); the dispatched element only
+// draws — so the bounds must be copied across.
+flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
     pend = p as *VgPending
     el = pend.element
     if pend.kind == 4 {
-        // text rebuilds an SvgNode (shape_text takes a parsed node, not attrs).
         flush_text(ctx, be, pend)
         return
     }
     a = pend.attrs
     apply_cached_style(a, el)
-    if pend.kind == 0 { _ = grammar_shapes.shape_circle(ctx, be, a) }
-    if pend.kind == 1 { _ = grammar_shapes.shape_rectangle(ctx, be, a) }
-    if pend.kind == 2 { _ = grammar_shapes.shape_line(ctx, be, a) }
-    if pend.kind == 3 { _ = grammar_shapes.shape_path(ctx, be, a) }
+    drawn = null
+    if pend.kind == 0 { drawn = grammar_shapes.shape_circle(ctx, be, a) }
+    if pend.kind == 1 { drawn = grammar_shapes.shape_rectangle(ctx, be, a) }
+    if pend.kind == 2 { drawn = grammar_shapes.shape_line(ctx, be, a) }
+    if pend.kind == 3 { drawn = grammar_shapes.shape_path(ctx, be, a) }
+    if es != null {
+        if element_is_interactive(el) == 1 {
+            if drawn != null {
+                if grammar_element.element_has_bounds(drawn) == 1 {
+                    grammar_element.element_set_bounds(el,
+                        grammar_element.element_bounds_x(drawn),
+                        grammar_element.element_bounds_y(drawn),
+                        grammar_element.element_bounds_width(drawn),
+                        grammar_element.element_bounds_height(drawn))
+                }
+            }
+            // Track once: re-flush (after a click recolor) must not re-add.
+            if pend.tracked == 0 {
+                grammar_events.track_element(ctx, el)
+                pend.tracked = 1
+            }
+        }
+    }
+}
+
+// An element participates in hit-testing if it has any handler, cursor, or
+// tooltip (the union grammar_events.find_topmost_hoverable / *_with_click use).
+element_is_interactive(el: ptr) -> int {
+    if grammar_element.element_click_handler(el) != null { return 1 }
+    if grammar_element.element_hover_handler(el) != null { return 1 }
+    if grammar_element.element_double_click_handler(el) != null { return 1 }
+    if grammar_element.element_right_click_handler(el) != null { return 1 }
+    if string.length(grammar_element.element_cursor(el)) > 0 { return 1 }
+    if string.length(grammar_element.element_tooltip(el)) > 0 { return 1 }
+    return 0
 }
 
 flush_text(ctx: ptr, be: ptr, p: ptr) {
