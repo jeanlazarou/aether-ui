@@ -202,6 +202,14 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_raster_demo.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    if "$SCRIPT_DIR/build.sh" aevg/example_vg.ae build/vg_demo \
+            > /tmp/ci_build_vg_demo.log 2>&1; then
+        echo "  OK   vg_demo (vg{} drawing DSL on a live window)"
+    else
+        echo "  FAIL vg_demo"
+        tail -15 /tmp/ci_build_vg_demo.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then

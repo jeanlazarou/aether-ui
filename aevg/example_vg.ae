@@ -1,0 +1,49 @@
+// example_vg.ae — the AeVG drawing DSL on a live window.
+//
+// A window surface containing a vg scene: shapes read like the SVG they
+// describe — positional geometry, optional trailing config block. This is
+// the hand-authoring form (and the transpiler's target). Run it on a real
+// display:  DISPLAY=:0 ./build/vg_demo
+
+import aether_ui                  // full — transitive canvas_* must resolve
+import aether_ui (window)         // companion — bare `window`
+import vg_live (vg)
+import vg                         // full — vg_live uses vg.scene_new transitively
+import vg (view_box, circle, rect, line, path, text, g, fill, stroke)  // bare DSL
+
+main() {
+    window("AeVG — drawing DSL", 420, 320) {
+        vg(view_box(0, 0, 100, 100), 400, 300) {
+            // Solid + stroked rect.
+            rect(8, 8, 30, 20) {
+                fill("#4488cc")
+                stroke("#003366", 1)
+            }
+            // Filled circle (no stroke).
+            circle(70, 22, 14) {
+                fill("#cc4444")
+            }
+            // A bare circle — no trailing block — renders with default fill.
+            circle(20, 60, 8)
+            // A line.
+            line(8, 45, 92, 45) {
+                stroke("#333333", 1)
+            }
+            // A filled, stroked cubic path.
+            path("M 50 55 C 60 45 75 45 85 55 L 85 70 L 50 70 Z") {
+                fill("#66aa55")
+                stroke("#224411", 1)
+            }
+            // A group containing a shape (passthrough scope for now).
+            g() {
+                circle(45, 25, 5) {
+                    fill("#ddaa22")
+                }
+            }
+            // Text.
+            text(8, 90, "Hello AeVG") {
+                fill("#222222")
+            }
+        }
+    }
+}

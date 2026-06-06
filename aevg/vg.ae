@@ -43,7 +43,7 @@ exports (
     fill, stroke, opacity,
     // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
     scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
-    mk_node
+    scene_set_canvas, scene_canvas, mk_node
 )
 
 import std.string
@@ -80,6 +80,11 @@ node_payload(p: ptr) -> ptr { n = p as *VgNode; return n.payload }
 
 scene_ctx(p: ptr) -> ptr     { s = p as *VgScene; return s.ctx }
 scene_backend(p: ptr) -> ptr { s = p as *VgScene; return s.backend }
+
+// canvas_id accessors — the live vg verb (vg_live.ae) stores the aether_ui
+// canvas handle here so vg_redraw can present it. 0 = headless / recording.
+scene_set_canvas(p: ptr, cid: int) { s = p as *VgScene; s.canvas_id = cid }
+scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
 
 // scene_new(ctx, backend) — build a scene around an AevgContext + any
 // backend (recording stub, GTK adapter, …). canvas_id 0 means "no live

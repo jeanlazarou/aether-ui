@@ -1,0 +1,93 @@
+// aevg/vg_live.ae — the live (GTK-backed) `vg(…) { … }` scene verb.
+//
+// The drawing verbs (circle/rect/…/fill/stroke) live in the pure `vg` module
+// (no aether_ui coupling, testable headless). This module adds the one piece
+// that needs the real toolkit: `vg(view_box(…), w, h) { … }`, which creates a
+// live canvas attached to the enclosing aether_ui surface, builds the
+// AevgContext (viewBox→canvas mapping) + a GTK backend, and hands a VgNode
+// root to the pure shape verbs — so a window/render_to/record block can
+// contain a vg scene:
+//
+//   window("AeVG", 400, 300) {
+//       vg(view_box(0,0,100,100), 400, 300) {
+//           circle(50, 50, 20) { fill("#F00") }
+//           rect(10, 10, 40, 30) { fill("blue"); stroke("#003", 2) }
+//       }
+//   }
+//
+// `vg` is a *regular* trailing-block builder (function-first): it runs before
+// the block, creating the canvas + scene, and returns the VgNode pushed as
+// _ctx so the block's shapes draw into it. Nothing needs to run after the
+// block — the cairo command buffer is built as shapes draw; the surface
+// presents it. (Contrast the surface verbs window/render_to/record, which use
+// `builder … with` because their loop/flush body must run after.)
+//
+// IMPORT PREAMBLE GOTCHA: a consumer that wants the bare DSL names (`window`,
+// `circle`, `fill`, …) AND links this module needs the companion-import
+// pattern — a full `import M` (so M's functions used *transitively* by
+// vg_live/aevg_gtk_backend resolve, e.g. aether_ui.canvas_*, vg.scene_new)
+// PLUS a selective `import M (names…)` (so the names read bare in the block).
+// A selective import alone shadows the full module for transitive callees;
+// see example_vg.ae's 4-line preamble.
+
+exports ( vg, vg_redraw )
+
+import aether_ui
+import vg
+import grammar_factories
+import aevg_gtk_backend
+
+extern malloc(size: int) -> ptr
+
+// vg(view_box, w, h) { … } — open a live vector-graphics scene inside the
+// enclosing surface (_ctx). Creates the canvas (attached to the surface),
+// the AevgContext, and a GTK backend; returns the VgNode root that the
+// shape verbs accept as their _ctx.
+vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
+    // Canvas attached to the enclosing surface container (_ctx).
+    canvas_id = _canvas_create_attached(_ctx, w, h)
+    backend = aevg_gtk_backend.gtk_backend_new(canvas_id)
+
+    // AevgContext: viewBox → canvas mapping at w×h px.
+    opts = grammar_factories.opts_new()
+    grammar_factories.opts_set_view_box(opts, vb)
+    grammar_factories.opts_set_width(opts, int_to_f(w))
+    grammar_factories.opts_set_height(opts, int_to_f(h))
+    ctx = grammar_factories.create_aevg_context(opts)
+
+    // Wrap (ctx, backend, canvas) in a vg scene + root node. The canvas id is
+    // stored on the scene (vg.scene_set_canvas) so vg_redraw can present it.
+    scene = vg.scene_new(ctx, backend)
+    vg.scene_set_canvas(scene, canvas_id)
+    return vg.vg_root(scene)
+}
+
+// vg_redraw — present the scene's canvas (the id stored by vg()).
+vg_redraw(node: ptr) {
+    cid = vg.scene_canvas(vg.node_scene(node))
+    if cid != 0 {
+        aether_ui.canvas_redraw(cid)
+    }
+}
+
+// ─── canvas wiring ───────────────────────────────────────────────
+
+// Create a canvas and attach it to the surface _ctx (mirrors
+// aether_ui.canvas_create's ctx behaviour, calling the externs directly so
+// we pass the vg call's surface _ctx through).
+extern aether_ui_canvas_create_impl(width: int, height: int) -> int
+extern aether_ui_canvas_get_widget(canvas_id: int) -> int
+extern aether_ui_widget_add_child_ctx(parent_ctx: ptr, child_handle: int)
+_canvas_create_attached(surface_ctx: ptr, w: int, h: int) -> int {
+    cid = aether_ui_canvas_create_impl(w, h)
+    wh = aether_ui_canvas_get_widget(cid)
+    if surface_ctx != null {
+        aether_ui_widget_add_child_ctx(surface_ctx, wh)
+    }
+    return cid
+}
+
+// int→float — division by a float literal promotes (verified idiom).
+int_to_f(i: int) -> float {
+    return i / 1.0
+}
