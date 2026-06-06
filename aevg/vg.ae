@@ -663,12 +663,11 @@ scene_live_regions(scene: ptr) -> ptr {
 scene_render_live_draws(scene: ptr, t: float) {
     s = scene as *VgScene
     if s.live_regions == null { return }
-    // Draw callbacks dispatch EAGERLY (transient, per-frame) so their shapes go
-    // straight to the just-cleared buffer and leave no residue in `pending`
-    // (which would grow unboundedly across frames). An eager sub-scene shares
-    // this scene's ctx + backend.
-    eager = scene_new(s.ctx, s.backend)
-    eroot = vg_root(eager)
+    // Each frame gets a FRESH deferred sub-scene sharing this scene's ctx +
+    // backend: the callback's shapes record into it (so a shape's trailing
+    // fill() is known before dispatch — same colour-ordering fix as the main
+    // scene), then we flush that sub-scene to the backend and discard it. Fresh
+    // each frame → no `pending` accumulation across frames.
     n = list.size(s.live_regions)
     i = 0
     while i < n {
@@ -676,9 +675,10 @@ scene_render_live_draws(scene: ptr, t: float) {
         if live_region.region_kind(item) == live_region.LIVE_DRAW() {
             df = live_region.region_draw_fn(item)
             if df != null {
-                // Callback gets (eager_root_node, t): draws via the vg verbs
-                // against the eager scene, capture-free.
-                live_region.invoke_region_draw(df, eroot, t)
+                sub = scene_new(s.ctx, s.backend)
+                scene_set_deferred(sub, 1)
+                live_region.invoke_region_draw(df, vg_root(sub), t)
+                vg_flush(sub)
             }
         }
         i = i + 1
