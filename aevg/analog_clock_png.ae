@@ -19,6 +19,7 @@ import std.os
 import std.os (os_getenv)
 
 extern malloc(size: int) -> ptr
+extern aether_local_secs_of_day() -> long
 
 CENTER() -> float { return 100.0 }
 RADIUS() -> float { return 90.0 }
@@ -60,8 +61,15 @@ main() {
     if string.length(out) == 0 { out = "/tmp/clock.png" }
 
     clk = malloc(8) as *Clock
-    // 10:08:30 → distinct hour/minute/second angles (a recognizable clock pose).
-    clk.secs = 10.0 * 3600.0 + 8.0 * 60.0 + 30.0
+    // The host's current local time (seconds since local midnight) — the same
+    // source the windowed analog_clock ticks from. AEVG_CLOCK_SECS overrides it
+    // for a deterministic CI/test render.
+    clk.secs = aether_local_secs_of_day() / 1.0
+    ov = os_getenv("AEVG_CLOCK_SECS")
+    if string.length(ov) > 0 {
+        n, ok = string.to_double(ov)
+        if ok == "" { clk.secs = n }
+    }
 
     cid = canvas_create(250, 250)
     opts = opts_new()

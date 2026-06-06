@@ -33,15 +33,18 @@ SIZE() -> float   { return 200.0 }
 CENTER() -> float { return 100.0 }
 RADIUS() -> float { return 90.0 }
 
-// ─── A time source (hours/minutes/seconds), injectable for tests ──
+// ─── A time source: real local wall-clock ───────────────────────
 //
-// CVG passes `() => new Date()`. Aether has os clock primitives; for a faithful
-// port we keep a tiny mutable Clock the bind closures read, advanced by the
-// live loop's monotonic seconds (so it sweeps visibly). A real wall-clock
-// variant could read os date fields instead.
-struct Clock { secs: float }   // seconds since start (drives the sweep)
+// CVG passes `() => new Date()`. The equivalent here is the host's local time:
+// aether_local_secs_of_day() returns seconds since LOCAL midnight (0..86399).
+// The bind closures read `clk.secs`, which the per-frame tick sets to the
+// current local time — so the clock shows the user's actual time.
+extern aether_local_secs_of_day() -> long
+struct Clock { secs: float }   // seconds since local midnight
 extern malloc(size: int) -> ptr
-mk_clock() -> *Clock { c = malloc(8) as *Clock; c.secs = 0.0; return c }
+mk_clock() -> *Clock { c = malloc(8) as *Clock; c.secs = now_secs(); return c }
+
+now_secs() -> float { return aether_local_secs_of_day() / 1.0 }
 
 // Hand rotations in [0,1) (0 = 12 o'clock), derived from elapsed seconds.
 // 60s sweep for the second hand; minute/hour scaled from it.
@@ -162,7 +165,10 @@ main() {
 advance_clock(root: ptr, clk: *Clock) {
     scene = vg.node_scene(root)
     vg.scene_set_refreshing(scene, 1)
+    // Each frame, snap the clock to the host's current local time. (The `t`
+    // arg is the monotonic frame clock; we ignore it and read wall time, so the
+    // hands track the actual time, not elapsed-since-launch.)
     canvas_region(root, 0.0, 0.0, 1.0, 1.0) callback |rn: ptr, t: float| {
-        clk.secs = t
+        clk.secs = aether_local_secs_of_day() / 1.0
     }
 }
