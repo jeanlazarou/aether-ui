@@ -2480,6 +2480,16 @@ void aether_ui_canvas_redraw_impl(int canvas_id) {
     InvalidateRect(canvases[canvas_id - 1].hwnd, NULL, TRUE);
 }
 
+// canvas_write_png — off-screen PNG render. NOT YET IMPLEMENTED on Win32:
+// would replay the command buffer into a memory DC / GDI+ Bitmap and
+// Bitmap::Save with the PNG encoder CLSID. Returns 0 (failure) so callers
+// detect the gap. Tracked follow-up; the GTK4 backend has the working impl.
+int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
+                                     int width, int height) {
+    (void)canvas_id; (void)path; (void)width; (void)height;
+    return 0;
+}
+
 static void canvas_paint(HWND hwnd, HDC hdc, int width, int height) {
     int id = canvas_id_for_hwnd(hwnd);
     if (id == 0) return;

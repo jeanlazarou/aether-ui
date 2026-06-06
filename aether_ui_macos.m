@@ -1592,6 +1592,17 @@ void aether_ui_canvas_redraw_impl(int canvas_id) {
     if (v) [v setNeedsDisplay:YES];
 }
 
+// canvas_write_png — off-screen PNG render. NOT YET IMPLEMENTED on AppKit:
+// would replay the command buffer into a CGBitmapContext and write via
+// CGImageDestination (CFURL → kUTTypePNG). Returns 0 (failure) so callers
+// detect the gap rather than getting a silent empty file. Tracked follow-up;
+// the GTK4 backend has the working implementation.
+int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
+                                     int width, int height) {
+    (void)canvas_id; (void)path; (void)width; (void)height;
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Events — hover (NSTrackingArea), click + double-click (gesture recognizers)
 // ---------------------------------------------------------------------------

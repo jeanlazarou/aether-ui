@@ -36,7 +36,7 @@ exports (
     sheet_create, sheet_set_body, sheet_present, sheet_dismiss,
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
-    canvas_stroke, canvas_fill_rect, canvas_clear, canvas_redraw,
+    canvas_stroke, canvas_fill_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
     canvas_draw_image, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
@@ -228,6 +228,7 @@ extern aether_ui_canvas_fill_rect_impl(canvas_id: int, x: float, y: float,
                                   r: float, g: float, b: float, a: float)
 extern aether_ui_canvas_clear_impl(canvas_id: int)
 extern aether_ui_canvas_redraw_impl(canvas_id: int)
+extern aether_ui_canvas_write_png_impl(canvas_id: int, path: string, width: int, height: int) -> int
 
 extern aether_ui_on_hover_impl(handle: int, boxed_closure: ptr)
 extern aether_ui_on_double_click_impl(handle: int, boxed_closure: ptr)
@@ -891,6 +892,14 @@ canvas_clear(cid: int) {
 
 canvas_redraw(cid: int) {
     aether_ui_canvas_redraw_impl(cid)
+}
+
+// canvas_write_png — render the canvas command buffer to a PNG file off-
+// screen (works headless — no window). Returns 1 on success, 0 on failure.
+// The self-snapshot primitive: lets tests / the parity harness capture what
+// a canvas drew without a live display. Same pixels as on-screen.
+canvas_write_png(cid: int, path: string, width: int, height: int) -> int {
+    return aether_ui_canvas_write_png_impl(cid, path, width, height)
 }
 
 // --- Event handlers ---

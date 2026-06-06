@@ -1280,13 +1280,11 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
     cs->cmds[cs->count++] = cmd;
 }
 
-static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
-                              int width, int height, gpointer data) {
-    (void)area; (void)width; (void)height;
-    int canvas_id = (int)(intptr_t)data;
-    CanvasState* cs = get_canvas_state(canvas_id);
+// Replay a canvas command buffer onto any cairo context. Shared by the live
+// GtkDrawingArea draw func and the off-screen PNG renderer (canvas_write_png),
+// so on-screen and headless output are byte-identical.
+static void canvas_replay(cairo_t* cr, CanvasState* cs) {
     if (!cs) return;
-
     for (int i = 0; i < cs->count; i++) {
         CanvasCmd* c = &cs->cmds[i];
         switch (c->type) {
@@ -1398,6 +1396,36 @@ static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
                 break;
         }
     }
+}
+
+static void canvas_draw_func(GtkDrawingArea* area, cairo_t* cr,
+                              int width, int height, gpointer data) {
+    (void)area; (void)width; (void)height;
+    int canvas_id = (int)(intptr_t)data;
+    canvas_replay(cr, get_canvas_state(canvas_id));
+}
+
+// Render the canvas command buffer to a PNG file off-screen — works HEADLESS
+// (no window, pure cairo image surface). The driver's screenshot endpoint and
+// the AeVG parity harness both use this; it's byte-identical to the on-screen
+// render because both go through canvas_replay. Returns 1 on success, 0 on
+// failure. Background is transparent (ARGB32) unless the buffer fills it.
+int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
+                                     int width, int height) {
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !path || width <= 0 || height <= 0) return 0;
+    cairo_surface_t* surf = cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, width, height);
+    if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surf);
+        return 0;
+    }
+    cairo_t* cr = cairo_create(surf);
+    canvas_replay(cr, cs);
+    cairo_destroy(cr);
+    cairo_status_t st = cairo_surface_write_to_png(surf, path);
+    cairo_surface_destroy(surf);
+    return st == CAIRO_STATUS_SUCCESS ? 1 : 0;
 }
 
 int aether_ui_canvas_create_impl(int width, int height) {

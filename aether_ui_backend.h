@@ -185,6 +185,10 @@ void aether_ui_canvas_fill_radial_gradient_impl(int canvas_id,
         int n_stops, void* offsets, void* rgba, float line_width);
 void aether_ui_canvas_clear_impl(int canvas_id);
 void aether_ui_canvas_redraw_impl(int canvas_id);
+// Off-screen render of the canvas command buffer to a PNG. Headless-capable
+// (pure cairo image surface; no window). Returns 1 on success, 0 on failure.
+int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
+                                     int width, int height);
 
 // Events
 void aether_ui_on_hover_impl(int handle, void* boxed_closure);
