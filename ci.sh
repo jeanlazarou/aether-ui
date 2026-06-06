@@ -254,6 +254,26 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_aevg_live.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    # Video region: build + RUN headless — generates an in-memory RGBA clip and
+    # plays a frame through the video_source → frame-slice → scaled-blit path.
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_video_png.ae build/aevg_video_png \
+            > /tmp/ci_build_aevg_video_png.log 2>&1 \
+            && AEVG_OUT=/tmp/ci_video.png build/aevg_video_png > /tmp/ci_run_aevg_video_png.log 2>&1 \
+            && [ -f /tmp/ci_video.png ]; then
+        echo "  OK   aevg_video_png (raw-RGBA clip in a live region)"
+    else
+        echo "  FAIL aevg_video_png"
+        tail -15 /tmp/ci_build_aevg_video_png.log /tmp/ci_run_aevg_video_png.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_video.ae build/aevg_video \
+            > /tmp/ci_build_aevg_video.log 2>&1; then
+        echo "  OK   aevg_video (raw-RGBA file player; build-only)"
+    else
+        echo "  FAIL aevg_video"
+        tail -15 /tmp/ci_build_aevg_video.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then

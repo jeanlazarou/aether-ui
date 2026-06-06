@@ -1,0 +1,107 @@
+// example_aevg_video_png.ae — headless proof of the raw-RGBA frame source.
+//
+// Self-contained: generates a small multi-frame RGBA clip IN MEMORY (a moving
+// stripe), then plays it through a video_region source and writes one frame to
+// PNG — the same path the windowed example_aevg_video uses with a file, minus
+// the file read. CI build+runs this to exercise the frame-slice + scaled blit.
+//
+//   ./build.sh aevg/example_aevg_video_png.ae build/aevg_video_png && ./build/aevg_video_png
+
+import aether_ui
+import aether_ui (canvas_create, canvas_write_png, canvas_clear)
+import vg_live (vg, video_region, video_source, vg_flush_live)
+import vg
+import vg (view_box)
+import grammar_factories
+import grammar_factories (opts_new, opts_set_view_box, opts_set_width, opts_set_height, create_aevg_context)
+import aevg_gtk_backend
+import live_region
+import std.string
+import std.os
+import std.os (os_getenv)
+
+extern lrint(x: float) -> long
+extern malloc(size: int) -> ptr
+extern string_retain(s: string)
+
+FW() -> int { return 32 }
+FH() -> int { return 32 }
+NFRAMES() -> int { return 8 }
+
+// A generated clip: NFRAMES frames of FW×FH RGBA concatenated into one string,
+// each with a vertical orange stripe that moves right per frame over a gradient.
+struct Clip { data: string len: int frames: int }
+
+gen_clip() -> *Clip {
+    w = FW()
+    h = FH()
+    n = NFRAMES()
+    fb = w * h * 4
+    total = fb * n
+    buf = live_region.new_frame_buffer(w, h * n)   // tall buffer holding all frames
+    f = 0
+    while f < n {
+        stripe_x = f * 4
+        y = 0
+        while y < h {
+            x = 0
+            while x < w {
+                px = (f * h + y) * w + x
+                dx = x - stripe_x
+                if dx < 0 { dx = 0 - dx }
+                if dx < 2 {
+                    live_region.buf_set_px(buf, px, 255, 80, 0, 255)   // orange stripe
+                } else {
+                    live_region.buf_set_px(buf, px, x * 255 / w, 30, y * 255 / h, 255)
+                }
+                x = x + 1
+            }
+            y = y + 1
+        }
+        f = f + 1
+    }
+    data = live_region.frame_finish(buf, w, h * n)
+    string_retain(data)
+    c = malloc(32) as *Clip
+    c.data = data
+    c.len = total
+    c.frames = n
+    return c
+}
+
+push_frame(region: ptr, c: *Clip, idx: int) {
+    fb = FW() * FH() * 4
+    start = idx * fb
+    frame = string.substring_n(c.data, c.len, start, start + fb)
+    live_region.region_push(region, frame, fb)
+}
+
+main() {
+    out = os_getenv("AEVG_OUT")
+    if string.length(out) == 0 { out = "/tmp/video.png" }
+    clip = gen_clip()
+
+    cid = canvas_create(200, 200)
+    opts = opts_new()
+    opts_set_view_box(opts, view_box(0.0, 0.0, 100.0, 100.0))
+    opts_set_width(opts, 200.0)
+    opts_set_height(opts, 200.0)
+    scene = vg.scene_new(create_aevg_context(opts), aevg_gtk_backend.gtk_backend_new(cid))
+    vg.scene_set_canvas(scene, cid)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    vr = video_region(root, 10.0, 10.0, 80.0, 80.0, FW(), FH())
+    video_source(vr) callback |region: ptr, t: float| {
+        idx = lrint(t)
+        if idx < 0 { idx = 0 }
+        if idx >= clip.frames { idx = clip.frames - 1 }
+        push_frame(region, clip, idx)
+    }
+
+    // Render frame 5 (stripe moved right of centre).
+    canvas_clear(cid)
+    vg_flush_live(scene, cid, 5.0)
+    ok = canvas_write_png(cid, out, 200, 200)
+    if ok == 1 { println("wrote ${out} (clip ${clip.frames} frames)") } else { println("PNG fail") }
+}
