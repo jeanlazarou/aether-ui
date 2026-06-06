@@ -172,6 +172,21 @@ main() {
 
     aevg_backend.backend_clear(bk)
 
+    // ─── rounded rect carries fill-opacity through to shape_path ──
+    // A rounded rect (rx>0) delegates to shape_path. fill-opacity must survive
+    // the delegation (it was dropped, so translucent shapes rendered opaque —
+    // open-clipart.svg's drop-shadows). The dispatch kind is "path" and its
+    // fillColor has the alpha baked in (not the bare "#000000").
+    a_ro = mk_attrs4("x", "0", "y", "0", "width", "50", "height", "50")
+    _ = map.put(a_ro, "rx", "8")
+    _ = map.put(a_ro, "fill", "#000000")
+    _ = map.put(a_ro, "fill-opacity", "0.5")
+    _ = grammar_shapes.shape_rectangle(ctx, bk, a_ro)
+    assert_eq_str("rounded-rect routed to path", aevg_backend.backend_kind(bk, 0), "path")
+    assert_opt_str("rounded-rect fill-opacity baked", bk, 0, "fillColor", "rgba(0, 0, 0, 0.5)")
+
+    aevg_backend.backend_clear(bk)
+
     // ─── shape_line ─────────────────────────────────────────────
     a3 = mk_attrs4("x1", "0", "y1", "0", "x2", "100", "y2", "100")
     _ = map.put(a3, "stroke", "blue")

@@ -504,14 +504,7 @@ rect_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
     // Delegate to shape_path with transform stripped + d/fill carried.
     pa = map.new()
     _ = map.put(pa, "d", d)
-    fv = grammar_style.style_get(style, "fill")
-    if string.length(fv) > 0 { _ = map.put(pa, "fill", fv) }
-    sv = grammar_style.style_get(style, "stroke")
-    if string.length(sv) > 0 { _ = map.put(pa, "stroke", sv) }
-    swv = grammar_style.style_get(style, "stroke-width")
-    if string.length(swv) > 0 { _ = map.put(pa, "stroke-width", swv) }
-    clv = attr_str_or(attrs, "class", "")
-    if string.length(clv) > 0 { _ = map.put(pa, "class", clv) }
+    copy_resolved_paint(pa, style, attrs)
 
     el = shape_path(ctx, backend, pa)
     maybe_pop_transform(ctx, did_push)
@@ -527,19 +520,38 @@ circle_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
     d = grammar_utils.ellipse_to_path(cx, cy, r, r)
     pa = map.new()
     _ = map.put(pa, "d", d)
-    fv = grammar_style.style_get(style, "fill")
-    if string.length(fv) > 0 { _ = map.put(pa, "fill", fv) }
-    sv = grammar_style.style_get(style, "stroke")
-    if string.length(sv) > 0 { _ = map.put(pa, "stroke", sv) }
-    swv = grammar_style.style_get(style, "stroke-width")
-    if string.length(swv) > 0 { _ = map.put(pa, "stroke-width", swv) }
-    clv = attr_str_or(attrs, "class", "")
-    if string.length(clv) > 0 { _ = map.put(pa, "class", clv) }
+    copy_resolved_paint(pa, style, attrs)
 
     el = shape_path(ctx, backend, pa)
     maybe_pop_transform(ctx, did_push)
     grammar_element.element_set_shape_circle(el, cx, cy, r)
     return el
+}
+
+// Copy the resolved presentation properties from `style` into a fresh attrs
+// map `pa` for a delegated shape_path call (rect_via_path / circle_via_path).
+// MUST carry the opacity + rule properties, not just fill/stroke/width — they
+// were being dropped, so a rounded rect / gradient circle with fill-opacity
+// rendered fully opaque (open-clipart.svg's translucent drop-shadows came out
+// solid black). resolve_fill_color/resolve_stroke_color in shape_path bake
+// these into the colour, so the values just need to reach shape_path's style.
+copy_resolved_paint(pa: ptr, style: ptr, attrs: ptr) {
+    copy_style_prop(pa, style, "fill")
+    copy_style_prop(pa, style, "stroke")
+    copy_style_prop(pa, style, "stroke-width")
+    copy_style_prop(pa, style, "fill-opacity")
+    copy_style_prop(pa, style, "stroke-opacity")
+    copy_style_prop(pa, style, "opacity")
+    copy_style_prop(pa, style, "fill-rule")
+    copy_style_prop(pa, style, "stroke-linecap")
+    copy_style_prop(pa, style, "stroke-linejoin")
+    clv = attr_str_or(attrs, "class", "")
+    if string.length(clv) > 0 { _ = map.put(pa, "class", clv) }
+}
+
+copy_style_prop(pa: ptr, style: ptr, key: string) {
+    v = grammar_style.style_get(style, key)
+    if string.length(v) > 0 { _ = map.put(pa, key, v) }
 }
 
 // Plain rectangle as a closed M/L path (SVG space).
