@@ -46,6 +46,7 @@ import aether_ui
 import vg
 import grammar_factories
 import aevg_gtk_backend
+import grammar_events
 
 extern malloc(size: int) -> ptr
 
@@ -69,7 +70,22 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // flushes them with final colours. Register the flush closure now — it
     // captures `scene` + `canvas_id` and fires after the block (see header).
     vg.scene_set_deferred(scene, 1)
+    // Event state shared by shape tracking (at flush) and click dispatch. Its
+    // presence on the scene is what makes flush track interactive elements.
+    es = grammar_events.event_state_new()
+    vg.scene_set_event_state(scene, es)
     aether_ui.register_deferred_flush() callback {
+        vg.vg_flush(scene)
+        aether_ui.canvas_redraw(canvas_id)
+    }
+    // Click: hit-test the tracked shapes and fire the topmost handler, then
+    // re-render. dispatch_click runs the handler (which may recolor an element
+    // via vg.element_set_fill); we then clear + re-flush (vg_flush reads each
+    // element's CURRENT fill) + redraw so the new colour shows. Read the
+    // scene's ctx live (resize swaps it) rather than capturing `ctx`.
+    aether_ui.canvas_on_click(canvas_id) callback |cx: float, cy: float| {
+        grammar_events.dispatch_click(es, vg.scene_ctx(scene), cx, cy)
+        aether_ui.canvas_clear(canvas_id)
         vg.vg_flush(scene)
         aether_ui.canvas_redraw(canvas_id)
     }

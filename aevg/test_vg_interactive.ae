@@ -85,5 +85,23 @@ main() {
     vg.vg_flush(scene)
     assert_eq_int("re-flush: still one tracked", list.size(tracked), 1)
 
+    // ─── on_click_recolor convenience: shape repaints itself ─────
+    ctx2 = mk_ctx()
+    bk2 = aevg_backend.backend_new()
+    scene2 = vg.scene_new(ctx2, bk2)
+    es2 = grammar_events.event_state_new()
+    vg.scene_set_event_state(scene2, es2)
+    vg.scene_set_deferred(scene2, 1)
+    root2 = vg.vg_root(scene2)
+
+    rcnode = vg.circle(root2, 50.0, 50.0, 20.0)
+    rcel = vg.node_element(rcnode)
+    vg.fill(rcnode, "#111111")
+    vg.on_click_recolor(rcnode, "#ffffff")
+    vg.vg_flush(scene2)
+    assert_eq_str("recolor: initial", grammar_element.element_last_fill(rcel), "#111111")
+    grammar_events.dispatch_click(es2, ctx2, 50.0, 50.0)
+    assert_eq_str("recolor: after click", grammar_element.element_last_fill(rcel), "#ffffff")
+
     println("=== test_vg_interactive passed ===")
 }

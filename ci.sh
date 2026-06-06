@@ -210,6 +210,14 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_vg_demo.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_interactive.ae build/aevg_interactive \
+            > /tmp/ci_build_aevg_interactive.log 2>&1; then
+        echo "  OK   aevg_interactive (click-to-recolour shapes via on_click)"
+    else
+        echo "  FAIL aevg_interactive"
+        tail -15 /tmp/ci_build_aevg_interactive.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then

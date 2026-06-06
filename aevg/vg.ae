@@ -43,6 +43,7 @@ exports (
     fill, stroke, opacity, transform, linecap, linejoin,
     // Interaction modifiers (attach a handler to the shape's element).
     on_click, on_hover, on_double_click, on_right_click, cursor, tooltip,
+    on_click_recolor,
     // Re-exported element mutators so a handler can recolor the element it
     // captured: vg.element_set_fill(el, "#0f0") inside an on_click closure.
     element_set_fill, element_set_stroke, element_set_opacity,
@@ -64,6 +65,7 @@ import grammar_events
 import parser
 
 extern malloc(size: int) -> ptr
+extern string_retain(s: string)
 
 // ─── VgScene: the shared drawing target ──────────────────────────
 //
@@ -371,6 +373,24 @@ on_double_click(_ctx: ptr, h: fn) {
 on_right_click(_ctx: ptr, h: fn) {
     el = node_payload(_ctx)
     if el != null { grammar_element.element_on_right_click(el, h) }
+}
+
+// on_click_recolor(color) — convenience modifier: clicking this shape sets its
+// own fill to `color`. The handler captures THIS element (the block's _ctx
+// element), so it reads in the DSL as `circle(…) { fill("#f00");
+// on_click_recolor("#0f0") }` without the caller needing a named handle. The
+// general on_click (above) is for arbitrary handlers.
+on_click_recolor(_ctx: ptr, color: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        // Retain the captured colour so it survives past this frame (the click
+        // fires later). Capturing the param directly works; the earlier
+        // string.copy-then-capture form hit the helper-string-corruption bug.
+        string_retain(color)
+        grammar_element.element_on_click(el) callback |x: float, y: float| {
+            grammar_element.element_set_fill(el, color)
+        }
+    }
 }
 
 cursor(_ctx: ptr, c: string) {
