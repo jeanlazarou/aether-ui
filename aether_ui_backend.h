@@ -173,6 +173,10 @@ int aether_ui_canvas_get_widget(int canvas_id);
 // and re-flush its shapes at the new scale, so a resized window rescales the
 // vector scene. No-op on backends without live resize delivery.
 void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure);
+// Register a single-click hook on a canvas. The boxed closure takes
+// (x: double, y: double) in canvas-local pixels — AeVG hit-tests shapes with
+// them. No-op on backends without live click delivery.
+void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure);
 void aether_ui_canvas_begin_path_impl(int canvas_id);
 void aether_ui_canvas_move_to_impl(int canvas_id, double x, double y);
 void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y);

@@ -1306,6 +1306,10 @@ typedef struct {
     AeClosure* on_resize;
     int last_w;
     int last_h;
+    // Click hook — AeVG's vg{} scope registers a closure here to receive
+    // canvas-local (x, y) on a single click, so it can hit-test shapes and
+    // dispatch per-element handlers (the widget-level on_click gives no coords).
+    AeClosure* on_click;
 } CanvasState;
 
 static CanvasState* canvas_states = NULL;
@@ -1526,6 +1530,7 @@ int aether_ui_canvas_create_impl(int width, int height) {
     cs->count = 0;
     cs->capacity = 0;
     cs->on_resize = NULL;
+    cs->on_click = NULL;
     cs->last_w = width;
     cs->last_h = height;
     canvas_state_count++;
@@ -1554,6 +1559,36 @@ void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure) {
     // that differs triggers a remap. (0 would fire spuriously on first draw.)
     cs->last_w = -1;
     cs->last_h = -1;
+}
+
+// Canvas click gesture — forwards the canvas-LOCAL (x, y) of a single click to
+// the registered closure. Unlike on_double_click/on_button_clicked (which drop
+// the coords), AeVG needs them to hit-test which shape was clicked. The
+// "pressed" signal of a GtkGestureClick reports coordinates relative to the
+// widget the controller is attached to (the drawing area), which is the same
+// space AeVG stores shape bounds in (post-flush canvas px).
+static void on_canvas_click(GtkGestureClick* gesture, int n_press,
+                             double x, double y, gpointer data) {
+    (void)gesture; (void)n_press;
+    AeClosure* c = (AeClosure*)data;
+    if (c && c->fn) {
+        ((void(*)(void*, double, double))c->fn)(c->env, x, y);
+    }
+}
+
+// Register a single-click hook on a canvas. The boxed Aether closure takes
+// (x: float, y: float) in canvas-local pixels. AeVG's vg{} scope uses this to
+// dispatch_click into its scene, hit-testing tracked shape elements.
+void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure) {
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_click = (AeClosure*)boxed_closure;
+    GtkWidget* w = aether_ui_get_widget(cs->widget_handle);
+    if (!w) return;
+    GtkGesture* gesture = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 1);
+    g_signal_connect(gesture, "pressed", G_CALLBACK(on_canvas_click), boxed_closure);
+    gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(gesture));
 }
 
 void aether_ui_canvas_begin_path_impl(int canvas_id) {

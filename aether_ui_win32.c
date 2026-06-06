@@ -2353,6 +2353,10 @@ void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure) {
     (void)canvas_id; (void)boxed_closure;
 }
 
+void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure) {
+    (void)canvas_id; (void)boxed_closure;
+}
+
 // begin_path starts a fresh command stream — drop any previously-recorded
 // commands so a redraw-per-frame loop doesn't accumulate unboundedly.
 // Previously this was an append-only op, which meant an animated canvas
