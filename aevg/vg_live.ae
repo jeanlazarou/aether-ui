@@ -176,15 +176,17 @@ canvas_region(_ctx: ptr, x: float, y: float, w: float, h: float, draw: fn) {
     vg.scene_add_live_region(scene, lr)
 }
 
-// _flush_live(scene, canvas_id, t) — the full per-frame render: clip + flush
-// the static shapes, render the DRAW regions (vg shapes), then blit the RASTER
-// regions. All compose into the one cleared backbuffer → atomic present. The
-// raster blit is last so live video/game pixels sit above the static scene
-// (z-order = draw order; refine per-region later if needed).
+// _flush_live(scene, canvas_id, t) — the full per-frame render, bottom to top:
+//   1. static shapes (clipped to viewport),
+//   2. RASTER regions blitted (video/generated frames — the backdrop layer),
+//   3. DRAW regions (vg shapes — the cube/sprites, ON TOP of the raster).
+// All compose into the one cleared backbuffer → atomic present. Raster-then-
+// draw is the z-order that makes "a cube over a video" read correctly; a future
+// per-region z-index would generalize it.
 _flush_live(scene: ptr, canvas_id: int, t: float) {
     _flush_clipped(scene, canvas_id)
-    vg.scene_render_live_draws(scene, t)
     _blit_live_rasters(scene, canvas_id)
+    vg.scene_render_live_draws(scene, t)
 }
 
 // vg_flush_live(scene, canvas_id, t) — public one-frame live render (clip +

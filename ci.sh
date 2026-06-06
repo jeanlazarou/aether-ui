@@ -246,6 +246,14 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_aevg_live_png.log /tmp/ci_run_aevg_live_png.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_live.ae build/aevg_live \
+            > /tmp/ci_build_aevg_live.log 2>&1; then
+        echo "  OK   aevg_live (tumbling cube over live raster)"
+    else
+        echo "  FAIL aevg_live"
+        tail -15 /tmp/ci_build_aevg_live.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then
