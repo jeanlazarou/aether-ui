@@ -15,7 +15,7 @@
 
 import aether_ui
 import aether_ui (window, enable_test_server)
-import vg_live (vg, video_region, canvas_region)
+import vg_live (vg, video_region, video_source, canvas_region)
 import vg
 import vg (view_box, rect, fill)
 import live_region
@@ -34,13 +34,14 @@ main() {
             // Static dark backdrop so the raster + cube read clearly.
             bg = rect(0, 0, 100, 100) { fill("#101018") }
 
-            // RASTER under the cube: a plasma covering the viewBox rect
-            // (20,20,60,60), fed by a small 64×64 frame buffer — the blit scales
-            // the frame to fill the rect, so resolution is independent of
-            // on-screen size (as a video would be). Pushed once — a colourful
-            // backdrop the live cube composites over each frame.
+            // RASTER under the cube: a plasma on the viewBox rect (20,20,60,60),
+            // fed by a 64×64 frame buffer (scaled to fill). An ANIMATED source —
+            // the live loop calls it each frame to push a t-cycled plasma, so
+            // the backdrop moves under the spinning cube.
             pr = video_region(_root_of(bg), 20.0, 20.0, 60.0, 60.0, 64, 64)
-            push_plasma(pr, 64, 64, 0.0)
+            video_source(pr) callback |region: ptr, t: float| {
+                push_plasma(region, 64, 64, t)
+            }
 
             // DRAW region: the tumbling wireframe cube, recomputed from t every
             // frame and composited over the raster — glitch-free via the one

@@ -135,8 +135,30 @@ main() {
     assert_near("highest-z (a, z=5) rendered second", zlog.last_t, 5.0)
     assert_eq_int("both z regions fired", zlog.calls, 2)
 
+    // ─── animated raster source: fires per frame with t ────────
+    // A source callback records each invocation. invoke_region_source(src, region, t)
+    // is what the live loop calls before blitting an animated raster.
+    srec = mk_rec()
+    rr2 = live_region.live_raster_new(0.0, 0.0, 10.0, 10.0, 4, 4)
+    assert_eq_int("no source yet", null_ptr_is(live_region.region_src_fn(rr2)), 1)
+    live_region.region_set_source(rr2) callback |region: ptr, t: float| {
+        srec.calls = srec.calls + 1
+        srec.last_t = t
+        // a source would push a frame here; we just record.
+    }
+    if live_region.region_src_fn(rr2) != null { println("  PASS: source attached") }
+    else { println("  FAIL: source null after set"); exit(1) }
+    live_region.invoke_region_source(live_region.region_src_fn(rr2), rr2, 0.4)
+    assert_eq_int("source fired once", srec.calls, 1)
+    assert_near("source saw t=0.4", srec.last_t, 0.4)
+    live_region.invoke_region_source(live_region.region_src_fn(rr2), rr2, 1.1)
+    assert_eq_int("source fired twice", srec.calls, 2)
+    assert_near("source saw t=1.1", srec.last_t, 1.1)
+
     println("=== test_live_region passed ===")
 }
+
+null_ptr_is(p: ptr) -> int { if p == null { return 1 } return 0 }
 
 lowest_z(a: ptr, b: ptr) -> ptr {
     if live_region.region_z(a) <= live_region.region_z(b) { return a }

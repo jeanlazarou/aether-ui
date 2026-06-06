@@ -40,7 +40,7 @@
 // A selective import alone shadows the full module for transitive callees;
 // see example_vg.ae's 4-line preamble.
 
-exports ( vg, vg_redraw, video_region, canvas_region, vg_flush_live )
+exports ( vg, vg_redraw, video_region, video_source, canvas_region, vg_flush_live )
 
 import aether_ui
 import vg
@@ -181,6 +181,14 @@ canvas_region(_ctx: ptr, x: float, y: float, w: float, h: float, draw: fn) -> pt
     return lr
 }
 
+// video_source(region) callback |region, t| { …push a frame… } — attach a
+// per-frame source to a raster region so it ANIMATES: the live loop calls it
+// each tick to produce + push the next frame (capture-free; gets the region +
+// the monotonic-seconds clock). Without it the region is static (push once).
+video_source(region: ptr, src: fn) {
+    live_region.region_set_source(region, src)
+}
+
 // _flush_live(scene, canvas_id, t) — the full per-frame render: static shapes
 // (clipped to viewport) first, then the live regions in Z-ORDER (low→high,
 // insertion order breaking ties). Each region renders by kind: RASTER → scaled
@@ -230,6 +238,12 @@ _render_live_z_ordered(scene: ptr, canvas_id: int, t: float) {
 // Render one live region by kind.
 _render_one_region(scene: ptr, canvas_id: int, region: ptr, t: float) {
     if live_region.region_kind(region) == live_region.LIVE_RASTER() {
+        // Animated source: produce + push this frame before blitting. Static
+        // regions (no source) just blit their once-pushed frame.
+        src = live_region.region_src_fn(region)
+        if src != null {
+            live_region.invoke_region_source(src, region, t)
+        }
         _blit_one_raster(scene, canvas_id, region)
     } else {
         vg.render_one_draw(scene, region, t)
