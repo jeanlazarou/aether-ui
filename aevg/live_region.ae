@@ -63,17 +63,23 @@ struct LiveRegion {
 
 // live_raster_new(x,y,w,h) — a raster region with a freshly-allocated RGBA
 // buffer (zeroed-ish; the source overwrites it). w/h are integer pixel dims.
-live_raster_new(x: float, y: float, w: int, h: int) -> ptr {
+// live_raster_new(x, y, ext_w, ext_h, pixel_w, pixel_h) — a raster region whose
+// on-screen rect is (x,y, ext_w×ext_h) in viewBox space, fed by frames of
+// pixel_w×pixel_h resolution. The scaled blit fits the frame to the rect, so a
+// frame's resolution is independent of its on-screen size (e.g. a 640×480 video
+// in a 30×20 viewBox region). ext_* are floats (viewBox), pixel_* ints.
+live_raster_new(x: float, y: float, ext_w: float, ext_h: float,
+                pixel_w: int, pixel_h: int) -> ptr {
     r = malloc(96) as *LiveRegion
     r.kind = 0
     r.x = x
     r.y = y
-    r.w = w / 1.0
-    r.h = h / 1.0
+    r.w = ext_w
+    r.h = ext_h
     r.frame = ""
     r.frame_len = 0
-    r.pw = w
-    r.ph = h
+    r.pw = pixel_w
+    r.ph = pixel_h
     r.draw_fn = null
     r.z = 0
     return r

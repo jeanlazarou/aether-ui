@@ -34,13 +34,12 @@ main() {
             // Static dark backdrop so the raster + cube read clearly.
             bg = rect(0, 0, 100, 100) { fill("#101018") }
 
-            // RASTER under the cube: a plasma (generated frame source) covering
-            // viewBox (20,20)..(80,80). The buffer is a small 64×64 frame; the
-            // blit SCALES it to fill the region's canvas-px extent (so a frame's
-            // resolution is decoupled from its on-screen size — as a video
-            // would be). Pushed once — a colourful backdrop the live cube
-            // composites over each frame.
-            pr = video_region(_root_of(bg), 20.0, 20.0, 64, 64)
+            // RASTER under the cube: a plasma covering the viewBox rect
+            // (20,20,60,60), fed by a small 64×64 frame buffer — the blit scales
+            // the frame to fill the rect, so resolution is independent of
+            // on-screen size (as a video would be). Pushed once — a colourful
+            // backdrop the live cube composites over each frame.
+            pr = video_region(_root_of(bg), 20.0, 20.0, 60.0, 60.0, 64, 64)
             push_plasma(pr, 64, 64, 0.0)
 
             // DRAW region: the tumbling wireframe cube, recomputed from t every

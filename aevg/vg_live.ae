@@ -163,9 +163,13 @@ _flush_clipped(scene: ptr, canvas_id: int) {
 //     A draw region rendered by the callback each frame (capture-free; gets the
 //     eager root + t). For a tumbling cube / sprite loop drawn as vg shapes.
 
-video_region(_ctx: ptr, x: float, y: float, w: int, h: int) -> ptr {
+// video_region(x, y, ext_w, ext_h, pixel_w, pixel_h) — a raster region on the
+// viewBox rect (x,y,ext_w,ext_h), fed by pixel_w×pixel_h frames (scaled to fit).
+// Returns the region: push frames via live_region.region_push / a source hook.
+video_region(_ctx: ptr, x: float, y: float, ext_w: float, ext_h: float,
+             pixel_w: int, pixel_h: int) -> ptr {
     scene = vg.node_scene(_ctx)
-    lr = live_region.live_raster_new(x, y, w, h)
+    lr = live_region.live_raster_new(x, y, ext_w, ext_h, pixel_w, pixel_h)
     vg.scene_add_live_region(scene, lr)
     return lr
 }

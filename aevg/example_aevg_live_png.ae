@@ -30,7 +30,7 @@ main() {
 
     // RASTER region: a 50×50 area at viewBox (10,10). Generate a solid magenta
     // frame and push it (a stand-in for a decoder/CPU frame source).
-    vr = video_region(root, 10.0, 10.0, 50, 50)
+    vr = video_region(root, 10.0, 10.0, 50.0, 50.0, 50, 50)
     push_solid(vr, 50, 50, 255, 0, 255, 255)
 
     // DRAW region: a blue square drawn over the raster at viewBox (40,40,30,30)
