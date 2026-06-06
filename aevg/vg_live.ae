@@ -47,6 +47,9 @@ import vg
 import grammar_factories
 import aevg_gtk_backend
 import grammar_events
+import grammar_context
+import grammar_rendering
+import transform
 
 extern malloc(size: int) -> ptr
 
@@ -75,7 +78,7 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     es = grammar_events.event_state_new()
     vg.scene_set_event_state(scene, es)
     aether_ui.register_deferred_flush() callback {
-        vg.vg_flush(scene)
+        _flush_clipped(scene, canvas_id)
         aether_ui.canvas_redraw(canvas_id)
     }
     // Click: hit-test the tracked shapes and fire the topmost handler, then
@@ -86,7 +89,7 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     aether_ui.canvas_on_click(canvas_id) callback |cx: float, cy: float| {
         grammar_events.dispatch_click(es, vg.scene_ctx(scene), cx, cy)
         aether_ui.canvas_clear(canvas_id)
-        vg.vg_flush(scene)
+        _flush_clipped(scene, canvas_id)
         aether_ui.canvas_redraw(canvas_id)
     }
     // Resize: rescale the scene to the new canvas allocation. The hook fires
@@ -100,9 +103,31 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
         new_ctx = _build_ctx(vb, rw, rh)
         vg.scene_set_ctx(scene, new_ctx)
         aether_ui.canvas_clear(canvas_id)
-        vg.vg_flush(scene)
+        _flush_clipped(scene, canvas_id)
     }
     return vg.vg_root(scene)
+}
+
+// Flush the scene, preceded by a viewport clip so shapes overflowing the
+// viewBox are cut at its edge (SVG overflow:hidden). The clip rect is the
+// viewBox bounds mapped to canvas px through the scene's current context; it's
+// emitted as the first command after a clear, persisting for the frame.
+_flush_clipped(scene: ptr, canvas_id: int) {
+    ctx = vg.scene_ctx(scene)
+    m = grammar_context.ctx_mapping(ctx)
+    vx = grammar_context.mapping_vb_min_x(m)
+    vy = grammar_context.mapping_vb_min_y(m)
+    vw = grammar_context.mapping_vb_width(m)
+    vh = grammar_context.mapping_vb_height(m)
+    // Map the viewBox's top-left and bottom-right to canvas px.
+    p_tl = grammar_rendering.map_point(ctx, vx, vy)
+    p_br = grammar_rendering.map_point(ctx, vx + vw, vy + vh)
+    cx0 = transform.pt_x(p_tl)
+    cy0 = transform.pt_y(p_tl)
+    cx1 = transform.pt_x(p_br)
+    cy1 = transform.pt_y(p_br)
+    aether_ui.canvas_clip_rect(canvas_id, cx0, cy0, cx1 - cx0, cy1 - cy0)
+    vg.vg_flush(scene)
 }
 
 // Build a fresh AevgContext (viewBox→canvas mapping) for a w×h canvas.

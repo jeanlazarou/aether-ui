@@ -1269,7 +1269,8 @@ typedef enum {
     CANVAS_FILL_TEXT,   // draw text at (x, y), size in w
     CANVAS_DRAW_IMAGE,  // blit an RGBA buffer at (x, y), size w×h
     CANVAS_FILL_LINEAR, // fill current path with a linear gradient
-    CANVAS_FILL_RADIAL  // fill current path with a radial gradient
+    CANVAS_FILL_RADIAL, // fill current path with a radial gradient
+    CANVAS_CLIP_RECT    // intersect the clip region with rect (x,y,w,h)
 } CanvasCmdType;
 
 typedef struct {
@@ -1364,6 +1365,16 @@ static void canvas_replay(cairo_t* cr, CanvasState* cs) {
                 cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
                 cairo_rectangle(cr, c->x, c->y, c->w, c->h);
                 cairo_fill(cr);
+                break;
+            case CANVAS_CLIP_RECT:
+                // Intersect the clip region with (x,y,w,h). Persists for the
+                // rest of this replay (a fresh cairo_t per frame resets it), so
+                // the AeVG scene emits one at the start to enforce the SVG
+                // viewport's overflow:hidden — shapes outside the viewBox are
+                // cut at its edge.
+                cairo_rectangle(cr, c->x, c->y, c->w, c->h);
+                cairo_clip(cr);
+                cairo_new_path(cr);  // clear the path the rectangle added
                 break;
             case CANVAS_ARC:
                 // Append an arc to the current path. w = radius,
@@ -1619,6 +1630,15 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
     canvas_add_cmd(canvas_id, (CanvasCmd){
         .type = CANVAS_FILL_RECT, .x = x, .y = y, .w = w, .h = h,
         .r = r, .g = g, .b = b, .a = a
+    });
+}
+
+// Intersect the canvas clip region with rect (x,y,w,h). AeVG emits one at the
+// start of a scene flush to clip to the viewport (SVG overflow:hidden).
+void aether_ui_canvas_clip_rect_impl(int canvas_id, double x, double y,
+                                double w, double h) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_CLIP_RECT, .x = x, .y = y, .w = w, .h = h
     });
 }
 

@@ -2405,6 +2405,12 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
     canvas_add_cmd(canvas_id, c);
 }
 
+// Viewport clip — no-op on Win32 for now (GTK-verified feature).
+void aether_ui_canvas_clip_rect_impl(int canvas_id, double x, double y,
+                                      double w, double h) {
+    (void)canvas_id; (void)x; (void)y; (void)w; (void)h;
+}
+
 void aether_ui_canvas_arc_impl(int canvas_id, double cx, double cy, double radius,
                                 double start_angle, double end_angle) {
     CanvasCmd c = {0};

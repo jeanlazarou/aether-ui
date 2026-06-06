@@ -186,6 +186,10 @@ void aether_ui_canvas_stroke_impl(int canvas_id, double r, double g, double b,
 void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
                                 double w, double h,
                                 double r, double g, double b, double a);
+// Intersect the canvas clip region with rect (x,y,w,h) — SVG viewport
+// overflow:hidden. Persists for the rest of the frame. No-op where unsupported.
+void aether_ui_canvas_clip_rect_impl(int canvas_id, double x, double y,
+                                double w, double h);
 void aether_ui_canvas_arc_impl(int canvas_id, double cx, double cy, double radius,
                                 double start_angle, double end_angle);
 void aether_ui_canvas_close_path_impl(int canvas_id);

@@ -218,6 +218,14 @@ if [ "$PLATFORM" = "linux" ]; then
         tail -15 /tmp/ci_build_aevg_interactive.log | sed 's/^/       /'
         FAIL=$((FAIL + 1))
     fi
+    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_clip.ae build/aevg_clip \
+            > /tmp/ci_build_aevg_clip.log 2>&1; then
+        echo "  OK   aevg_clip (viewport overflow:hidden clipping)"
+    else
+        echo "  FAIL aevg_clip"
+        tail -15 /tmp/ci_build_aevg_clip.log | sed 's/^/       /'
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 if [ "$FAIL" -gt 0 ]; then

@@ -1527,6 +1527,13 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
     });
 }
 
+// Viewport clip — no-op on AppKit for now (GTK-verified feature; AppKit can
+// add a CGContextClip path later).
+void aether_ui_canvas_clip_rect_impl(int canvas_id, double x, double y,
+                                     double w, double h) {
+    (void)canvas_id; (void)x; (void)y; (void)w; (void)h;
+}
+
 void aether_ui_canvas_arc_impl(int canvas_id, double cx, double cy, double radius,
                                 double start_angle, double end_angle) {
     canvas_add_cmd(canvas_id, (CanvasCmd){

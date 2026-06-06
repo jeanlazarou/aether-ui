@@ -37,7 +37,7 @@ exports (
     sheet_create, sheet_set_body, sheet_present, sheet_dismiss,
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
-    canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clear, canvas_redraw, canvas_write_png,
+    canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clip_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
     canvas_draw_image, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
@@ -231,6 +231,8 @@ extern aether_ui_canvas_fill_radial_gradient_impl(canvas_id: int,
 extern aether_ui_canvas_fill_rect_impl(canvas_id: int, x: float, y: float,
                                   w: float, h: float,
                                   r: float, g: float, b: float, a: float)
+extern aether_ui_canvas_clip_rect_impl(canvas_id: int, x: float, y: float,
+                                  w: float, h: float)
 extern aether_ui_canvas_clear_impl(canvas_id: int)
 extern aether_ui_canvas_redraw_impl(canvas_id: int)
 extern aether_ui_canvas_write_png_impl(canvas_id: int, path: string, width: int, height: int) -> int
@@ -876,6 +878,13 @@ canvas_stroke_cj(cid: int, r: float, g: float, b: float, a: float, line_width: f
 canvas_fill_rect(cid: int, x: float, y: float, w: float, h: float,
                   r: float, g: float, b: float, a: float) {
     aether_ui_canvas_fill_rect_impl(cid, x, y, w, h, r, g, b, a)
+}
+
+// canvas_clip_rect — intersect the clip region with (x,y,w,h). AeVG emits one
+// at scene-flush start to clip to the viewport (SVG overflow:hidden). Persists
+// for the rest of the frame's replay.
+canvas_clip_rect(cid: int, x: float, y: float, w: float, h: float) {
+    aether_ui_canvas_clip_rect_impl(cid, x, y, w, h)
 }
 
 // Append a circle/arc to the current path. For a full circle pass
