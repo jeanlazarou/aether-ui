@@ -1490,8 +1490,18 @@ int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
 int aether_ui_canvas_create_impl(int width, int height) {
     ensure_gtk_init();
     GtkWidget* da = gtk_drawing_area_new();
+    // content_width/height is the canvas's NATURAL (minimum) size — used when
+    // no parent forces a size (headless PNG, canvas in a scroll view). But a
+    // GtkDrawingArea won't grow past its content size on its own, so a canvas
+    // in a window would stay 400x300 and just center. Make it expand + fill so
+    // it takes the whole allocation; the draw func then gets the real size and
+    // the resize hook fires, letting the vg scene rescale.
     gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(da), width);
     gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(da), height);
+    gtk_widget_set_hexpand(da, TRUE);
+    gtk_widget_set_vexpand(da, TRUE);
+    gtk_widget_set_halign(da, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(da, GTK_ALIGN_FILL);
 
     if (canvas_state_count >= canvas_state_capacity) {
         canvas_state_capacity = canvas_state_capacity == 0 ? 16 : canvas_state_capacity * 2;
