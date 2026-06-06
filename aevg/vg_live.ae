@@ -170,23 +170,66 @@ video_region(_ctx: ptr, x: float, y: float, w: int, h: int) -> ptr {
     return lr
 }
 
-canvas_region(_ctx: ptr, x: float, y: float, w: float, h: float, draw: fn) {
+canvas_region(_ctx: ptr, x: float, y: float, w: float, h: float, draw: fn) -> ptr {
     scene = vg.node_scene(_ctx)
     lr = live_region.live_draw_new(x, y, w, h, draw)
     vg.scene_add_live_region(scene, lr)
+    return lr
 }
 
-// _flush_live(scene, canvas_id, t) — the full per-frame render, bottom to top:
-//   1. static shapes (clipped to viewport),
-//   2. RASTER regions blitted (video/generated frames — the backdrop layer),
-//   3. DRAW regions (vg shapes — the cube/sprites, ON TOP of the raster).
-// All compose into the one cleared backbuffer → atomic present. Raster-then-
-// draw is the z-order that makes "a cube over a video" read correctly; a future
-// per-region z-index would generalize it.
+// _flush_live(scene, canvas_id, t) — the full per-frame render: static shapes
+// (clipped to viewport) first, then the live regions in Z-ORDER (low→high,
+// insertion order breaking ties). Each region renders by kind: RASTER → scaled
+// blit, DRAW → vg shapes. All compose into the one cleared backbuffer → atomic
+// present. Z-order lets raster + draw interleave freely (e.g. video behind a
+// drawn HUD behind another video).
 _flush_live(scene: ptr, canvas_id: int, t: float) {
     _flush_clipped(scene, canvas_id)
-    _blit_live_rasters(scene, canvas_id)
-    vg.scene_render_live_draws(scene, t)
+    _render_live_z_ordered(scene, canvas_id, t)
+}
+
+// Render the live regions in ascending z. Stable: for each z value present
+// (low→high), render the matching regions in insertion order. Region counts are
+// tiny, so the O(zspan × n) bucket walk is fine and avoids a sort/scratch list.
+_render_live_z_ordered(scene: ptr, canvas_id: int, t: float) {
+    regions = vg.scene_live_regions(scene)
+    if regions == null { return }
+    n = list.size(regions)
+    if n == 0 { return }
+    // z range.
+    item0, _ = list.get(regions, 0)
+    zmin = live_region.region_z(item0)
+    zmax = zmin
+    i = 1
+    while i < n {
+        it, _ = list.get(regions, i)
+        z = live_region.region_z(it)
+        if z < zmin { zmin = z }
+        if z > zmax { zmax = z }
+        i = i + 1
+    }
+    // For each z level, render matching regions in insertion order.
+    z = zmin
+    while z <= zmax {
+        j = 0
+        while j < n {
+            it, _ = list.get(regions, j)
+            if live_region.region_z(it) == z {
+                _render_one_region(scene, canvas_id, it, t)
+            }
+            j = j + 1
+        }
+        z = z + 1
+    }
+}
+
+// Render one live region by kind.
+_render_one_region(scene: ptr, canvas_id: int, region: ptr, t: float) {
+    if live_region.region_kind(region) == live_region.LIVE_RASTER() {
+        _blit_one_raster(scene, canvas_id, region)
+    } else {
+        vg.render_one_draw(scene, region, t)
+    }
 }
 
 // vg_flush_live(scene, canvas_id, t) — public one-frame live render (clip +
@@ -197,41 +240,28 @@ vg_flush_live(scene: ptr, canvas_id: int, t: float) {
     _flush_live(scene, canvas_id, t)
 }
 
-// Blit every RASTER live region's buffer at its rect (region coords mapped to
-// canvas px through the scene's context).
-_blit_live_rasters(scene: ptr, canvas_id: int) {
-    regions = vg.scene_live_regions(scene)
-    if regions == null { return }
+// Blit one RASTER region's current frame, scaled to fill its mapped extent.
+_blit_one_raster(scene: ptr, canvas_id: int, region: ptr) {
+    frame = live_region.region_frame(region)
+    flen = live_region.region_frame_len(region)
+    if flen == 0 { return }
     ctx = vg.scene_ctx(scene)
-    n = list.size(regions)
-    i = 0
-    while i < n {
-        item, _ = list.get(regions, i)
-        if live_region.region_kind(item) == live_region.LIVE_RASTER() {
-            frame = live_region.region_frame(item)
-            flen = live_region.region_frame_len(item)
-            if flen > 0 {
-                rx = live_region.region_x(item)
-                ry = live_region.region_y(item)
-                rw = live_region.region_w(item)
-                rh = live_region.region_h(item)
-                // Region rect (viewBox) → canvas px: the DEST extent. The
-                // frame's own pixel dims (pw×ph) are the SOURCE; the blit
-                // scales source→dest so a frame of any resolution fills the
-                // region's mapped extent.
-                p_tl = grammar_rendering.map_point(ctx, rx, ry)
-                p_br = grammar_rendering.map_point(ctx, rx + rw, ry + rh)
-                cx0 = transform.pt_x(p_tl)
-                cy0 = transform.pt_y(p_tl)
-                dw = transform.pt_x(p_br) - cx0
-                dh = transform.pt_y(p_br) - cy0
-                pw = live_region.region_pw(item)
-                ph = live_region.region_ph(item)
-                aether_ui.canvas_draw_image_scaled(canvas_id, cx0, cy0, dw, dh, pw, ph, frame, flen)
-            }
-        }
-        i = i + 1
-    }
+    rx = live_region.region_x(region)
+    ry = live_region.region_y(region)
+    rw = live_region.region_w(region)
+    rh = live_region.region_h(region)
+    // Region rect (viewBox) → canvas px: the DEST extent. The frame's own pixel
+    // dims (pw×ph) are the SOURCE; the blit scales source→dest so a frame of any
+    // resolution fills the region's mapped extent.
+    p_tl = grammar_rendering.map_point(ctx, rx, ry)
+    p_br = grammar_rendering.map_point(ctx, rx + rw, ry + rh)
+    cx0 = transform.pt_x(p_tl)
+    cy0 = transform.pt_y(p_tl)
+    dw = transform.pt_x(p_br) - cx0
+    dh = transform.pt_y(p_br) - cy0
+    pw = live_region.region_pw(region)
+    ph = live_region.region_ph(region)
+    aether_ui.canvas_draw_image_scaled(canvas_id, cx0, cy0, dw, dh, pw, ph, frame, flen)
 }
 
 extern lrint(x: float) -> long

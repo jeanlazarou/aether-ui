@@ -99,5 +99,47 @@ main() {
     if vg.scene_live_regions(scene) != null { println("  PASS: live_regions list present") }
     else { println("  FAIL: live_regions null"); exit(1) }
 
+    // ─── z-index: default 0; set/get; draw regions render in z order ──
+    assert_eq_int("default z = 0", live_region.region_z(dr), 0)
+    live_region.region_set_z(dr, 7)
+    assert_eq_int("after set_z(7)", live_region.region_z(dr), 7)
+
+    // Two draw regions added z=5 then z=2; the z-ordered render must invoke the
+    // z=2 one first. The shared recorder logs each region's z as it fires.
+    ctx2 = mk_ctx()
+    bk2 = aevg_backend.backend_new()
+    scene2 = vg.scene_new(ctx2, bk2)
+    zlog = mk_rec()   // reuse: last_t holds the z of the most-recent callback
+    a = live_region.live_draw_new(0.0, 0.0, 10.0, 10.0) callback |rn: ptr, t: float| {
+        zlog.calls = zlog.calls + 1
+        zlog.last_t = 5.0   // this region's z, recorded when it fires
+    }
+    live_region.region_set_z(a, 5)
+    b = live_region.live_draw_new(0.0, 0.0, 10.0, 10.0) callback |rn: ptr, t: float| {
+        zlog.calls = zlog.calls + 1
+        zlog.last_t = 2.0
+    }
+    live_region.region_set_z(b, 2)
+    vg.scene_add_live_region(scene2, a)
+    vg.scene_add_live_region(scene2, b)
+    // render_one_draw doesn't z-sort (that's the live driver's job), so drive
+    // them in z order by hand to prove region_z reads back correctly and the
+    // lower-z fires first when ordered. (The full z-ordered walk is exercised
+    // live in _render_live_z_ordered; here we pin the z accessors + ordering.)
+    vg.render_one_draw(scene2, lowest_z(a, b), 0.0)
+    assert_near("lowest-z (b, z=2) rendered first", zlog.last_t, 2.0)
+    vg.render_one_draw(scene2, highest_z(a, b), 0.0)
+    assert_near("highest-z (a, z=5) rendered second", zlog.last_t, 5.0)
+    assert_eq_int("both z regions fired", zlog.calls, 2)
+
     println("=== test_live_region passed ===")
+}
+
+lowest_z(a: ptr, b: ptr) -> ptr {
+    if live_region.region_z(a) <= live_region.region_z(b) { return a }
+    return b
+}
+highest_z(a: ptr, b: ptr) -> ptr {
+    if live_region.region_z(a) > live_region.region_z(b) { return a }
+    return b
 }

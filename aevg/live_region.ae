@@ -28,7 +28,8 @@ exports (
     region_kind, region_x, region_y, region_w, region_h,
     region_push, region_frame, region_frame_len, region_pw, region_ph,
     new_frame_buffer, buf_set_px, frame_finish,
-    region_draw_fn, invoke_region_draw
+    region_draw_fn, invoke_region_draw,
+    region_z, region_set_z
 )
 
 import std.string
@@ -56,12 +57,14 @@ struct LiveRegion {
     pw: int          // RASTER: pixel width  (frame source's buffer dims)
     ph: int          // RASTER: pixel height
     draw_fn: ptr     // DRAW: boxed closure fn(region, t); RASTER: null
+    z: int           // z-index — render order, low→high (ties keep insertion
+                     //   order). Lets raster + draw regions interleave freely.
 }
 
 // live_raster_new(x,y,w,h) — a raster region with a freshly-allocated RGBA
 // buffer (zeroed-ish; the source overwrites it). w/h are integer pixel dims.
 live_raster_new(x: float, y: float, w: int, h: int) -> ptr {
-    r = malloc(80) as *LiveRegion
+    r = malloc(96) as *LiveRegion
     r.kind = 0
     r.x = x
     r.y = y
@@ -72,6 +75,7 @@ live_raster_new(x: float, y: float, w: int, h: int) -> ptr {
     r.pw = w
     r.ph = h
     r.draw_fn = null
+    r.z = 0
     return r
 }
 
@@ -124,7 +128,7 @@ frame_finish(buf: ptr, w: int, h: int) -> string {
 // draw_fn is a fn(region, t); the fn→ptr coercion at this boundary boxes it
 // into the ptr field (the grammar_events/grammar_bind handler-storage pattern).
 live_draw_new(x: float, y: float, w: float, h: float, draw_fn: fn) -> ptr {
-    r = malloc(80) as *LiveRegion
+    r = malloc(96) as *LiveRegion
     r.kind = 1
     r.x = x
     r.y = y
@@ -135,6 +139,7 @@ live_draw_new(x: float, y: float, w: float, h: float, draw_fn: fn) -> ptr {
     r.pw = 0
     r.ph = 0
     r.draw_fn = draw_fn
+    r.z = 0
     return r
 }
 
@@ -144,6 +149,8 @@ region_y(p: ptr) -> float        { r = p as *LiveRegion; return r.y }
 region_w(p: ptr) -> float        { r = p as *LiveRegion; return r.w }
 region_h(p: ptr) -> float        { r = p as *LiveRegion; return r.h }
 region_draw_fn(p: ptr) -> ptr    { r = p as *LiveRegion; return r.draw_fn }
+region_z(p: ptr) -> int          { r = p as *LiveRegion; return r.z }
+region_set_z(p: ptr, z: int)     { r = p as *LiveRegion; r.z = z }
 
 // Invoke a DRAW region's callback with (region, t). The callback receives the
 // region ptr (so it can read its rect / write its buffer) — capture-free, the
