@@ -1,13 +1,14 @@
-// aeb build descriptor for the AeVG analog clock — a SPIKE proving aether-ui
-// can build through aeb instead of build.sh.
+// aeb build descriptor for the AeVG analog clock — building aether-ui through
+// aeb instead of the hand-rolled build.sh.
 //
-// STATUS: blocked on an aeb gap. aeb's aether.program manual path --emit=lib's
-// the transitive import closure, which fails for aether-ui's Aether-thin-over-C
-// modules (aether_ui.ae / vg_live.ae have extern function bodies → E0301). The
-// model is right; aeb needs an opt-out to compile the entry with plain aetherc
-// + link the C backend (like build.sh). Filed: docs/aeb-ask-thin-aether-over-
-// c-backend.md. Until then this descriptor doesn't build; build.sh remains the
-// build. Kept as the reproduction + forward-looking spike.
+// aether-ui's Aether surface (aether_ui.ae / vg_live.ae / the AeVG grammar_*
+// modules) is a THIN wrapper over a large C backend — its function bodies are
+// `extern` declarations of the C ABI in aether_ui_gtk4.c et al. So we set
+// no_closure_regen(): aeb compiles the entry with plain `aetherc` (tolerates
+// extern-bodied imports, like build.sh) and links the C backend via
+// extra_source, instead of `--emit=lib`-ing the import closure (which can't
+// resolve the externs). This is the aeb feature filed from this spike —
+// ~/scm/aeb/asks/thin-aether-over-c-backend.md, now landed.
 //
 // aeb's aether SDK shells out to `ae build` by default; declaring extra_source/
 // link_flag/include_dir opts into the manual aetherc+gcc path — exactly the
@@ -28,7 +29,7 @@
 import build
 import std.os
 import aether
-import aether (source, output, extra_source, link_flag, include_dir)
+import aether (source, output, extra_source, link_flag, include_dir, no_closure_regen)
 
 main() {
     b = build.start()
@@ -37,6 +38,10 @@ main() {
     aether.program(b) {
         source("analog_clock.ae")
         output("analog_clock")
+
+        // Imports are extern-backed (C ABI in the backend files below), so
+        // compile the entry plain + link the C — don't --emit=lib the closure.
+        no_closure_regen()
 
         // The native backend C files build.sh links on Linux/GTK4.
         extra_source("${root}/aether_ui_gtk4.c")

@@ -8,13 +8,17 @@ sources, raw-RGBA frame source) is feature-complete; these are the next layers.
 
 - **Build aether-ui through `aeb` instead of `build.sh`/`ci.sh`.** `bootstrap.sh`
   (toolchain bootstrap, mirrors servirtium-vcr) is in; `aevg/.analog_clock.build.ae`
-  is a spike. BLOCKED on an aeb gap: its `aether.program` manual path
-  `--emit=lib`s the whole transitive import closure, which fails for aether-ui's
-  Aether-thin-over-C-backend modules (extern function bodies → E0301). Need an
-  opt-out so the entry compiles with plain `aetherc` + links the C backend, like
-  `build.sh` does. Full ask: `docs/aeb-ask-thin-aether-over-c-backend.md`. Once
-  aeb supports it: convert the examples + the 41 Phase-0 tests to `.build.ae` /
-  `.tests.ae` and retire the bash.
+  is the working proof — `aeb` builds the GTK clock binary via the aether SDK's
+  manual path with **`no_closure_regen()`** (the opt-out filed as
+  `~/scm/aeb/asks/thin-aether-over-c-backend.md`, since landed: it compiles the
+  entry with plain `aetherc` + links the C backend, instead of `--emit=lib`-ing
+  the extern-backed import closure). **Run aeb from the repo ROOT** (`aeb
+  aevg/.analog_clock.build.ae`) so its root-discovery puts the repo root on the
+  aetherc `--lib` path — `analog_clock.ae` lives in `aevg/` but imports
+  root-level `aether_ui`; from inside `aevg/` that import doesn't resolve.
+  NEXT: convert the other examples + the 41 Phase-0 tests to `.build.ae` /
+  `.tests.ae`, express the Mac/Win/Lin backend-C/framework branching in the
+  `.build.ae` via `std.os` (vs build.sh's `uname`), and retire the bash.
 
 ## Toolchain migrations
 
