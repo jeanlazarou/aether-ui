@@ -4,6 +4,18 @@ Tracked items not yet built. The live-region abstraction (raster + draw sources,
 in-scene glitch-free composition, scaled blit, per-region z-index, animated
 sources, raw-RGBA frame source) is feature-complete; these are the next layers.
 
+## Toolchain migrations
+
+- **Replace `aether_local_secs_of_day()` with `std.os.now_local()`** — the
+  analog clock's local-time source is currently a stopgap C helper in
+  `aether_ui_system_extras.c` (`localtime_r`/`GetLocalTime` → secs-of-day),
+  because `now_local()` (→ `*LocalTime` with year/month/day/hour/minute/second/
+  nanos/tz_offset_minutes) is only in the Aether *source* tree, not the
+  installed `/usr/local` std.os the compiler resolves. Once it ships installed:
+  swap `analog_clock.ae` + `analog_clock_png.ae` to `os.now_local()` and delete
+  the helper. (Verified 2026-05-31: installed aetherc reports `now_local`
+  undefined.)
+
 ## Live regions / video
 
 - **A true video decoder** — the current real source is raw RGBA

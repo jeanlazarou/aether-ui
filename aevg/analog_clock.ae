@@ -39,6 +39,11 @@ RADIUS() -> float { return 90.0 }
 // aether_local_secs_of_day() returns seconds since LOCAL midnight (0..86399).
 // The bind closures read `clk.secs`, which the per-frame tick sets to the
 // current local time — so the clock shows the user's actual time.
+//
+// STOPGAP: this C helper (aether_ui_system_extras.c) predates std.os.now_local()
+// landing in the installed toolchain. When `now_local()` (→ *LocalTime with
+// hour/minute/second fields) is in /usr/local std.os, replace this extern with
+// `os.now_local()` and drop the helper. See aevg/TODO.md.
 extern aether_local_secs_of_day() -> long
 struct Clock { secs: float }   // seconds since local midnight
 extern malloc(size: int) -> ptr
