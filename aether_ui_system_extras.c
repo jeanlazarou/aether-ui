@@ -353,19 +353,3 @@ void aether_ui_park_until_killed(void) {
     for (;;) sleep(60);
 #endif
 }
-
-// Seconds since LOCAL midnight (0..86399): hour*3600 + min*60 + sec, from the
-// host's wall clock in local time (localtime_r / GetLocalTime). AeVG's analog
-// clock derives hand rotations from this so it shows the user's actual time.
-#include <time.h>
-long aether_local_secs_of_day(void) {
-#ifdef _WIN32
-    SYSTEMTIME st; GetLocalTime(&st);
-    return (long)st.wHour * 3600 + (long)st.wMinute * 60 + (long)st.wSecond;
-#else
-    time_t now = time(NULL);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    return (long)tmv.tm_hour * 3600 + (long)tmv.tm_min * 60 + (long)tmv.tm_sec;
-#endif
-}

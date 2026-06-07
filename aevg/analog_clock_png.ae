@@ -16,10 +16,15 @@ import std.math
 import std.map
 import std.string
 import std.os
-import std.os (os_getenv)
+import std.os (os_getenv, now_local)
 
 extern malloc(size: int) -> ptr
-extern aether_local_secs_of_day() -> long
+
+// Seconds since local midnight from os.now_local() (Aether 0.203).
+now_secs() -> float {
+    t = now_local()
+    return (t.hour * 3600 + t.minute * 60 + t.second) / 1.0
+}
 
 CENTER() -> float { return 100.0 }
 RADIUS() -> float { return 90.0 }
@@ -64,7 +69,7 @@ main() {
     // The host's current local time (seconds since local midnight) — the same
     // source the windowed analog_clock ticks from. AEVG_CLOCK_SECS overrides it
     // for a deterministic CI/test render.
-    clk.secs = aether_local_secs_of_day() / 1.0
+    clk.secs = now_secs()
     ov = os_getenv("AEVG_CLOCK_SECS")
     if string.length(ov) > 0 {
         n, ok = string.to_double(ov)

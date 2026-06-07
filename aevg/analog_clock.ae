@@ -25,7 +25,7 @@ import std.math
 import std.map
 import std.string
 import std.os
-import std.os (os_getenv)
+import std.os (os_getenv, now_local)
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -35,21 +35,19 @@ RADIUS() -> float { return 90.0 }
 
 // ─── A time source: real local wall-clock ───────────────────────
 //
-// CVG passes `() => new Date()`. The equivalent here is the host's local time:
-// aether_local_secs_of_day() returns seconds since LOCAL midnight (0..86399).
-// The bind closures read `clk.secs`, which the per-frame tick sets to the
-// current local time — so the clock shows the user's actual time.
-//
-// STOPGAP: this C helper (aether_ui_system_extras.c) predates std.os.now_local()
-// landing in the installed toolchain. When `now_local()` (→ *LocalTime with
-// hour/minute/second fields) is in /usr/local std.os, replace this extern with
-// `os.now_local()` and drop the helper. See aevg/TODO.md.
-extern aether_local_secs_of_day() -> long
+// CVG passes `() => new Date()`. The equivalent here is os.now_local() (Aether
+// 0.203): a *LocalTime with hour/minute/second fields, one localtime_r call.
+// The bind closures read `clk.secs` (seconds since local midnight), which the
+// per-frame tick sets from now_local() — so the clock shows the actual time.
 struct Clock { secs: float }   // seconds since local midnight
 extern malloc(size: int) -> ptr
 mk_clock() -> *Clock { c = malloc(8) as *Clock; c.secs = now_secs(); return c }
 
-now_secs() -> float { return aether_local_secs_of_day() / 1.0 }
+// Seconds since local midnight (0..86399) from the host's wall clock.
+now_secs() -> float {
+    t = now_local()
+    return (t.hour * 3600 + t.minute * 60 + t.second) / 1.0
+}
 
 // Hand rotations in [0,1) (0 = 12 o'clock), derived from elapsed seconds.
 // 60s sweep for the second hand; minute/hour scaled from it.
@@ -174,6 +172,6 @@ advance_clock(root: ptr, clk: *Clock) {
     // arg is the monotonic frame clock; we ignore it and read wall time, so the
     // hands track the actual time, not elapsed-since-launch.)
     canvas_region(root, 0.0, 0.0, 1.0, 1.0) callback |rn: ptr, t: float| {
-        clk.secs = aether_local_secs_of_day() / 1.0
+        clk.secs = now_secs()
     }
 }
