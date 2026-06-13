@@ -217,22 +217,27 @@ static void dispatch_and_reply(aether_sock_t client_fd,
                                 const AetherDriverHooks* h,
                                 AetherDriverActionCtx* ctx,
                                 const char* ok_msg) {
+    (void)ok_msg;  // responses are now a uniform JSON envelope (see below)
     h->dispatch_action(ctx);
+    // Reply in the same JSON shape as the GTK driver (gtk4.c) so the shared
+    // AetherUIDriver harness (test_automation.sh) passes identically on both
+    // backends: success → {"ok":true}; seal/banner/not-found → {"error":...}.
     switch (ctx->result) {
         case 0:
-            send_http(client_fd, 200, "OK", "text/plain", ok_msg);
+            send_http(client_fd, 200, "OK", "application/json",
+                      "{\"ok\":true}");
             break;
         case 1:
-            send_http(client_fd, 403, "Forbidden", "text/plain",
-                      "widget is sealed");
+            send_http(client_fd, 403, "Forbidden", "application/json",
+                      "{\"error\":\"widget is sealed\"}");
             break;
         case 2:
-            send_http(client_fd, 403, "Forbidden", "text/plain",
-                      "banner is protected from the test API");
+            send_http(client_fd, 403, "Forbidden", "application/json",
+                      "{\"error\":\"banner cannot be manipulated\"}");
             break;
         default:
-            send_http(client_fd, 404, "Not Found", "text/plain",
-                      "widget not found");
+            send_http(client_fd, 404, "Not Found", "application/json",
+                      "{\"error\":\"widget not found\"}");
             break;
     }
 }
@@ -378,12 +383,14 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
     } else if (method == 0 && strncmp(path, "/state/", 7) == 0) {
         int id = extract_id_from_path(path, "/state/");
         if (id > 0) {
-            char body[64];
-            snprintf(body, sizeof(body), "%.2f", aether_ui_state_get(id));
-            send_http(client_fd, 200, "OK", "text/plain", body);
+            // JSON envelope matching the GTK driver: {"id":N,"value":F}.
+            char body[96];
+            snprintf(body, sizeof(body), "{\"id\":%d,\"value\":%.6f}",
+                     id, aether_ui_state_get(id));
+            send_http(client_fd, 200, "OK", "application/json", body);
         } else {
-            send_http(client_fd, 404, "Not Found", "text/plain",
-                      "state not found");
+            send_http(client_fd, 404, "Not Found", "application/json",
+                      "{\"error\":\"state not found\"}");
         }
     } else if (method == 1 && strstr(path, "/state/") && strstr(path, "/set")) {
         AetherDriverActionCtx ctx = {0};
@@ -392,7 +399,7 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         const char* v = extract_query_param(path, "v");
         if (v) ctx.dval = atof(v);
         h->dispatch_action(&ctx);
-        send_http(client_fd, 200, "OK", "text/plain", "set");
+        send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
 
     // --- /tray ---
     // GET  /tray              → list of all registered tray records
