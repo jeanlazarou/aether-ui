@@ -19,7 +19,7 @@
 // aetherc --lib path — analog_clock.ae lives in aevg/ but imports root-level
 // aether_ui):
 //   ./bootstrap.sh aevg/.analog_clock.build.ae        (or: aeb aevg/.analog_clock.build.ae)
-//   ./target/aevg/bin/analog_clock                    (DISPLAY=:0 for the window)
+//   ./target/build/aevg/bin/analog_clock              (DISPLAY=:0 for the window)
 
 import build
 import std.os
