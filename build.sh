@@ -7,14 +7,25 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AETHERC="aetherc"
 
-# System-wide Aether headers/libraries
-AETHER_INCLUDES="-I/usr/local/include/aether/runtime -I/usr/local/include/aether/runtime/actors -I/usr/local/include/aether/std -I/usr/local/include/aether/std/collections"
-AETHER_LIB_PATH="/usr/local/lib/aether"
+# Aether headers/libraries. Prefer what `ae cflags` reports (works for both an
+# installed prefix AND a dev build tree — e.g. the MSYS2/MinGW winbaz box, where
+# aether lives at C:\Users\paul\aether\build with no /usr/local prefix). Fall
+# back to the canonical Linux install layout when `ae cflags` is unavailable.
+AETHER_CFLAGS_INC="$(ae cflags 2>/dev/null | tr ' ' '\n' | grep -E '^-I' | tr '\n' ' ' || true)"
+if [ -n "$AETHER_CFLAGS_INC" ]; then
+    AETHER_INCLUDES="$AETHER_CFLAGS_INC"
+else
+    AETHER_INCLUDES="-I/usr/local/include/aether/runtime -I/usr/local/include/aether/runtime/actors -I/usr/local/include/aether/std -I/usr/local/include/aether/std/collections"
+fi
+# -L dir for -laether: take it from `ae cflags --libs`, else the Linux default.
+AETHER_LIB_PATH="$(ae cflags --libs 2>/dev/null | tr ' ' '\n' | grep -E '^-L' | head -1 | sed 's/^-L//' || true)"
+[ -n "$AETHER_LIB_PATH" ] || AETHER_LIB_PATH="/usr/local/lib/aether"
 
 SOURCE="${1:?Usage: $0 <source.ae> [output_binary]}"
 OUTPUT="${2:-build/$(basename "$SOURCE" .ae)}"
 C_FILE="${OUTPUT}.c"
 
+mkdir -p "$(dirname "$C_FILE")"
 echo "Compiling $SOURCE -> $C_FILE"
 "$AETHERC" "$SOURCE" "$C_FILE"
 
