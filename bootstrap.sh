@@ -35,8 +35,9 @@ version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ];
 ae_version() { ae --version 2>/dev/null | head -n1 | sed -E 's/^ae ([0-9]+\.[0-9]+\.[0-9]+).*/\1/'; }
 
 # fetch_run URL : download an installer to a temp file and run it under sh,
-# inheriting the (exported) env the caller set. Avoids `curl | sh` masking a
-# fetch failure.
+# inheriting the (exported) env the caller set. Downloads first, then runs the
+# saved file, so a fetch failure can't be masked the way piping curl into a
+# shell would.
 fetch_run() {
     command -v curl >/dev/null 2>&1 || die "curl is required to install the Aether toolchain (or install ae/aeb yourself and re-run)."
     local tmp rc; tmp="$(mktemp)"
