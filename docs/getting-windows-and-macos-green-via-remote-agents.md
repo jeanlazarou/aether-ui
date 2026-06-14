@@ -122,6 +122,12 @@ ssh -N -L 9222:127.0.0.1:9222 winbaz &   # forward the driver port
 ./test_automation.sh 9222                # your existing curl-based assertions
 ```
 
+> These `&` are in *your own* ssh session, so you own their lifetime. If you
+> instead drive this through an agent **dispatch `command`** (run_on=vm to
+> winbaz), the agent reaps backgrounded processes by default — set
+> `"keep_alive": true` so the driver survives the build step. See
+> [`keep_alive`](#keep_alive--or-the-agent-reaps-your-driver-out-from-under-you) below.
+
 That turns "does the Win32 backend work?" into a **pass/fail you can read in
 this terminal** — clicks, field edits, label assertions — against a real
 USER32 window on real Windows, with no remote desktop. This is the highest-
@@ -242,11 +248,14 @@ aeb is already installed on the Mac. Build the agent + lease tools and start it:
 ```bash
 # On the Mac mini, as your user (NOT sudo — see the gotcha):
 
-# 1. Build the opt-in agent + lease tools from your aeb checkout (one target installs both):
-aeb tools/remote-agent/.install.ae   # → ~/.local/bin/{aeb-agent, aeb-lease}
+# 1. Build the opt-in agent kit from your aeb checkout (one target installs all three):
+aeb tools/remote-agent/.install.ae   # → ~/.local/bin/{aeb-agent, aeb-lease, aeb-keygen}
 
-# 2. A signing secret for lease auth (any high-entropy string, in a file):
-mkdir -p ~/.aeb && openssl rand -hex 32 > ~/.aeb/lease.secret && chmod 600 ~/.aeb/lease.secret
+# 2. A signing secret for lease auth — use aeb-keygen, NOT `openssl rand`. The
+#    agent REFUSES a bare blob: a real secret carries an "aeb-secret-v1:" marker
+#    (greppable for security sweeps) and clears an entropy floor. aeb-keygen
+#    emits exactly that; a raw `openssl rand -hex 32` is now rejected at startup.
+mkdir -p ~/.aeb && aeb-keygen > ~/.aeb/lease.secret && chmod 600 ~/.aeb/lease.secret
 
 # 3. Clone aether-ui on the Mac, then run the agent natively in host mode.
 #    NB: with --max-jobs 1 (default) the single build tree is ~/aether-ui itself.
@@ -307,13 +316,38 @@ here, point your harness at the Mac's driver port directly (bind it to the LAN,
 or run `test_automation.sh` *on* the Mac):
 
 ```bash
-#   command: "./build.sh example_testable.ae build/testable && build/testable &"
+#   command:    "./build.sh example_testable.ae build/testable && build/testable &"
+#   keep_alive: true        # <-- REQUIRED for a backgrounded server (see below)
 #   (the driver listens on :9222)
 ./test_automation.sh <mac-ip>:9222   # or run it on the Mac against 127.0.0.1:9222
 ```
 
 A real AppKit window, driven headlessly, pass/fail in your terminal — a macOS
 regression gate to match the Windows one.
+
+### `keep_alive` — or the agent reaps your driver out from under you
+
+By default the agent **reaps every process a dispatch spawns** when the command
+returns: it runs your `command` in its own process group and group-kills
+survivors (TERM → grace → KILL), the same discipline the `aeb` trampoline uses.
+That's deliberate — a stray `… &` used to outlive the dispatch, hold :9222, and
+**wedge the single build slot** (every later dispatch got `503 busy`, recoverable
+only by `pkill` on the box — impossible on the headless Mac). Reap-by-default
+closes that footgun.
+
+But the driver gate *needs* `build/testable` to survive the build step so the
+harness can drive it. So a dispatch that backgrounds a server **must set
+`"keep_alive": true`**. Then the agent runs the command unreaped and returns
+`"kept_alive": true` in the verdict — your signal that a process is still up and
+**you own its teardown**. Tear it down with a follow-up dispatch:
+
+```bash
+#   command:    "pkill -f build/testable"
+#   keep_alive: false      # default — this teardown command itself IS reaped
+```
+
+Without `keep_alive`, your backgrounded `build/testable &` is killed the instant
+`build.sh` returns, and `test_automation.sh` finds nothing on :9222.
 
 ## Two gotchas (both learned the hard way)
 
