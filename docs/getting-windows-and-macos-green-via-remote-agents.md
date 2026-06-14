@@ -165,7 +165,7 @@ that landed it was *your* shape:
 aeb-agent --run-on vm --vm-host winbaz \
           --vm-shell 'C:\msys64\usr\bin\bash.exe -lc' \   # winbaz's ssh shell is cmd.exe
           --allow-vm-command \                            # opt-in: arbitrary VM command (fail-closed without it)
-          --lease-secret /path/to/secret  ...
+          --lease-secrets /path/to/secret  ...            # NOTE: --lease-secrets (plural), file of 1+ secrets
 
 # A dispatch carrying YOUR build command (the "command" field):
 { "guid":"…", "purpose":"preint/x", "target":".build.ae",
@@ -242,18 +242,21 @@ aeb is already installed on the Mac. Build the agent + lease tools and start it:
 ```bash
 # On the Mac mini, as your user (NOT sudo — see the gotcha):
 
-# 1. Build the opt-in agent + lease tools from your aeb checkout:
-aeb tools/agent/.install.ae      # → ~/.local/bin/aeb-agent
-aeb tools/lease/.install.ae      # → ~/.local/bin/aeb-lease
+# 1. Build the opt-in agent + lease tools from your aeb checkout (one target installs both):
+aeb tools/remote-agent/.install.ae   # → ~/.local/bin/{aeb-agent, aeb-lease}
 
 # 2. A signing secret for lease auth (any high-entropy string, in a file):
 mkdir -p ~/.aeb && openssl rand -hex 32 > ~/.aeb/lease.secret && chmod 600 ~/.aeb/lease.secret
 
-# 3. Clone aether-ui on the Mac, then run the agent natively in host mode:
+# 3. Clone aether-ui on the Mac, then run the agent natively in host mode.
+#    NB: with --max-jobs 1 (default) the single build tree is ~/aether-ui itself.
+#    For N>1 concurrent builds each slot needs its own tree <workdir>/<i>; see
+#    "Concurrency on the Mac" below — for one Mac doing one build at a time,
+#    the default (1 slot, build in --workdir) is exactly right.
 aeb-agent --host 0.0.0.0 --port 9440 --accept 'preint/*' \
           --workdir ~/aether-ui --repo ~/aether-ui \
           --run-on host --allow-vm-command \
-          --lease-secret ~/.aeb/lease.secret
+          --lease-secrets ~/.aeb/lease.secret      # plural: a file of 1+ secrets (rotation)
 ```
 
 - `--run-on host` + `--allow-vm-command`: the dispatch's `command` field runs
@@ -266,6 +269,16 @@ aeb-agent --host 0.0.0.0 --port 9440 --accept 'preint/*' \
 - **No `--vm-shell`, no `--vm-host`, no PATH export** — all the winbaz
   workarounds are absent because there's no ssh hop and macOS's shell already
   has clang.
+- **One build at a time, automatically.** The agent defaults to `--max-jobs 1`:
+  it builds one dispatch at a time in `~/aether-ui` and replies **`503 busy`** to
+  any dispatch that arrives mid-build (your originator can retry). That's exactly
+  what you want for a single Mac — no extra flags. (If you ever want N concurrent
+  AppKit builds, `--max-jobs N` gives each its own tree `~/aether-ui/<i>`, which
+  you'd pre-clone; for one Mac, leave it at 1 and build in `~/aether-ui`.)
+- **Check the toolchain before dispatching:** an authed `GET /ping` now reports
+  `aeb_version` + `aether_version` (the *live* aetherc the Mac would build with).
+  Handy given AppKit builds need Aether ≥ 0.256 — probe `/ping` and you'll see
+  the Mac's version without waiting for a build to fail.
 
 ## Firing a build (from anywhere that can reach the Mac's port)
 
