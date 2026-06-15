@@ -16,7 +16,7 @@ exports (
 
 import vg_live (vg)
 import vg
-import vg (view_box, rect, fill, stroke, text)
+import vg (view_box, rect, fill, stroke, text, text_sized)
 import std.math
 import std.string
 import std.list
@@ -409,11 +409,12 @@ draw_treemap(root: ptr, rects: ptr, scheme: int, total: int, sel_idx: int) {
                 sel = 0
                 if i == sel_idx { sel = 1 }
                 render_shaded(root, r, h, 0.7, 0.55, sel)
-                // label if the rect is big enough
+                // label if the rect is big enough (12px in viewBox units — the
+                // deferred-text path needs an explicit size or it renders ~1px)
                 if r.h > 25.0 {
                     if r.w > 40.0 {
                         nm = clip_name(r.entry.name)
-                        tx = vg.text(root, r.x + 5.0, r.y + 15.0, nm)
+                        tx = vg.text_sized(root, r.x + 6.0, r.y + 18.0, 16.0, nm)
                         vg.fill(tx, "#000000")
                     }
                 }
