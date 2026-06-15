@@ -409,13 +409,14 @@ draw_treemap(root: ptr, rects: ptr, scheme: int, total: int, sel_idx: int) {
                 sel = 0
                 if i == sel_idx { sel = 1 }
                 render_shaded(root, r, h, 0.7, 0.55, sel)
-                // label if the rect is big enough. 16 viewBox-unit font; baseline
-                // y+26 sits the text comfortably INSIDE the tile (y+18 rode up
-                // against the top border). Need r.h > ~30 for the text to clear.
-                if r.h > 32.0 {
+                // label if the tile is big enough. 16 viewBox-unit font; the
+                // renderer draws at (y - baseline_offset≈17), so a baseline of
+                // y+34 lands the text visibly ~17px below the top edge — clear of
+                // the border. Gate h>50 so the label never spills past the bottom.
+                if r.h > 50.0 {
                     if r.w > 44.0 {
                         nm = clip_name(r.entry.name)
-                        tx = vg.text_sized(root, r.x + 8.0, r.y + 26.0, 16.0, nm)
+                        tx = vg.text_sized(root, r.x + 8.0, r.y + 44.0, 16.0, nm)
                         vg.fill(tx, "#000000")
                     }
                 }
