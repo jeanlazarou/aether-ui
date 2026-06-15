@@ -79,6 +79,7 @@ build_app(b: ptr, root: string, os_name: string, src: string, out: string) {
             link_flag("-ldwmapi")
             link_flag("-luxtheme")
             link_flag("-lws2_32")
+            link_flag("-lbcrypt")   // libaether crypto: BCryptGenRandom
         }
     }
 }

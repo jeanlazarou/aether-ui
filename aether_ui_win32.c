@@ -2288,6 +2288,7 @@ typedef struct {
     int cmd_count;
     int cmd_cap;
     float cur_x, cur_y;
+    AeClosure* on_move;   // pointer-move hook (canvas-local x,y); null = none
 } Canvas;
 
 static Canvas* canvases = NULL;
@@ -2331,6 +2332,7 @@ int aether_ui_canvas_create_impl(int width, int height) {
     cv->cmd_count = 0;
     cv->cmd_cap = 0;
     cv->cur_x = cv->cur_y = 0;
+    cv->on_move = NULL;
     int widget_handle = register_widget_typed(h, WK_CANVAS);
     Widget* ww = widget_at(widget_handle);
     if (ww) {
@@ -2358,7 +2360,8 @@ void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure) {
 }
 
 void aether_ui_canvas_on_move_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;   // TODO: WM_MOUSEMOVE → (x,y)
+    if (canvas_id < 1 || canvas_id > canvas_count || !boxed_closure) return;
+    canvases[canvas_id - 1].on_move = (AeClosure*)boxed_closure;
 }
 
 // begin_path starts a fresh command stream — drop any previously-recorded
@@ -2755,6 +2758,22 @@ static LRESULT CALLBACK canvas_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_MOUSEMOVE: {
+            // Forward canvas-local (x, y) to the on_move hook. WM_MOUSEMOVE
+            // lParam carries client-area coords (top-left origin) — the same
+            // space the canvas draws in.
+            int cid = canvas_id_for_hwnd(hwnd);
+            if (cid >= 1) {
+                Canvas* cv = &canvases[cid - 1];
+                if (cv->on_move && cv->on_move->fn) {
+                    int x = (int)(short)LOWORD(lp);
+                    int y = (int)(short)HIWORD(lp);
+                    ((void(*)(void*, double, double))cv->on_move->fn)(
+                        cv->on_move->env, (double)x, (double)y);
+                }
+            }
+            return 0;
+        }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
