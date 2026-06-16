@@ -32,7 +32,15 @@ C_FILE="${OUTPUT}.c"
 
 mkdir -p "$(dirname "$C_FILE")"
 echo "Compiling $SOURCE -> $C_FILE"
-"$AETHERC" "$SOURCE" "$C_FILE"
+# An app moved under aevg/apps/<name>/ imports sibling modules (vg, vg_live,
+# loader, …) that live in aevg/ — give aetherc that dir on its --lib search
+# path (the shell twin of the aeb per-node lib() setter). Harmless for sources
+# that don't import them.
+LIB_FLAGS=()
+case "$SOURCE" in
+    */aevg/apps/*|aevg/apps/*) LIB_FLAGS=(--lib "$SCRIPT_DIR/aevg") ;;
+esac
+"$AETHERC" "${LIB_FLAGS[@]}" "$SOURCE" "$C_FILE"
 
 OS="$(uname -s)"
 case "$OS" in

@@ -181,123 +181,28 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Phase 1.5: build the AeVG GTK demo. Proves the aevg_gtk_backend
-# adapter links against the real aether_ui canvas primitives (arc /
-# fill / fill_text added in the Phase-1 wiring) through the
-# backend_dispatch table. Linux/GTK only; build-only (no run — GTK4
-# under bare xvfb won't reliably map a window for pixel capture, and
-# the headless smoke value is the link + no-crash, covered by the
-# example builds).
+# Phase 1.5: RUN the headless AeVG renderers (build was done by the .all.ae
+# fan-out in Phase 1 — every aevg app is an aevg/apps/<name>/ node now). The
+# value here is RUNTIME coverage the build-only fan-out can't give: each writes
+# a PNG, exercising the raster-blit + draw-region compose path. Linux/GTK only.
+AEVG_BIN() { echo "$ROOT/target/build/aevg/apps/$1/bin/$1"; }
 if [ "$PLATFORM" = "linux" ]; then
-    echo "  --- AeVG demos (real backend adapter) ---"
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg.ae build/aevg_demo \
-            > /tmp/ci_build_aevg_demo.log 2>&1; then
-        echo "  OK   aevg_demo (rect/circle/line/path/text + filtered circle on real canvas)"
-    else
-        echo "  FAIL aevg_demo"
-        tail -15 /tmp/ci_build_aevg_demo.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_raster.ae build/raster_demo \
-            > /tmp/ci_build_raster_demo.log 2>&1; then
-        echo "  OK   raster_demo (render_as_raster → canvas_draw_image blit)"
-    else
-        echo "  FAIL raster_demo"
-        tail -15 /tmp/ci_build_raster_demo.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_vg.ae build/vg_demo \
-            > /tmp/ci_build_vg_demo.log 2>&1; then
-        echo "  OK   vg_demo (vg{} drawing DSL on a live window)"
-    else
-        echo "  FAIL vg_demo"
-        tail -15 /tmp/ci_build_vg_demo.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_interactive.ae build/aevg_interactive \
-            > /tmp/ci_build_aevg_interactive.log 2>&1; then
-        echo "  OK   aevg_interactive (click-to-recolour shapes via on_click)"
-    else
-        echo "  FAIL aevg_interactive"
-        tail -15 /tmp/ci_build_aevg_interactive.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_clip.ae build/aevg_clip \
-            > /tmp/ci_build_aevg_clip.log 2>&1; then
-        echo "  OK   aevg_clip (viewport overflow:hidden clipping)"
-    else
-        echo "  FAIL aevg_clip"
-        tail -15 /tmp/ci_build_aevg_clip.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_anim.ae build/aevg_anim \
-            > /tmp/ci_build_aevg_anim.log 2>&1; then
-        echo "  OK   aevg_anim (timer-driven continuous animation)"
-    else
-        echo "  FAIL aevg_anim"
-        tail -15 /tmp/ci_build_aevg_anim.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    # Live-region composite: build + RUN headless (writes a PNG; no window), so
-    # CI exercises the raster-blit + draw-region compose path, not just the link.
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_live_png.ae build/aevg_live_png \
-            > /tmp/ci_build_aevg_live_png.log 2>&1 \
-            && AEVG_OUT=/tmp/ci_live.png build/aevg_live_png > /tmp/ci_run_aevg_live_png.log 2>&1 \
-            && [ -f /tmp/ci_live.png ]; then
-        echo "  OK   aevg_live_png (live raster + draw region composite)"
-    else
-        echo "  FAIL aevg_live_png"
-        tail -15 /tmp/ci_build_aevg_live_png.log /tmp/ci_run_aevg_live_png.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_live.ae build/aevg_live \
-            > /tmp/ci_build_aevg_live.log 2>&1; then
-        echo "  OK   aevg_live (tumbling cube over live raster)"
-    else
-        echo "  FAIL aevg_live"
-        tail -15 /tmp/ci_build_aevg_live.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    # Video region: build + RUN headless — generates an in-memory RGBA clip and
-    # plays a frame through the video_source → frame-slice → scaled-blit path.
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_video_png.ae build/aevg_video_png \
-            > /tmp/ci_build_aevg_video_png.log 2>&1 \
-            && AEVG_OUT=/tmp/ci_video.png build/aevg_video_png > /tmp/ci_run_aevg_video_png.log 2>&1 \
-            && [ -f /tmp/ci_video.png ]; then
-        echo "  OK   aevg_video_png (raw-RGBA clip in a live region)"
-    else
-        echo "  FAIL aevg_video_png"
-        tail -15 /tmp/ci_build_aevg_video_png.log /tmp/ci_run_aevg_video_png.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/example_aevg_video.ae build/aevg_video \
-            > /tmp/ci_build_aevg_video.log 2>&1; then
-        echo "  OK   aevg_video (raw-RGBA file player; build-only)"
-    else
-        echo "  FAIL aevg_video"
-        tail -15 /tmp/ci_build_aevg_video.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    # Analog clock: build the live window + build+RUN the headless one-frame PNG
-    # (face + markers + bound hands).
-    if "$SCRIPT_DIR/build.sh" aevg/analog_clock.ae build/analog_clock \
-            > /tmp/ci_build_analog_clock.log 2>&1; then
-        echo "  OK   analog_clock (declarative clock, bind_pos hands)"
-    else
-        echo "  FAIL analog_clock"
-        tail -15 /tmp/ci_build_analog_clock.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
-    if "$SCRIPT_DIR/build.sh" aevg/analog_clock_png.ae build/analog_clock_png \
-            > /tmp/ci_build_analog_clock_png.log 2>&1 \
-            && AEVG_OUT=/tmp/ci_clock.png build/analog_clock_png > /tmp/ci_run_analog_clock_png.log 2>&1 \
-            && [ -f /tmp/ci_clock.png ]; then
-        echo "  OK   analog_clock_png (one-frame clock render)"
-    else
-        echo "  FAIL analog_clock_png"
-        tail -15 /tmp/ci_build_analog_clock_png.log /tmp/ci_run_analog_clock_png.log | sed 's/^/       /'
-        FAIL=$((FAIL + 1))
-    fi
+    echo "  --- AeVG headless renderers (run → PNG) ---"
+    run_png() {  # $1=app $2=desc
+        local bin; bin="$(AEVG_BIN "$1")"
+        if [ -x "$bin" ] \
+                && AEVG_OUT="/tmp/ci_$1.png" "$bin" > "/tmp/ci_run_$1.log" 2>&1 \
+                && [ -f "/tmp/ci_$1.png" ]; then
+            echo "  OK   $1 ($2)"
+        else
+            echo "  FAIL $1"
+            tail -15 "/tmp/ci_run_$1.log" 2>/dev/null | sed 's/^/       /'
+            FAIL=$((FAIL + 1))
+        fi
+    }
+    run_png aevg_live_png   "live raster + draw region composite"
+    run_png aevg_video_png  "raw-RGBA clip in a live region"
+    run_png analog_clock_png "one-frame clock render"
 fi
 
 if [ "$FAIL" -gt 0 ]; then

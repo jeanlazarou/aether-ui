@@ -1,18 +1,21 @@
 // .all.ae — build EVERY aether-ui binary, as a FAN-OUT of cached per-app nodes.
 //
-// Each app under examples/<app>/ (and, once the aeb per-node lib() setter lands,
-// aevg/apps/<app>/) carries its own .build.ae — a cached, individually
-// addressable node. This root just scans + deps them all, so:
-//   aeb .all.ae              builds everything (parallel, incrementally cached)
-//   aeb examples/calculator  builds just that one app
+// Each app under examples/<app>/ and aevg/apps/<app>/ carries its own .build.ae
+// — a cached, individually addressable node. This root just scans + deps them
+// all, so:
+//   aeb .all.ae               builds everything (parallel, incrementally cached)
+//   aeb examples/calculator   builds just that one toolkit app
+//   aeb aevg/apps/rubiks_cube builds just that one AeVG app
 //
 // Replaces the old 32-call single-node monolith (no caching/addressing/parallel).
-// The shared per-platform backend-link block lives in .aeb/lib/aetherui (ui_backend).
+// The shared per-platform backend-link block lives in .aeb/lib/aetherui
+// (ui_backend); aevg apps add `lib("${root}/aevg")` for the shared vg/* modules.
 
 import build
 
 main() {
     b = build.start()
     build.scan(b, "examples/**/.build.ae")
+    build.scan(b, "aevg/apps/**/.build.ae")
     return 0
 }
