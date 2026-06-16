@@ -1320,6 +1320,9 @@ typedef struct {
     // keyboard-driven canvases. The scene's event model already has the
     // dispatch side (grammar_events.dispatch_key_down); this bridges real keys.
     AeClosure* on_key;
+    // Pointer-release hook — canvas-local (x, y) where the button came up.
+    // Pairs with on_click + on_move to form a press→drag→release swipe.
+    AeClosure* on_release;
 } CanvasState;
 
 static CanvasState* canvas_states = NULL;
@@ -1573,6 +1576,7 @@ int aether_ui_canvas_create_impl(int width, int height) {
     cs->on_resize = NULL;
     cs->on_move = NULL;
     cs->on_key = NULL;
+    cs->on_release = NULL;
     cs->on_click = NULL;
     cs->last_w = width;
     cs->last_h = height;
@@ -1631,6 +1635,33 @@ void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure) {
     GtkGesture* gesture = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 1);
     g_signal_connect(gesture, "pressed", G_CALLBACK(on_canvas_click), boxed_closure);
+    gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(gesture));
+}
+
+// Pointer-release on the canvas: the "released" end of a GtkGestureClick,
+// reporting widget-relative coords (same space as on_click). With on_click +
+// on_move this completes a press→drag→release gesture so callers can compute a
+// swipe (drag delta) without per-element drag tracking. Built for the cube.
+static void on_canvas_release(GtkGestureClick* gesture, int n_press,
+                               double x, double y, gpointer data) {
+    (void)gesture; (void)n_press;
+    AeClosure* c = (AeClosure*)data;
+    if (c && c->fn) {
+        ((void(*)(void*, double, double))c->fn)(c->env, x, y);
+    }
+}
+
+// Register a pointer-release hook on a canvas. Closure takes (x, y) in
+// canvas-local px (the point where the button was released).
+void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure) {
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_release = (AeClosure*)boxed_closure;
+    GtkWidget* w = aether_ui_get_widget(cs->widget_handle);
+    if (!w) return;
+    GtkGesture* gesture = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 1);
+    g_signal_connect(gesture, "released", G_CALLBACK(on_canvas_release), boxed_closure);
     gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(gesture));
 }
 

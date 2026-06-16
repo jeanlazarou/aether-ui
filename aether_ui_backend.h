@@ -185,6 +185,9 @@ void aether_ui_canvas_on_move_impl(int canvas_id, void* boxed_closure);
 // a key name (e.g. "Left", "a", "space", "Escape"). No-op on backends without
 // live key delivery.
 void aether_ui_canvas_on_key_impl(int canvas_id, void* boxed_closure);
+// Pointer-release: fires (x, y) canvas-local px when the button comes up.
+// Pairs with on_click + on_move to form a press→drag→release swipe.
+void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure);
 void aether_ui_canvas_begin_path_impl(int canvas_id);
 void aether_ui_canvas_move_to_impl(int canvas_id, double x, double y);
 void aether_ui_canvas_line_to_impl(int canvas_id, double x, double y);

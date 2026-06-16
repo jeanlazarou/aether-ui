@@ -1543,6 +1543,12 @@ void aether_ui_canvas_on_key_impl(int canvas_id, void* boxed_closure) {
     (void)canvas_id; (void)boxed_closure;
 }
 
+// Pointer-release on a canvas. No-op stub — the AppKit bridge would route
+// NSView mouseUp: → (x,y) into the closure. The Linux backend is the reference.
+void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure) {
+    (void)canvas_id; (void)boxed_closure;
+}
+
 void aether_ui_canvas_begin_path_impl(int canvas_id) {
     canvas_add_cmd(canvas_id, (CanvasCmd){ .type = CANVAS_BEGIN_PATH });
 }

@@ -2371,6 +2371,12 @@ void aether_ui_canvas_on_key_impl(int canvas_id, void* boxed_closure) {
     (void)canvas_id; (void)boxed_closure;
 }
 
+// Pointer-release on a canvas. No-op stub — the Win32 bridge would route
+// WM_LBUTTONUP → (x,y) into the closure. The Linux backend is the reference.
+void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure) {
+    (void)canvas_id; (void)boxed_closure;
+}
+
 // begin_path starts a fresh command stream — drop any previously-recorded
 // commands so a redraw-per-frame loop doesn't accumulate unboundedly.
 // Previously this was an append-only op, which meant an animated canvas

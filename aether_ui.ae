@@ -14,6 +14,7 @@ exports (
     root_vstack, root_hstack,
     window, window_run, render_to, record, surface_diagnostics,
     register_deferred_flush, canvas_on_resize, canvas_on_click, canvas_on_move, canvas_on_key,
+    canvas_on_release,
     _surface_window_factory, _surface_render_factory, _surface_record_factory,
     app_run, app_create, app_start,
     vstack, hstack, scrollview, zstack, form, section, navstack,
@@ -70,6 +71,7 @@ extern aether_ui_canvas_on_resize_impl(canvas_id: int, boxed_closure: ptr)
 extern aether_ui_canvas_on_click_impl(canvas_id: int, boxed_closure: ptr)
 extern aether_ui_canvas_on_move_impl(canvas_id: int, boxed_closure: ptr)
 extern aether_ui_canvas_on_key_impl(canvas_id: int, boxed_closure: ptr)
+extern aether_ui_canvas_on_release_impl(canvas_id: int, boxed_closure: ptr)
 
 extern aether_ui_text_create(label: string) -> int
 extern aether_ui_text_set_string(handle: int, text: string)
@@ -392,6 +394,15 @@ canvas_on_move(cid: int, cb: fn) {
 canvas_on_key(cid: int, cb: fn) {
     boxed = box_closure(cb)
     aether_ui_canvas_on_key_impl(cid, boxed)
+}
+
+// canvas_on_release(cid, cb) — fire cb(x, y) (canvas-local px) when the pointer
+// button is released. Pairs with canvas_on_click (press) + canvas_on_move to
+// form a press→drag→release swipe (the Rubik's cube uses it to read a swipe's
+// direction). Real on GTK4; no-op on backends without a release bridge yet.
+canvas_on_release(cid: int, cb: fn) {
+    boxed = box_closure(cb)
+    aether_ui_canvas_on_release_impl(cid, boxed)
 }
 
 // window_run — the explicit-root window form, sibling to `window {…}`.
