@@ -1675,6 +1675,23 @@ static gboolean on_canvas_key(GtkEventControllerKey* ctrl, guint keyval,
     return TRUE;   // handled
 }
 
+// Grab keyboard focus once the widget is actually on screen. Calling
+// grab_focus at registration is too early — the window isn't mapped yet, so
+// the grab doesn't stick and keys go nowhere. Defer it to the "map" signal.
+static void on_canvas_map_focus(GtkWidget* w, gpointer data) {
+    (void)data;
+    gtk_widget_grab_focus(w);
+}
+
+// A click anywhere on the canvas returns keyboard focus to it (clicking a
+// button steals focus; this gets it back so keys keep working). Runs on the
+// CAPTURE phase so it fires even if another gesture also handles the press.
+static void on_canvas_focus_click(GtkGestureClick* g, int n, double x, double y,
+                                   gpointer data) {
+    (void)g; (void)n; (void)x; (void)y;
+    gtk_widget_grab_focus(GTK_WIDGET(data));
+}
+
 // Register a key-down hook on a canvas. The boxed Aether closure takes
 // (key: string). Bridges real GTK key events into the scene's keyboard model
 // (which already has grammar_events.dispatch_key_down on the Aether side).
@@ -1687,7 +1704,18 @@ void aether_ui_canvas_on_key_impl(int canvas_id, void* boxed_closure) {
     GtkEventController* keys = gtk_event_controller_key_new();
     g_signal_connect(keys, "key-pressed", G_CALLBACK(on_canvas_key), boxed_closure);
     gtk_widget_add_controller(w, keys);
-    gtk_widget_grab_focus(w);   // so keys arrive without a click first
+
+    // Take focus when mapped (grab here is too early — window not shown yet).
+    g_signal_connect(w, "map", G_CALLBACK(on_canvas_map_focus), NULL);
+    if (gtk_widget_get_mapped(w)) gtk_widget_grab_focus(w);
+
+    // Re-focus on click so the canvas keeps keyboard input after a button steals
+    // focus. Capture phase so it co-exists with the coords click gesture.
+    GtkGesture* fclick = gtk_gesture_click_new();
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(fclick),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(fclick, "pressed", G_CALLBACK(on_canvas_focus_click), w);
+    gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(fclick));
 }
 
 void aether_ui_canvas_begin_path_impl(int canvas_id) {

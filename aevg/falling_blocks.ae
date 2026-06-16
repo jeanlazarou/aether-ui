@@ -48,7 +48,7 @@ CELLS()   -> int   { return 200 }            // BOARD_W * BOARD_H
 BLOCK()   -> float { return 28.0 }           // px per cell in the vg viewBox
 BOARD_PX_W() -> float { return 280.0 }       // 10 * 28
 BOARD_PX_H() -> float { return 560.0 }       // 20 * 28
-DROP_MS() -> float { return 600.0 }          // base gravity interval
+DROP_SEC() -> float { return 0.6 }           // base gravity interval (seconds)
 
 // ─── Tetromino tables ────────────────────────────────────────────────────────
 //
@@ -206,6 +206,7 @@ spawn_piece(g: *Game) {
     g.cur_col = 3
     g.cur_row = 0
     g.next_shape = math.random_int(0, 6)
+    g.last_drop = 0.0                           // re-seed gravity clock for this piece
     if collides(g, g.cur_col, g.cur_row, g.cur_rot) == 1 {
         g.phase = 3                            // game over
     }
@@ -341,11 +342,16 @@ toggle_pause(g: *Game) {
 }
 
 // Gravity: drop one cell on interval; lock + spawn at the floor.
+// `now` is the live loop's clock in SECONDS (vg_live passes ms_to_secs(now)),
+// so the drop interval is in seconds too. last_drop is seeded on the first tick
+// after a piece spawns (last_drop == 0.0) so a fresh piece gets a full interval
+// rather than dropping instantly (the epoch-relative `now` is a large value).
 tick(g: *Game, now: float) {
     if g.phase != 1 { return }
     if g.cur_shape < 0 { return }
-    interval = DROP_MS() - (g.level - 1) * 60
-    if interval < 120.0 { interval = 120.0 }
+    if g.last_drop == 0.0 { g.last_drop = now; return }
+    interval = DROP_SEC() - (g.level - 1) * 0.06
+    if interval < 0.12 { interval = 0.12 }
     if now - g.last_drop >= interval {
         g.last_drop = now
         if collides(g, g.cur_col, g.cur_row + 1, g.cur_rot) == 0 {
@@ -475,8 +481,8 @@ main() {
     g = mk_game()
 
     window("Falling Blocks", 360, 720) {
-        vstack {
-            hstack {
+        vstack(6) {
+            hstack(6) {
                 btn("New Game") callback { start_game(g) }
                 btn("Pause") callback { toggle_pause(g) }
                 btn("Left") callback { move_left(g) }
