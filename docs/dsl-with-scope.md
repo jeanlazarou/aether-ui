@@ -50,6 +50,13 @@ Three pieces matter here:
    config object the `with` factory created and pushed as `_ctx`), then the
    function *body* runs. This is the after-block epilogue: the block builds
    eagerly and in place, and the function gets to act *after* it closes.
+4. **UFCS — `x.f(args)` → `f(x, args)`** — the orthogonal *value-chain* axis
+   (Aether #928, cross-module #934). When a free function's first parameter
+   matches `typeof(x)`, it's callable in method position. The explicit-handle
+   modifiers (`style_font_size`, `width`, `height`, …) each return their
+   handle, so they compose left-to-right — see
+   [Chaining explicit-handle modifiers](#chaining-explicit-handle-modifiers-ufcs)
+   below.
 
 ## Surfaces are DSL-with-Scope all the way down
 
@@ -93,6 +100,31 @@ own that ends on an external event (the close button), so only `window` runs a
 loop. Splitting the one verb into three surface kinds makes the lifecycle
 honest — and means "applications need not have a fat UI": a program can open a
 `record` or `render_to` surface, draw, and exit, never touching a window loop.
+
+## Chaining explicit-handle modifiers (UFCS)
+
+The `_ctx` axis above styles the *ambient* widget inside a block
+(`button("OK") { corner_radius(8); tooltip("…") }`). The complementary case
+is styling a widget you captured *by name* — and that's where UFCS reads best.
+Every explicit-handle modifier (`style_*`, `width`, `height`, `fill_*`,
+`alignment`, `distribution`, `edge_insets`, `margin_of`, the `set_*` state
+mutators, the `on_*` handlers, and the `tray_set_*` setters) returns its
+handle, so `x.f(a)` (which desugars to `f(x, a)`) chains:
+
+```aether
+title = text("Aether UI Styled Demo")
+title.style_font_size(20).style_font_bold().style_text_color(1.0, 1.0, 1.0)
+
+submit.style_bg_color(0.2, 0.6, 0.3, 1.0)
+      .style_corner_radius(8)
+      .style_tooltip("Click to submit the form")
+```
+
+Both forms still work — UFCS is a *last-resort* fallback (it only fires when a
+dotted call would otherwise be undefined), so the flat
+`style_font_size(title, 20)` is unchanged. The chain is purely sugar: each
+`x.f(a)` lowers to the same `f(x, a)` call, and the handle threaded through is
+a register-width int the C backend elides.
 
 See also: AeVG's `vg { … }` vector-graphics scope (a surface-nestable drawing
 block) in the AeVG README.

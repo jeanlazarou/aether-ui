@@ -1,7 +1,7 @@
-// example_tray.ae — system-tray + desktop-notifications demo.
+// examples/tray/tray.ae — system-tray + desktop-notifications demo.
 //
 // Build and run (interactive, will sit in the tray):
-//   ./build.sh example_tray.ae build/example_tray
+//   ./build.sh examples/tray/tray.ae build/example_tray
 //   ./build/example_tray
 //
 // Headless smoke (used by tests/test_tray_notif_driver.sh):
@@ -44,12 +44,13 @@ main() {
         println("Tray left-clicked")
         aether_ui.notify("AvnSync", "Status check requested")
     }
-    aether_ui.tray_set_tooltip(tray, "AvnSync — synced")
-    aether_ui.tray_set_menu(tray, m)
-    aether_ui.tray_set_icon_for_state(tray, sync_status,
-        "/usr/share/icons/hicolor/scalable/apps/clean.svg",
-        "/usr/share/icons/hicolor/scalable/apps/sync.svg",
-        "/usr/share/icons/hicolor/scalable/apps/alert.svg")
+    // UFCS chain — each tray_set_* returns the tray id.
+    tray.tray_set_tooltip("AvnSync — synced")
+        .tray_set_menu(m)
+        .tray_set_icon_for_state(sync_status,
+            "/usr/share/icons/hicolor/scalable/apps/clean.svg",
+            "/usr/share/icons/hicolor/scalable/apps/sync.svg",
+            "/usr/share/icons/hicolor/scalable/apps/alert.svg")
 
     // Optional driver. Set AETHER_UI_TEST_PORT to enable. The port
     // is currently hard-coded in matched apps (mirror of the

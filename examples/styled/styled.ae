@@ -13,13 +13,12 @@ main() {
         // Header with gradient background
         header = aether_ui.hstack(10) {
             title = aether_ui.text("Aether UI Styled Demo")
-            aether_ui.style_font_size(title, 20)
-            aether_ui.style_font_bold(title)
-            aether_ui.style_text_color(title, 1.0, 1.0, 1.0)
+            // UFCS chain — x.f(a) desugars to f(x, a); each style_* returns
+            // its handle so they compose left-to-right.
+            title.style_font_size(20).style_font_bold().style_text_color(1.0, 1.0, 1.0)
             aether_ui.spacer()
         }
-        aether_ui.style_bg_gradient(header, 0.2, 0.4, 0.8, 0.1, 0.2, 0.6, 0)
-        aether_ui.edge_insets(header, 16, 16, 16, 16)
+        header.style_bg_gradient(0.2, 0.4, 0.8, 0.1, 0.2, 0.6, 0).edge_insets(16, 16, 16, 16)
 
         // Form with sections
         aether_ui.form() {
@@ -55,8 +54,7 @@ main() {
             bg = aether_ui.vstack(0) {
                 aether_ui.spacer()
             }
-            aether_ui.style_bg_color(bg, 0.9, 0.95, 1.0, 1.0)
-            aether_ui.height(bg, 80)
+            bg.style_bg_color(0.9, 0.95, 1.0, 1.0).height(80)
 
             label = aether_ui.text("Overlaid text on colored background")
             aether_ui.margin_of(label, 20, 20, 20, 20)
@@ -70,15 +68,13 @@ main() {
             submit = aether_ui.btn("Submit") callback {
                 println("Submitted!")
             }
-            aether_ui.style_bg_color(submit, 0.2, 0.6, 0.3, 1.0)
-            aether_ui.style_corner_radius(submit, 8)
-            aether_ui.style_tooltip(submit, "Click to submit the form")
+            submit.style_bg_color(0.2, 0.6, 0.3, 1.0).style_corner_radius(8)
+                  .style_tooltip("Click to submit the form")
 
             cancel = aether_ui.btn("Cancel") callback {
                 println("Cancelled")
             }
-            aether_ui.style_corner_radius(cancel, 8)
-            aether_ui.style_tooltip(cancel, "Click to cancel")
+            cancel.style_corner_radius(8).style_tooltip("Click to cancel")
 
             aether_ui.spacer()
 

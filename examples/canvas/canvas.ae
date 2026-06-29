@@ -11,8 +11,7 @@ main() {
     aether_ui.window("Canvas Demo", 440, 500) {
     root = aether_ui.vstack(10) {
         title = aether_ui.text("Canvas Drawing Demo")
-        aether_ui.style_font_size(title, 18)
-        aether_ui.style_font_bold(title)
+        title.style_font_size(18).style_font_bold()
 
         aether_ui.divider()
 

@@ -628,8 +628,9 @@ ui_get(handle: int) {
     return aether_ui_state_get(handle)
 }
 
-ui_set(handle: int, value: float) {
+ui_set(handle: int, value: float) -> int {
     aether_ui_state_set(handle, value)
+    return handle
 }
 
 text_bound(_ctx: ptr, state_handle: int, prefix: string, suffix: string) {
@@ -643,32 +644,36 @@ text_bound(_ctx: ptr, state_handle: int, prefix: string, suffix: string) {
 
 // --- Widget accessors ---
 
-set_text(handle: int, text: string) {
+set_text(handle: int, text: string) -> int {
     aether_ui_textfield_set_text(handle, text)
+    return handle
 }
 
 get_text(handle: int) {
     return aether_ui_textfield_get_text(handle)
 }
 
-set_toggle(handle: int, active: int) {
+set_toggle(handle: int, active: int) -> int {
     aether_ui_toggle_set_active(handle, active)
+    return handle
 }
 
 get_toggle(handle: int) {
     return aether_ui_toggle_get_active(handle)
 }
 
-set_slider(handle: int, value: float) {
+set_slider(handle: int, value: float) -> int {
     aether_ui_slider_set_value(handle, value)
+    return handle
 }
 
 get_slider(handle: int) {
     return aether_ui_slider_get_value(handle)
 }
 
-set_progress(handle: int, fraction: float) {
+set_progress(handle: int, fraction: float) -> int {
     aether_ui_progressbar_set_fraction(handle, fraction)
+    return handle
 }
 
 // --- Styling (Group 4) ---
@@ -717,69 +722,90 @@ onclick(_ctx: ptr, handler: fn) {
 
 // --- Explicit-handle styling (use outside blocks) ---
 
-style_bg_color(handle: int, r: float, g: float, b: float, a: float) {
+// --- Explicit-handle styling (use outside blocks). Each returns its
+// handle so calls chain via UFCS: title.style_font_size(20).style_font_bold()
+// (x.f(args) desugars to f(x, args) — Aether #928/#934). Existing flat
+// calls keep working; UFCS is a last-resort fallback. ---
+
+style_bg_color(handle: int, r: float, g: float, b: float, a: float) -> int {
     aether_ui_set_bg_color(handle, r, g, b, a)
+    return handle
 }
 
-style_text_color(handle: int, r: float, g: float, b: float) {
+style_text_color(handle: int, r: float, g: float, b: float) -> int {
     aether_ui_set_text_color(handle, r, g, b)
+    return handle
 }
 
-style_font_size(handle: int, size: float) {
+style_font_size(handle: int, size: float) -> int {
     aether_ui_set_font_size(handle, size)
+    return handle
 }
 
-style_font_bold(handle: int) {
+style_font_bold(handle: int) -> int {
     aether_ui_set_font_bold(handle, 1)
+    return handle
 }
 
 style_bg_gradient(handle: int, r1: float, g1: float, b1: float,
-                   r2: float, g2: float, b2: float, vertical: int) {
+                   r2: float, g2: float, b2: float, vertical: int) -> int {
     aether_ui_set_bg_gradient(handle, r1, g1, b1, r2, g2, b2, vertical)
+    return handle
 }
 
-style_corner_radius(handle: int, radius: float) {
+style_corner_radius(handle: int, radius: float) -> int {
     aether_ui_set_corner_radius(handle, radius)
+    return handle
 }
 
-style_opacity(handle: int, val: float) {
+style_opacity(handle: int, val: float) -> int {
     aether_ui_set_opacity(handle, val)
+    return handle
 }
 
-style_enabled(handle: int, val: int) {
+style_enabled(handle: int, val: int) -> int {
     aether_ui_set_enabled(handle, val)
+    return handle
 }
 
-style_tooltip(handle: int, text: string) {
+style_tooltip(handle: int, text: string) -> int {
     aether_ui_set_tooltip(handle, text)
+    return handle
 }
 
-edge_insets(handle: int, top: float, right: float, bottom: float, left: float) {
+edge_insets(handle: int, top: float, right: float, bottom: float, left: float) -> int {
     aether_ui_set_edge_insets(handle, top, right, bottom, left)
+    return handle
 }
 
-width(handle: int, w: int) {
+width(handle: int, w: int) -> int {
     aether_ui_set_width(handle, w)
+    return handle
 }
 
-height(handle: int, h: int) {
+height(handle: int, h: int) -> int {
     aether_ui_set_height(handle, h)
+    return handle
 }
 
-distribution(handle: int, dist: int) {
+distribution(handle: int, dist: int) -> int {
     aether_ui_set_distribution(handle, dist)
+    return handle
 }
 
-alignment(handle: int, align: int) {
+alignment(handle: int, align: int) -> int {
     aether_ui_set_alignment(handle, align)
+    return handle
 }
 
-fill_width(handle: int) {
+fill_width(handle: int) -> int {
     aether_ui_match_parent_width(handle)
+    return handle
 }
 
-fill_height(handle: int) {
+fill_height(handle: int) -> int {
     aether_ui_match_parent_height(handle)
+    return handle
 }
 
 // margin — in-block modifier: applies to the ambient element (_ctx).
@@ -795,8 +821,9 @@ margin(_ctx: ptr, top: int, right: int, bottom: int, left: int) {
 
 // margin_of — explicit-target form: pad a specific widget handle
 // (e.g. a child captured by name, not the ambient one).
-margin_of(handle: int, top: int, right: int, bottom: int, left: int) {
+margin_of(handle: int, top: int, right: int, bottom: int, left: int) -> int {
     aether_ui_set_margin(handle, top, right, bottom, left)
+    return handle
 }
 
 // --- System integration (Group 5) ---
@@ -997,19 +1024,22 @@ canvas_write_png(cid: int, path: string, width: int, height: int) -> int {
 
 // --- Event handlers ---
 
-on_hover(handle: int, handler: fn) {
+on_hover(handle: int, handler: fn) -> int {
     boxed = box_closure(handler)
     aether_ui_on_hover_impl(handle, boxed)
+    return handle
 }
 
-on_double_click(handle: int, handler: fn) {
+on_double_click(handle: int, handler: fn) -> int {
     boxed = box_closure(handler)
     aether_ui_on_double_click_impl(handle, boxed)
+    return handle
 }
 
-on_click(handle: int, handler: fn) {
+on_click(handle: int, handler: fn) -> int {
     boxed = box_closure(handler)
     aether_ui_on_click_impl(handle, boxed)
+    return handle
 }
 
 // --- Widget manipulation ---
@@ -1138,12 +1168,16 @@ tray_icon_plain(name: string) {
     return aether_ui_tray_create_impl(name, 0)
 }
 
-tray_set_tooltip(tray_id: int, text: string) {
+// The tray setters return the tray_id so they chain via UFCS:
+//   tray.tray_set_tooltip("…").tray_set_menu(m).tray_seal()
+tray_set_tooltip(tray_id: int, text: string) -> int {
     aether_ui_tray_set_tooltip_impl(tray_id, text)
+    return tray_id
 }
 
-tray_set_menu(tray_id: int, menu_handle: int) {
+tray_set_menu(tray_id: int, menu_handle: int) -> int {
     aether_ui_tray_set_menu_impl(tray_id, menu_handle)
+    return tray_id
 }
 
 // Reactive icon swap. state_handle is a ui_state cell holding 0/1/2
@@ -1151,20 +1185,23 @@ tray_set_menu(tray_id: int, menu_handle: int) {
 // updates to the matching path.
 tray_set_icon_for_state(tray_id: int, state_handle: int,
                         icon_clean: string, icon_busy: string,
-                        icon_alert: string) {
+                        icon_alert: string) -> int {
     aether_ui_tray_set_icon_for_state_impl(tray_id, state_handle,
                                            icon_clean, icon_busy, icon_alert)
+    return tray_id
 }
 
 // macOS template-mode toggle. 1 = template (mono adaptive light/dark);
 // 0 = full-colour. No-op on Linux/Win.
-tray_set_icon_template(tray_id: int, is_template: int) {
+tray_set_icon_template(tray_id: int, is_template: int) -> int {
     aether_ui_tray_set_icon_template_impl(tray_id, is_template)
+    return tray_id
 }
 
 // Protect a tray from the AetherUIDriver test API (returns 403).
-tray_seal(tray_id: int) {
+tray_seal(tray_id: int) -> int {
     aether_ui_tray_seal_impl(tray_id)
+    return tray_id
 }
 
 // app_run_headless — keep the main loop alive for tray-only apps
