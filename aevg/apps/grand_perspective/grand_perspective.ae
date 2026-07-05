@@ -26,13 +26,17 @@
 //
 // Scans a directory tree, lays it out as a SQUARIFIED treemap (each file a
 // rect sized by bytes) drawn into a per-frame AeVG DRAW region, and adds:
-//   - a button row: Parent / Rescan / by Size / by Depth / by Type
+//   - a button row: Parent / Rescan / Stop / by Size / by Depth / by Type
 //   - breadcrumbs (the drill path) under the buttons
 //   - click a directory tile to DRILL IN; Parent to go up
 //   - click a FILE tile to select it (red outline + full path in the status line)
 //   - a hover status line at the bottom: name + size of the pointed-at tile
 //   - LIVE refresh: an fs.watch on the current directory; when something
 //     changes in it, the current subtree is rescanned automatically
+//   - ASYNC scan: the window opens immediately; the scan runs incrementally
+//     in the frame tick (a queue of dirs, a batch expanded per frame), the
+//     treemap grows live, the status line shows progress, and Stop abandons
+//     the rest (partial view stays usable; Rescan restarts).
 //
 //   DISPLAY=:0 ./build/grand_perspective  [dir]     (dir via argv[1] or $HOME)
 //   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
@@ -67,22 +71,43 @@ MIN_SIZE() -> int   { return 5000 }      // files smaller than this are dropped
 //
 // FileEntry / Rect are heap nodes (Aether structs cross fn boundaries as
 // pointers). children is a std.list of *FileEntry; total_size is bytes.
+// parent links let a file's size stream UP the tree as the async scan runs.
+// total_size is a LONG: per-file sizes are capped at 32 bits (stat, Aether
+// #1021) but directory SUMS routinely pass 2 GiB and must not wrap.
 struct FileEntry {
     name: string
     path: string
-    total_size: int
+    total_size: long
     is_dir: int
     children: ptr        // list of *FileEntry
+    parent: *FileEntry   // null at the root
 }
 
-mk_entry(name: string, path: string, size: int, is_dir: int) -> *FileEntry {
-    e = malloc(48) as *FileEntry
+mk_entry(name: string, path: string, size: int, is_dir: int, parent: *FileEntry) -> *FileEntry {
+    e = malloc(64) as *FileEntry
     e.name = name; string_retain(name)      // retain: the field outlives the arg's scope
     e.path = path; string_retain(path)
     e.total_size = size
     e.is_dir = is_dir
     e.children = list.new()
+    e.parent = parent
     return e
+}
+
+// long → float. The `x / 1.0` idiom used for ints does NOT work on a long:
+// an expression containing a long infers long, so `480000.0 / (t / 1.0)`
+// binds as int64 and truncates to 0 (!). A float-returning helper coerces at
+// the return instead. Use this for ALL float math over byte totals.
+to_float(v: long) -> float { return v / 1.0 }
+
+// Add `delta` bytes to every ANCESTOR of e (not e itself) — how sizes
+// propagate up while the scan streams, and how a rescan retracts a subtree.
+bump_ancestors(e: *FileEntry, delta: long) {
+    p = e.parent
+    while p != null {
+        p.total_size = p.total_size + delta
+        p = p.parent
+    }
 }
 
 // A laid-out rectangle: geometry + the entry it represents + tree depth.
@@ -91,46 +116,51 @@ struct Rect {
     y: float
     w: float
     h: float
-    size: int
+    size: long
     depth: int
     entry: *FileEntry
 }
 
-mk_rect(x: float, y: float, w: float, h: float, size: int, depth: int, entry: *FileEntry) -> *Rect {
-    r = malloc(56) as *Rect
+mk_rect(x: float, y: float, w: float, h: float, size: long, depth: int, entry: *FileEntry) -> *Rect {
+    r = malloc(64) as *Rect
     r.x = x; r.y = y; r.w = w; r.h = h
     r.size = size; r.depth = depth; r.entry = entry
     return r
 }
 
-// ─── Directory scan ──────────────────────────────────────────────
+// ─── Directory scan (incremental) ────────────────────────────────
 //
-// Full-depth recursive scan into a FileEntry tree, summing sizes. Entry kinds
-// come from readdir's d_type via dir.list_kind (ae 0.342, #966) — one sweep
-// per directory, so only FILES pay a stat (for their size). Symlinks are
-// never followed (kind 3 is skipped), so cycles are impossible and no depth
-// cap is needed. Unreadable dirs/files are skipped (shown as 0 bytes).
-scan_dir(path: string, name: string) -> *FileEntry {
-    e = mk_entry(name, path, 0, 1)
-    entries, lerr = dir.list(path)
-    if string.length(lerr) > 0 { return e }   // unreadable → empty dir node
+// The scan is a work QUEUE of directory nodes, drained a batch at a time from
+// the frame tick (scan_step, below in the app-state section) so the window is
+// live and the treemap grows while scanning. Entry kinds come from readdir's
+// d_type via dir.list_kind (ae 0.342, #966) — one sweep per directory, so
+// only FILES pay a stat (for their size). Symlinks are never followed (kind 3
+// is skipped), so cycles are impossible and no depth cap is needed.
+// Unreadable dirs/files are skipped (shown as 0 bytes).
+//
+// expand_dir: read ONE directory — file sizes stream up the parent chain
+// immediately; subdirectories are queued onto `pending`. Returns the number
+// of files seen (for the progress line).
+expand_dir(pending: ptr, d: *FileEntry) -> int {
+    files = 0
+    entries, lerr = dir.list(d.path)
+    if string.length(lerr) > 0 { return 0 }   // unreadable → empty dir node
     n = dir.list_count(entries)
-    total = 0
     i = 0
     while i < n {
         // dir.list_get returns a BORROWED ptr into the DirList; copy it to an
         // owned string (concat "") so it survives the implicit free.
         child_name = string.concat(dir.list_get(entries, i), "")
-        child_path = join_path(path, child_name)
+        child_path = join_path(d.path, child_name)
         kind = dir.list_kind(entries, i)
         if kind == 0 {                        // d_type unknown (some filesystems)
             k2, _s2, _m2, serr = fs.file_stat(child_path)
             if string.length(serr) == 0 { kind = k2 }
         }
         if kind == 2 {
-            child = scan_dir(child_path, child_name)
-            _ = list.add(e.children, child)
-            total = total + child.total_size
+            c = mk_entry(child_name, child_path, 0, 1, d)
+            _ = list.add(d.children, c)
+            _ = list.add(pending, c)
         }
         if kind == 1 {
             // fs_get_stat_size is a 32-bit C int (std.fs has no 64-bit size
@@ -141,24 +171,15 @@ scan_dir(path: string, name: string) -> *FileEntry {
             sz = 0
             if string.length(ferr) == 0 { sz = size }
             if sz < 0 { sz = 0 }
-            _ = list.add(e.children, mk_entry(child_name, child_path, sz, 0))
-            total = total + sz
+            _ = list.add(d.children, mk_entry(child_name, child_path, sz, 0, d))
+            d.total_size = d.total_size + sz
+            bump_ancestors(d, sz)
+            files = files + 1
         }
         // kind 3 (symlink) / 4 (other): skipped — never followed, no cycles.
         i = i + 1
     }
-    e.total_size = total
-    return e
-}
-
-scan(path: string, name: string) -> *FileEntry {
-    kind, size, _mtime, err = fs.file_stat(path)
-    if string.length(err) > 0 {
-        return mk_entry(name, path, 0, 0)   // unreadable → empty file node
-    }
-    if kind == 2 { return scan_dir(path, name) }
-    if size < 0 { size = 0 }
-    return mk_entry(name, path, size, 0)
+    return files
 }
 
 join_path(dir: string, name: string) -> string {
@@ -175,7 +196,7 @@ join_path(dir: string, name: string) -> string {
 // items below MIN_SIZE are dropped; `depth` is stamped for the byDepth scheme.
 layout_treemap(out: ptr, x: float, y: float, w: float, h: float, items: ptr, depth: int) {
     work = list.new()
-    total = 0
+    long total = 0
     ni = list.size(items)
     i = 0
     while i < ni {
@@ -192,7 +213,7 @@ layout_treemap(out: ptr, x: float, y: float, w: float, h: float, items: ptr, dep
     if total == 0 { return }
     sort_desc_by_size(work)
 
-    area_unit = (w * h) / (total / 1.0)     // per-byte target area in px²
+    area_unit = (w * h) / to_float(total)   // per-byte target area in px²
 
     rx = x; ry = y; rw = w; rh = h
     start = 0
@@ -209,7 +230,7 @@ layout_treemap(out: ptr, x: float, y: float, w: float, h: float, items: ptr, dep
                 if idx >= nw { grow = 0 }
                 else {
                     it, _ = list.get(work, idx); e = it as *FileEntry
-                    a = (e.total_size / 1.0) * area_unit
+                    a = to_float(e.total_size) * area_unit
                     cand_worst = row_worst(work, start, count + 1, row_area + a, side)
                     if count == 0 { row_area = row_area + a; count = count + 1; best_worst = cand_worst }
                     else {
@@ -241,7 +262,7 @@ row_worst(work: ptr, s: int, cnt: int, area: float, side: float) -> float {
     j = 0
     while j < cnt {
         it, _ = list.get(work, s + j); e = it as *FileEntry
-        along = (e.total_size / 1.0) / sum_sizes(work, s, cnt) * side
+        along = to_float(e.total_size) / sum_sizes(work, s, cnt) * side
         ar = band / along
         if along / band > ar { ar = along / band }
         if ar > worst { worst = ar }
@@ -255,7 +276,7 @@ sum_sizes(work: ptr, s: int, cnt: int) -> float {
     j = 0
     while j < cnt {
         it, _ = list.get(work, s + j); e = it as *FileEntry
-        t = t + (e.total_size / 1.0)
+        t = t + to_float(e.total_size)
         j = j + 1
     }
     if t == 0.0 { return 1.0 }
@@ -270,7 +291,7 @@ lay_band(out: ptr, work: ptr, s: int, cnt: int, area_unit: float, bx: float, by:
     j = 0
     while j < cnt {
         it, _ = list.get(work, s + j); e = it as *FileEntry
-        frac_j = (e.total_size / 1.0) / rowsum
+        frac_j = to_float(e.total_size) / rowsum
         if vertical == 1 {
             ih = bh * frac_j
             _ = list.add(out, mk_rect(cx, cy, bw, ih, e.total_size, depth, e))
@@ -340,10 +361,10 @@ rgb_str(r: int, g: int, b: int) -> string {
 }
 
 // Base hue (0..360) for a rect under the active scheme (0=bySize 1=byDepth 2=byType).
-hue_for(r: *Rect, scheme: int, total: int) -> float {
+hue_for(r: *Rect, scheme: int, total: long) -> float {
     if scheme == 1 { return frac((r.depth * 60) / 360.0) * 360.0 }
     if scheme == 2 { return hue_by_type(r.entry.name) }
-    ratio = log((r.size / 1.0) + 1.0) / log((total / 1.0) + 1.0)   // bySize: log-scaled
+    ratio = log(to_float(r.size) + 1.0) / log(to_float(total) + 1.0)   // bySize: log-scaled
     return frac(ratio) * 360.0
 }
 
@@ -383,7 +404,7 @@ render_shaded(root: ptr, r: *Rect, h: float, s: float, l: float, selected: int) 
 
 // Draw the whole treemap (background + every rect + labels) into `root`.
 // `sel` (nullable) is the selected file's entry — its tile gets a red outline.
-draw_treemap(root: ptr, rects: ptr, scheme: int, total: int, sel: *FileEntry) {
+draw_treemap(root: ptr, rects: ptr, scheme: int, total: long, sel: *FileEntry) {
     bg = vg.rect(root, 0.0, 0.0, CANVAS_W(), CANVAS_H())
     vg.fill(bg, "#f5f5f5"); vg.stroke(bg, "#cccccc", 1.0)
 
@@ -421,9 +442,12 @@ clip_name(name: string) -> string {
 }
 
 // Human-readable byte size: "B / KB / MB / GB" (one decimal for KB+).
-fmt_size(bytes: int) -> string {
-    b = bytes / 1.0
-    if b < 1024.0 { return string.concat(string.from_int(bytes), " B") }
+// bytes is long (directory sums pass 2 GiB); the <1024 branch narrows via
+// low_int, where the value provably fits.
+low_int(v: long) -> int { return v }     // long→int narrows implicitly at an int return
+fmt_size(bytes: long) -> string {
+    b = to_float(bytes)
+    if b < 1024.0 { return string.concat(string.from_int(low_int(bytes)), " B") }
     kb = b / 1024.0
     if kb < 1024.0 { return string.concat(one_dp(kb), " KB") }
     mb = kb / 1024.0
@@ -448,21 +472,27 @@ round_i(x: float) -> int { return lrint(x) }
 // draw AND to hit-test clicks. scheme 0/1/2. total = root size (bySize ratio).
 // `selected` is the clicked file tile (red outline); `watch` is the fs.watch
 // handle on the current directory (live refresh, ae 0.346 #977).
+// `pending`/`scanning`/`dirs_done`/`files_seen` are the incremental scan: a
+// queue of unexpanded dir nodes drained a batch per frame (scan_step).
 struct AppState {
     root: *FileEntry
     current: *FileEntry
     stack: ptr       // list of *FileEntry (drill path, includes root)
     rects: ptr       // list of *Rect for the current view
     scheme: int
-    total: int
+    total: long
     status: int      // handle of the hover status-line label (bottom)
     crumbs: int      // handle of the breadcrumb label (top)
     selected: *FileEntry   // clicked file tile, or null
     watch: ptr       // fs.watch handle on current.path, or null
+    pending: ptr     // list of *FileEntry dirs awaiting expansion
+    scanning: int    // 1 while the incremental scan is draining `pending`
+    dirs_done: int   // progress counters for the status line
+    files_seen: int
 }
 
 mk_state(root: *FileEntry) -> *AppState {
-    s = malloc(96) as *AppState
+    s = malloc(128) as *AppState
     s.root = root
     s.current = root
     s.stack = list.new()
@@ -474,6 +504,10 @@ mk_state(root: *FileEntry) -> *AppState {
     s.crumbs = 0
     s.selected = null as *FileEntry
     s.watch = null
+    s.pending = list.new()
+    s.scanning = 0
+    s.dirs_done = 0
+    s.files_seen = 0
     relayout(s)
     retarget_watch(s)
     return s
@@ -545,41 +579,79 @@ drill_up(s: *AppState) {
     }
 }
 
-// Rescan the CURRENT subtree from disk and splice it into the tree: the fresh
-// node replaces the stale one in its parent's children, ancestors' totals
-// shift by the delta, and the layout + crumbs refresh. Driven by the Rescan
-// button AND by the fs.watch (per-frame poll in the draw region). Old nodes
+// (Re)scan a directory node IN PLACE, incrementally: retract its old bytes
+// from the ancestors, empty it, and queue it — scan_step (driven from the
+// frame tick) does the rest. The node's identity is preserved, so the drill
+// stack and `current` stay valid. One scan at a time; a request while one is
+// running is ignored (the status line says it's scanning). Old child nodes
 // are not freed — same accepted leak as relayout's rects.
-rescan_current(s: *AppState) {
-    fresh = scan(s.current.path, s.current.name)
-    delta = fresh.total_size - s.current.total_size
-    n = list.size(s.stack)
-    if n > 1 {
-        pit, _ = list.get(s.stack, n - 2)
-        parent = pit as *FileEntry
-        nc = list.size(parent.children)
-        i = 0
-        while i < nc {
-            cit, _ = list.get(parent.children, i)
-            c = cit as *FileEntry
-            if c == s.current { list.set(parent.children, i, fresh) }
-            i = i + 1
-        }
-        j = 0
-        while j < n - 1 {
-            ait, _ = list.get(s.stack, j)
-            a = ait as *FileEntry
-            a.total_size = a.total_size + delta
-            j = j + 1
-        }
-    }
-    list.set(s.stack, n - 1, fresh)
-    s.current = fresh
-    if n == 1 { s.root = fresh }
-    s.total = s.root.total_size
+start_rescan(s: *AppState, e: *FileEntry) {
+    if s.scanning == 1 { return }
+    if e.is_dir == 0 { return }
+    bump_ancestors(e, 0 - e.total_size)
+    e.total_size = 0
+    e.children = list.new()
+    s.pending = list.new()
+    _ = list.add(s.pending, e)
+    s.dirs_done = 0
+    s.files_seen = 0
+    s.scanning = 1
     clear_selection(s)
     relayout(s)
+}
+
+// Drain up to `budget` queued dirs (bounds the frame stall; the queue is
+// popped from the END, so traversal is depth-first and the current view
+// fills in coherently). Finishes the scan when the queue empties.
+scan_step(s: *AppState, budget: int) {
+    steps = 0
+    while steps < budget {
+        np = list.size(s.pending)
+        if np == 0 { steps = budget }
+        else {
+            it, _ = list.get(s.pending, np - 1)
+            list.remove(s.pending, np - 1)
+            s.files_seen = s.files_seen + expand_dir(s.pending, it as *FileEntry)
+            s.dirs_done = s.dirs_done + 1
+            steps = steps + 1
+        }
+    }
+    s.total = s.root.total_size
+    relayout(s)
+    if list.size(s.pending) == 0 { finish_scan(s) }
+    else {
+        if s.status != 0 {
+            msg = "Scanning…   ${s.dirs_done} folders   ${s.files_seen} files   "
+            aether_ui_text_set_string(s.status, string.concat(msg, fmt_size(s.root.total_size)))
+        }
+    }
+}
+
+finish_scan(s: *AppState) {
+    s.scanning = 0
+    s.total = s.root.total_size
+    relayout(s)
     update_crumbs(s)
+    retarget_watch(s)   // events during the scan were stale; re-arm fresh
+    if s.status != 0 {
+        msg = "Scan complete: ${s.dirs_done} folders, ${s.files_seen} files, "
+        aether_ui_text_set_string(s.status, string.concat(msg, fmt_size(s.root.total_size)))
+    }
+}
+
+// Stop button: abandon the rest of the queue; the partial view stays usable
+// (sizes are whatever had streamed in). Rescan restarts from the current dir.
+stop_scan(s: *AppState) {
+    if s.scanning == 0 { return }
+    s.pending = list.new()
+    s.scanning = 0
+    s.total = s.root.total_size
+    relayout(s)
+    update_crumbs(s)
+    retarget_watch(s)
+    if s.status != 0 {
+        aether_ui_text_set_string(s.status, "Scan stopped — sizes are partial; Rescan to redo")
+    }
 }
 
 set_scheme(s: *AppState, scheme: int) { s.scheme = scheme }
@@ -612,15 +684,24 @@ main() {
     if string.length(start) == 0 { start = os_getenv("HOME") }
     if string.length(start) == 0 { start = "/tmp" }
 
-    root = scan(start, "root")
+    // Build the root node WITHOUT scanning — the window opens immediately and
+    // the scan streams in from the frame tick (start_rescan queues the root).
+    kind, fsize, _mt, serr = fs.file_stat(start)
+    is_dir = 0
+    if string.length(serr) == 0 { if kind == 2 { is_dir = 1 } }
+    if fsize < 0 { fsize = 0 }
+    if is_dir == 1 { fsize = 0 }
+    root = mk_entry("root", start, fsize, is_dir, null as *FileEntry)
     st = mk_state(root)
-    println("GrandPerspective: ${start} — ${st.total} bytes, ${list.size(st.rects)} tiles. Click a folder to drill in; Parent to go up.")
+    if is_dir == 1 { start_rescan(st, root) }
+    println("GrandPerspective: scanning ${start} — the window is live while it fills in; Stop abandons the scan.")
 
     window("GrandPerspective — disk usage", 820, 680) {
       vstack(6) {
         hstack(6) {
             btn("Parent") callback { drill_up(st) }
-            btn("Rescan") callback { rescan_current(st) }
+            btn("Rescan") callback { start_rescan(st, st.current) }
+            btn("Stop") callback { stop_scan(st) }
             btn("by Size") callback { set_scheme(st, 0) }
             btn("by Depth") callback { set_scheme(st, 1) }
             btn("by Type") callback { set_scheme(st, 2) }
@@ -638,11 +719,16 @@ main() {
 
             // Per-frame DRAW region: redraws the treemap from `st` each tick, so
             // a drill-down (changing st.rects) re-renders next frame. The tick
-            // also polls the fs.watch non-blocking (timeout 0): a change in the
-            // current directory rescans the current subtree before drawing.
+            // is also the scan's engine: while scanning, drain a batch of the
+            // dir queue (window stays live, treemap grows); otherwise poll the
+            // fs.watch non-blocking (timeout 0) — a change in the current
+            // directory kicks off a rescan of the current subtree.
             canvas_region(root_node, 0.0, 0.0, 800.0, 600.0) callback |rn: ptr, t: float| {
-                if st.watch != null {
-                    if fs.watch_wait(st.watch, 0) == 1 { rescan_current(st) }
+                if st.scanning == 1 { scan_step(st, 64) }
+                else {
+                    if st.watch != null {
+                        if fs.watch_wait(st.watch, 0) == 1 { start_rescan(st, st.current) }
+                    }
                 }
                 draw_treemap(rn, st.rects, st.scheme, st.total, st.selected)
             }
