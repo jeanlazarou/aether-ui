@@ -26,15 +26,18 @@
 //
 // Scans a directory tree, lays it out as a SQUARIFIED treemap (each file a
 // rect sized by bytes) drawn into a per-frame AeVG DRAW region, and adds:
-//   - a button row: Parent / by Size / by Depth / by Type
+//   - a button row: Parent / Rescan / by Size / by Depth / by Type
 //   - breadcrumbs (the drill path) under the buttons
 //   - click a directory tile to DRILL IN; Parent to go up
+//   - click a FILE tile to select it (red outline + full path in the status line)
 //   - a hover status line at the bottom: name + size of the pointed-at tile
+//   - LIVE refresh: an fs.watch on the current directory; when something
+//     changes in it, the current subtree is rescanned automatically
 //
 //   DISPLAY=:0 ./build/grand_perspective  [dir]     (dir via argv[1] or $HOME)
 //   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
 //     POST /widget/{id}/click drives the buttons; POST /canvas/1/click?x=&y=
-//     drives a treemap tile (drill-down). Hover has no driver route.
+//     drives a treemap tile (drill-down / file select). Hover has no driver route.
 
 import aether_ui
 import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
@@ -55,15 +58,10 @@ extern log(x: float) -> float            // std.math has no log; libm does
 extern lrint(x: float) -> long           // round-to-nearest; narrows at an int return
 extern string_retain(s: string)          // keep a heap string alive in a struct field
 extern aether_ui_text_set_string(handle: int, text: string)  // update a label's text
-// dir.list returns a DirList* (NOT an AetherStringArray) — index it with these,
-// not string_array_* (different struct; wrong accessor = garbage ptr → crash).
-extern dir_list_count(list: ptr) -> int
-extern dir_list_get(list: ptr, index: int) -> string
 
 CANVAS_W() -> float { return 800.0 }
 CANVAS_H() -> float { return 600.0 }
 MIN_SIZE() -> int   { return 5000 }      // files smaller than this are dropped
-MAX_DEPTH() -> int  { return 5 }
 
 // ─── Data model ──────────────────────────────────────────────────
 //
@@ -107,46 +105,60 @@ mk_rect(x: float, y: float, w: float, h: float, size: int, depth: int, entry: *F
 
 // ─── Directory scan ──────────────────────────────────────────────
 //
-// Recursively stat a path into a FileEntry tree, summing sizes. Depth-capped
-// (MAX_DEPTH) so a huge tree stays bounded; permission errors are skipped
-// (fs.file_stat error → treat as 0-byte file).
-scan(path: string, name: string, depth: int) -> *FileEntry {
-    kind, size, _mtime, err = fs.file_stat(path)
-    if string.length(err) > 0 {
-        return mk_entry(name, path, 0, 0)   // unreadable → empty file node
-    }
-    // fs_get_stat_size is a 32-bit C int (std.fs has no 64-bit size primitive),
-    // so a file ≥2GB reports a wrapped-negative size. Clamp to 0 rather than let
-    // it poison the parent sum. Treemap areas for >2GB files are under-counted —
-    // an accepted limitation until std.fs grows a long-returning size.
-    if size < 0 { size = 0 }
-    is_dir = 0
-    if kind == 2 { is_dir = 1 }             // fs stat kind: 1=file 2=directory 3=symlink 4=other
-
-    if is_dir == 0 {
-        return mk_entry(name, path, size, 0)
-    }
-
+// Full-depth recursive scan into a FileEntry tree, summing sizes. Entry kinds
+// come from readdir's d_type via dir.list_kind (ae 0.342, #966) — one sweep
+// per directory, so only FILES pay a stat (for their size). Symlinks are
+// never followed (kind 3 is skipped), so cycles are impossible and no depth
+// cap is needed. Unreadable dirs/files are skipped (shown as 0 bytes).
+scan_dir(path: string, name: string) -> *FileEntry {
     e = mk_entry(name, path, 0, 1)
-    if depth >= MAX_DEPTH() { return e }    // cap: a dir at the cap shows as 0
-
     entries, lerr = dir.list(path)
-    if string.length(lerr) > 0 { return e }
-    n = dir_list_count(entries)
+    if string.length(lerr) > 0 { return e }   // unreadable → empty dir node
+    n = dir.list_count(entries)
     total = 0
     i = 0
     while i < n {
-        // dir_list_get returns a BORROWED ptr into the DirList; copy it to an
+        // dir.list_get returns a BORROWED ptr into the DirList; copy it to an
         // owned string (concat "") so it survives the implicit free.
-        child_name = string.concat(dir_list_get(entries, i), "")
+        child_name = string.concat(dir.list_get(entries, i), "")
         child_path = join_path(path, child_name)
-        child = scan(child_path, child_name, depth + 1)
-        _ = list.add(e.children, child)
-        total = total + child.total_size
+        kind = dir.list_kind(entries, i)
+        if kind == 0 {                        // d_type unknown (some filesystems)
+            k2, _s2, _m2, serr = fs.file_stat(child_path)
+            if string.length(serr) == 0 { kind = k2 }
+        }
+        if kind == 2 {
+            child = scan_dir(child_path, child_name)
+            _ = list.add(e.children, child)
+            total = total + child.total_size
+        }
+        if kind == 1 {
+            // fs_get_stat_size is a 32-bit C int (std.fs has no 64-bit size
+            // primitive), so a file ≥2GB reports a wrapped-negative size. Clamp
+            // to 0 rather than let it poison the parent sum — an accepted
+            // limitation until std.fs grows a long-returning size (Aether #1021).
+            _k, size, _m, ferr = fs.file_stat(child_path)
+            sz = 0
+            if string.length(ferr) == 0 { sz = size }
+            if sz < 0 { sz = 0 }
+            _ = list.add(e.children, mk_entry(child_name, child_path, sz, 0))
+            total = total + sz
+        }
+        // kind 3 (symlink) / 4 (other): skipped — never followed, no cycles.
         i = i + 1
     }
     e.total_size = total
     return e
+}
+
+scan(path: string, name: string) -> *FileEntry {
+    kind, size, _mtime, err = fs.file_stat(path)
+    if string.length(err) > 0 {
+        return mk_entry(name, path, 0, 0)   // unreadable → empty file node
+    }
+    if kind == 2 { return scan_dir(path, name) }
+    if size < 0 { size = 0 }
+    return mk_entry(name, path, size, 0)
 }
 
 join_path(dir: string, name: string) -> string {
@@ -370,7 +382,8 @@ render_shaded(root: ptr, r: *Rect, h: float, s: float, l: float, selected: int) 
 }
 
 // Draw the whole treemap (background + every rect + labels) into `root`.
-draw_treemap(root: ptr, rects: ptr, scheme: int, total: int) {
+// `sel` (nullable) is the selected file's entry — its tile gets a red outline.
+draw_treemap(root: ptr, rects: ptr, scheme: int, total: int, sel: *FileEntry) {
     bg = vg.rect(root, 0.0, 0.0, CANVAS_W(), CANVAS_H())
     vg.fill(bg, "#f5f5f5"); vg.stroke(bg, "#cccccc", 1.0)
 
@@ -381,7 +394,9 @@ draw_treemap(root: ptr, rects: ptr, scheme: int, total: int) {
         if r.w > 0.5 {
             if r.h > 0.5 {
                 h = hue_for(r, scheme, total)
-                render_shaded(root, r, h, 0.7, 0.55, 0)
+                is_sel = 0
+                if r.entry == sel { is_sel = 1 }
+                render_shaded(root, r, h, 0.7, 0.55, is_sel)
                 // Label tall-enough tiles. 16-unit font; the renderer draws at
                 // (y - baseline≈17), so baseline y+44 sits the text clear of the
                 // top edge; gate h>50 so it never spills past the bottom.
@@ -431,6 +446,8 @@ round_i(x: float) -> int { return lrint(x) }
 // `current` is the entry whose children are tiled now; `stack` is the drill
 // path (root first) so Parent can pop. `rects` is the current layout, used to
 // draw AND to hit-test clicks. scheme 0/1/2. total = root size (bySize ratio).
+// `selected` is the clicked file tile (red outline); `watch` is the fs.watch
+// handle on the current directory (live refresh, ae 0.346 #977).
 struct AppState {
     root: *FileEntry
     current: *FileEntry
@@ -440,10 +457,12 @@ struct AppState {
     total: int
     status: int      // handle of the hover status-line label (bottom)
     crumbs: int      // handle of the breadcrumb label (top)
+    selected: *FileEntry   // clicked file tile, or null
+    watch: ptr       // fs.watch handle on current.path, or null
 }
 
 mk_state(root: *FileEntry) -> *AppState {
-    s = malloc(64) as *AppState
+    s = malloc(96) as *AppState
     s.root = root
     s.current = root
     s.stack = list.new()
@@ -453,8 +472,22 @@ mk_state(root: *FileEntry) -> *AppState {
     s.total = root.total_size
     s.status = 0
     s.crumbs = 0
+    s.selected = null as *FileEntry
+    s.watch = null
     relayout(s)
+    retarget_watch(s)
     return s
+}
+
+// Point the fs.watch at the CURRENT directory (close any previous handle).
+// The watch is non-recursive and coarse — "something changed here" — which is
+// exactly the granularity of the tiled view: a change in the current dir
+// triggers a rescan of the current subtree next frame.
+retarget_watch(s: *AppState) {
+    if s.watch != null { fs.watch_close(s.watch) }
+    s.watch = null
+    w, werr = fs.watch_open(s.current.path)
+    if string.length(werr) == 0 { s.watch = w }
 }
 
 // Breadcrumb string from the drill stack: "root / aevg / test".
@@ -480,12 +513,22 @@ relayout(s: *AppState) {
     layout_treemap(s.rects, 0.0, 0.0, CANVAS_W(), CANVAS_H(), s.current.children, 0)
 }
 
+// Drop the selection (outline + stale "Selected:" status text). Every
+// navigation/rescan goes through this — the selected entry belongs to the
+// view being left.
+clear_selection(s: *AppState) {
+    s.selected = null as *FileEntry
+    if s.status != 0 { aether_ui_text_set_string(s.status, "—") }
+}
+
 drill_into(s: *AppState, entry: *FileEntry) {
     if entry.is_dir == 1 {
         _ = list.add(s.stack, entry)
         s.current = entry
+        clear_selection(s)
         relayout(s)
         update_crumbs(s)
+        retarget_watch(s)
     }
 }
 
@@ -495,9 +538,48 @@ drill_up(s: *AppState) {
         list.remove(s.stack, n - 1)
         top, _ = list.get(s.stack, list.size(s.stack) - 1)
         s.current = top as *FileEntry
+        clear_selection(s)
         relayout(s)
         update_crumbs(s)
+        retarget_watch(s)
     }
+}
+
+// Rescan the CURRENT subtree from disk and splice it into the tree: the fresh
+// node replaces the stale one in its parent's children, ancestors' totals
+// shift by the delta, and the layout + crumbs refresh. Driven by the Rescan
+// button AND by the fs.watch (per-frame poll in the draw region). Old nodes
+// are not freed — same accepted leak as relayout's rects.
+rescan_current(s: *AppState) {
+    fresh = scan(s.current.path, s.current.name)
+    delta = fresh.total_size - s.current.total_size
+    n = list.size(s.stack)
+    if n > 1 {
+        pit, _ = list.get(s.stack, n - 2)
+        parent = pit as *FileEntry
+        nc = list.size(parent.children)
+        i = 0
+        while i < nc {
+            cit, _ = list.get(parent.children, i)
+            c = cit as *FileEntry
+            if c == s.current { list.set(parent.children, i, fresh) }
+            i = i + 1
+        }
+        j = 0
+        while j < n - 1 {
+            ait, _ = list.get(s.stack, j)
+            a = ait as *FileEntry
+            a.total_size = a.total_size + delta
+            j = j + 1
+        }
+    }
+    list.set(s.stack, n - 1, fresh)
+    s.current = fresh
+    if n == 1 { s.root = fresh }
+    s.total = s.root.total_size
+    clear_selection(s)
+    relayout(s)
+    update_crumbs(s)
 }
 
 set_scheme(s: *AppState, scheme: int) { s.scheme = scheme }
@@ -530,7 +612,7 @@ main() {
     if string.length(start) == 0 { start = os_getenv("HOME") }
     if string.length(start) == 0 { start = "/tmp" }
 
-    root = scan(start, "root", 0)
+    root = scan(start, "root")
     st = mk_state(root)
     println("GrandPerspective: ${start} — ${st.total} bytes, ${list.size(st.rects)} tiles. Click a folder to drill in; Parent to go up.")
 
@@ -538,6 +620,7 @@ main() {
       vstack(6) {
         hstack(6) {
             btn("Parent") callback { drill_up(st) }
+            btn("Rescan") callback { rescan_current(st) }
             btn("by Size") callback { set_scheme(st, 0) }
             btn("by Depth") callback { set_scheme(st, 1) }
             btn("by Type") callback { set_scheme(st, 2) }
@@ -554,15 +637,28 @@ main() {
             vg.scene_set_refreshing(scene, 1)   // keep the live loop redrawing
 
             // Per-frame DRAW region: redraws the treemap from `st` each tick, so
-            // a drill-down (changing st.rects) re-renders next frame.
+            // a drill-down (changing st.rects) re-renders next frame. The tick
+            // also polls the fs.watch non-blocking (timeout 0): a change in the
+            // current directory rescans the current subtree before drawing.
             canvas_region(root_node, 0.0, 0.0, 800.0, 600.0) callback |rn: ptr, t: float| {
-                draw_treemap(rn, st.rects, st.scheme, st.total)
+                if st.watch != null {
+                    if fs.watch_wait(st.watch, 0) == 1 { rescan_current(st) }
+                }
+                draw_treemap(rn, st.rects, st.scheme, st.total, st.selected)
             }
             cid = vg.scene_canvas(scene)
-            // Click → hit-test → drill into a clicked directory.
+            // Click → hit-test → dir: drill in; file: select (outline + path).
             canvas_on_click(cid) callback |cx: float, cy: float| {
                 e = hit(st, cx, cy)
-                if e != null { drill_into(st, e) }
+                if e != null {
+                    if e.is_dir == 1 { drill_into(st, e) }
+                    else {
+                        st.selected = e
+                        msg = string.concat("Selected: ", e.path)
+                        msg = string.concat(msg, string.concat("   ", fmt_size(e.total_size)))
+                        aether_ui_text_set_string(st.status, msg)
+                    }
+                }
             }
             // Hover → hit-test → show name + size in the status line (covers
             // tiles too small or too dominant to carry their own label).
