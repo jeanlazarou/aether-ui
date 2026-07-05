@@ -52,10 +52,23 @@ static int aeui_is_headless(void) {
 
 // ---------------------------------------------------------------------------
 // Widget registry — flat array of GtkWidget*, 1-based handles.
+//
+// Slots self-NULL when their widget is finalized (weak ref below), so a
+// handle held past window teardown resolves to NULL instead of a dangling
+// pointer. Every consumer of aether_ui_get_widget() already NULL-checks;
+// without this, the vg live-refresh timer's canvas_redraw between window
+// destroy and main-loop exit called gtk_widget_queue_draw on freed memory
+// (a Gtk-CRITICAL spray on exit, and a latent use-after-free).
 // ---------------------------------------------------------------------------
 static GtkWidget** widgets = NULL;
 static int widget_count = 0;
 static int widget_capacity = 0;
+
+static void on_widget_finalized(gpointer data, GObject* where_the_object_was) {
+    (void)where_the_object_was;
+    int idx = GPOINTER_TO_INT(data);          // index, not pointer: realloc-safe
+    if (idx >= 0 && idx < widget_count) widgets[idx] = NULL;
+}
 
 int aether_ui_register_widget(void* widget) {
     if (widget_count >= widget_capacity) {
@@ -63,6 +76,8 @@ int aether_ui_register_widget(void* widget) {
         widgets = realloc(widgets, sizeof(GtkWidget*) * widget_capacity);
     }
     widgets[widget_count] = (GtkWidget*)widget;
+    g_object_weak_ref(G_OBJECT(widget), on_widget_finalized,
+                      GINT_TO_POINTER(widget_count));
     widget_count++;
     return widget_count; // 1-based
 }
