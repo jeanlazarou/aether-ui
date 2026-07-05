@@ -392,6 +392,22 @@ void aether_ui_text_set_string(int handle, const char* text) {
     }
 }
 
+void aether_ui_button_set_label(int handle, const char* label) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (v && [v isKindOfClass:[NSButton class]]) {
+        [(NSButton*)v setTitle:
+            [NSString stringWithUTF8String:label ? label : ""]];
+    }
+}
+
+// Right-click context menus: not yet implemented on AppKit (NSMenu +
+// rightMouseDown is the native shape). No-op stub — same precedent as
+// canvas_on_move.
+void aether_ui_context_menu_item_impl(int handle, const char* label,
+                                      void* boxed_closure) {
+    (void)handle; (void)label; (void)boxed_closure;
+}
+
 // ---------------------------------------------------------------------------
 // Button click target — holds an AeClosure and dispatches to it.
 // ---------------------------------------------------------------------------

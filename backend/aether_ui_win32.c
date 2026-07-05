@@ -1157,6 +1157,18 @@ void aether_ui_text_set_string(int handle, const char* text) {
     if (w && w->hwnd) SetWindowTextW(w->hwnd, utf8_to_wide(text));
 }
 
+void aether_ui_button_set_label(int handle, const char* label) {
+    Widget* w = widget_at(handle);
+    if (w && w->hwnd) SetWindowTextW(w->hwnd, utf8_to_wide(label));
+}
+
+// Right-click context menus: not yet implemented on Win32 (TrackPopupMenu is
+// the native shape). No-op stub — same precedent as canvas_on_move.
+void aether_ui_context_menu_item_impl(int handle, const char* label,
+                                      void* boxed_closure) {
+    (void)handle; (void)label; (void)boxed_closure;
+}
+
 int aether_ui_button_create_plain(const char* label) {
     ensure_win_init();
     HWND h = CreateWindowExW(0, L"BUTTON", utf8_to_wide(label),

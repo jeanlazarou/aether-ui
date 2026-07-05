@@ -27,7 +27,9 @@
 // Scans a directory tree, lays it out as a SQUARIFIED treemap (each file a
 // rect sized by bytes) drawn into a per-frame AeVG DRAW region, and adds:
 //   - a button row: Parent / Rescan / Stop / by Size / by Depth / by Type
-//   - breadcrumbs (the drill path) under the buttons
+//   - breadcrumb NAV under the buttons: each segment of the drill path is a
+//     button — click one to jump straight to that ancestor. Right-click any
+//     segment → "Copy path" (puts the current directory on the clipboard).
 //   - click a directory tile to DRILL IN; Parent to go up
 //   - click a FILE tile to select it (red outline + full path in the status line)
 //   - a hover status line at the bottom: name + size of the pointed-at tile
@@ -45,7 +47,8 @@
 
 import aether_ui
 import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
-    canvas_on_click, canvas_on_move)
+    canvas_on_click, canvas_on_move,
+    set_button_label, set_hidden, context_menu_item, clipboard_write, margin_of)
 import vg_live (vg, canvas_region)
 import vg
 import vg (view_box, rect, fill, stroke, text_sized)
@@ -482,7 +485,17 @@ struct AppState {
     scheme: int
     total: long
     status: int      // handle of the hover status-line label (bottom)
-    crumbs: int      // handle of the breadcrumb label (top)
+    // Breadcrumb NAV: a fixed pool of segment buttons, relabelled/hidden as
+    // the drill stack changes (CRUMBS() of them; widgets can't be created
+    // dynamically post-build, so the pool is unrolled at window build).
+    crumb0: int
+    crumb1: int
+    crumb2: int
+    crumb3: int
+    crumb4: int
+    crumb5: int
+    crumb6: int
+    crumb7: int
     selected: *FileEntry   // clicked file tile, or null
     watch: ptr       // fs.watch handle on current.path, or null
     pending: ptr     // list of *FileEntry dirs awaiting expansion
@@ -491,8 +504,22 @@ struct AppState {
     files_seen: int
 }
 
+CRUMBS() -> int { return 8 }
+
+crumb_handle(s: *AppState, i: int) -> int {
+    if i == 0 { return s.crumb0 }
+    if i == 1 { return s.crumb1 }
+    if i == 2 { return s.crumb2 }
+    if i == 3 { return s.crumb3 }
+    if i == 4 { return s.crumb4 }
+    if i == 5 { return s.crumb5 }
+    if i == 6 { return s.crumb6 }
+    if i == 7 { return s.crumb7 }
+    return 0
+}
+
 mk_state(root: *FileEntry) -> *AppState {
-    s = malloc(128) as *AppState
+    s = malloc(192) as *AppState
     s.root = root
     s.current = root
     s.stack = list.new()
@@ -501,7 +528,8 @@ mk_state(root: *FileEntry) -> *AppState {
     s.scheme = 0
     s.total = root.total_size
     s.status = 0
-    s.crumbs = 0
+    s.crumb0 = 0; s.crumb1 = 0; s.crumb2 = 0; s.crumb3 = 0
+    s.crumb4 = 0; s.crumb5 = 0; s.crumb6 = 0; s.crumb7 = 0
     s.selected = null as *FileEntry
     s.watch = null
     s.pending = list.new()
@@ -524,22 +552,51 @@ retarget_watch(s: *AppState) {
     if string.length(werr) == 0 { s.watch = w }
 }
 
-// Breadcrumb string from the drill stack: "root / aevg / test".
-crumbs_str(s: *AppState) -> string {
-    out = ""
+// Breadcrumb NAV: map the drill stack onto the button pool — segment i shows
+// stack[base+i] (base window slides when the path is deeper than the pool;
+// the first visible segment then reads "…"). Unused buttons hide.
+crumb_base(s: *AppState) -> int {
     n = list.size(s.stack)
-    i = 0
-    while i < n {
-        it, _ = list.get(s.stack, i); e = it as *FileEntry
-        if i > 0 { out = string.concat(out, "  /  ") }
-        out = string.concat(out, e.name)
-        i = i + 1
-    }
-    return out
+    if n > CRUMBS() { return n - CRUMBS() }
+    return 0
 }
 
 update_crumbs(s: *AppState) {
-    if s.crumbs != 0 { aether_ui_text_set_string(s.crumbs, crumbs_str(s)) }
+    if s.crumb0 == 0 { return }          // window not built yet
+    n = list.size(s.stack)
+    base = crumb_base(s)
+    i = 0
+    while i < CRUMBS() {
+        h = crumb_handle(s, i)
+        idx = base + i
+        if idx < n {
+            it, _ = list.get(s.stack, idx); e = it as *FileEntry
+            nm = clip_name(e.name)
+            if i == 0 { if base > 0 { nm = "…" } }
+            _ = set_button_label(h, nm)
+            _ = set_hidden(h, 0)
+        } else {
+            _ = set_hidden(h, 1)
+        }
+        i = i + 1
+    }
+}
+
+// Click a breadcrumb segment: jump straight to that ancestor (truncate the
+// drill stack). Clicking the current (rightmost) segment is a no-op.
+jump_to(s: *AppState, i: int) {
+    n = list.size(s.stack)
+    idx = crumb_base(s) + i
+    if idx >= n - 1 { return }
+    while list.size(s.stack) > idx + 1 {
+        list.remove(s.stack, list.size(s.stack) - 1)
+    }
+    top, _ = list.get(s.stack, idx)
+    s.current = top as *FileEntry
+    clear_selection(s)
+    relayout(s)
+    update_crumbs(s)
+    retarget_watch(s)
 }
 
 relayout(s: *AppState) {
@@ -707,8 +764,20 @@ main() {
             btn("by Type") callback { set_scheme(st, 2) }
         }
 
-        // Breadcrumb: the drill path (root / … / current). Updated on drill.
-        st.crumbs = text(crumbs_str(st))
+        // Breadcrumb NAV: the drill path as clickable segments (a fixed pool,
+        // relabelled/hidden by update_crumbs as the stack changes).
+        hstack(2) {
+            st.crumb0 = btn("root") callback { jump_to(st, 0) }
+            st.crumb1 = btn("") callback { jump_to(st, 1) }
+            st.crumb2 = btn("") callback { jump_to(st, 2) }
+            st.crumb3 = btn("") callback { jump_to(st, 3) }
+            st.crumb4 = btn("") callback { jump_to(st, 4) }
+            st.crumb5 = btn("") callback { jump_to(st, 5) }
+            st.crumb6 = btn("") callback { jump_to(st, 6) }
+            st.crumb7 = btn("") callback { jump_to(st, 7) }
+        }
+        // The leftmost segment sits 10px further in than the row above.
+        _ = margin_of(st.crumb0, 0, 0, 0, 10)
 
         vg(view_box(0, 0, 800, 600), 800, 600) {
             // A BARE shape verb gets _ctx injected; derive the vg root from it.
@@ -765,6 +834,17 @@ main() {
         // Hover status line at the BOTTOM.
         st.status = text("Hover a tile for its name and size")
       }
+      // Right-click any breadcrumb segment → "Copy path": the CURRENT
+      // directory's path onto the clipboard, echoed in the status line.
+      ci = 0
+      while ci < CRUMBS() {
+          context_menu_item(crumb_handle(st, ci), "Copy path") callback {
+              clipboard_write(st.current.path)
+              aether_ui_text_set_string(st.status, string.concat("Copied: ", st.current.path))
+          }
+          ci = ci + 1
+      }
+      update_crumbs(st)   // initial labels/visibility (only "root" shows)
       // AetherUIDriver: arm the HTTP test server when AETHER_UI_TEST_PORT is set.
       // Drives the buttons (/widget/{id}/click) + tile drill-down
       // (/canvas/1/click?x=&y=). Off by default — a plain window otherwise.

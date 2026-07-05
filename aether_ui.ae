@@ -24,6 +24,7 @@ exports (
     textarea, progressbar,
     ui_state, ui_get, ui_set, text_bound,
     set_text, get_text, set_toggle, get_toggle,
+    set_button_label, set_hidden, context_menu_item,
     set_slider, get_slider, set_progress,
     bg_color, text_color, font_size, font_bold, corner_radius,
     opacity, enabled, tooltip, onclick,
@@ -93,6 +94,8 @@ extern aether_ui_divider_create() -> int
 
 extern aether_ui_widget_add_child_ctx(parent_ctx: ptr, child_handle: int)
 extern aether_ui_widget_set_hidden(handle: int, hidden: int)
+extern aether_ui_button_set_label(handle: int, label: string)
+extern aether_ui_context_menu_item_impl(handle: int, label: string, closure: ptr)
 
 extern aether_ui_state_create(initial: float) -> int
 extern aether_ui_state_get(handle: int) -> float
@@ -646,6 +649,27 @@ text_bound(_ctx: ptr, state_handle: int, prefix: string, suffix: string) {
 
 set_text(handle: int, text: string) -> int {
     aether_ui_textfield_set_text(handle, text)
+    return handle
+}
+
+// Update a button's label in place (breadcrumb navs, toggling captions).
+set_button_label(handle: int, label: string) -> int {
+    aether_ui_button_set_label(handle, label)
+    return handle
+}
+
+// Show/hide any widget by handle (1 = hidden). Layout reflows around it.
+set_hidden(handle: int, hidden: int) -> int {
+    aether_ui_widget_set_hidden(handle, hidden)
+    return handle
+}
+
+// Append a right-click context-menu item to a widget; cb fires when chosen.
+//   context_menu_item(row, "Copy path") callback { ... }
+// GTK4 has the full popover implementation; AppKit/Win32 are no-op stubs.
+context_menu_item(handle: int, label: string, cb: fn) -> int {
+    boxed = box_closure(cb)
+    aether_ui_context_menu_item_impl(handle, label, boxed)
     return handle
 }
 

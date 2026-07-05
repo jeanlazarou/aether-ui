@@ -278,6 +278,14 @@ void aether_ui_widget_set_hidden(int handle, int hidden);
 
 // Text mutation
 void aether_ui_text_set_string(int handle, const char* text);
+void aether_ui_button_set_label(int handle, const char* label);
+
+// Context menu: append a right-click menu item to a widget. The menu (and
+// its right-click gesture) is created lazily on the first item; the boxed
+// closure fires when the item is chosen. GTK4 has the full implementation;
+// AppKit/Win32 are currently no-op stubs (same precedent as canvas_on_move).
+void aether_ui_context_menu_item_impl(int handle, const char* label,
+                                      void* boxed_closure);
 
 // Reactive state
 int aether_ui_state_create(double initial);
