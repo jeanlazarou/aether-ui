@@ -83,6 +83,7 @@ extern log(x: float) -> float            // std.math has no log; libm does
 extern lrint(x: float) -> long           // round-to-nearest; narrows at an int return
 extern string_retain(s: string)          // keep a heap string alive in a struct field
 extern aether_ui_text_set_string(handle: int, text: string)  // update a label's text
+extern aether_ui_set_enabled(handle: int, enabled: int)      // ghost/unghost a widget
 extern aether_ui_canvas_get_widget(canvas_id: int) -> int    // canvas id → widget handle
 
 LIST_W() -> float   { return 280.0 }     // directory list pane (left)
@@ -1193,6 +1194,10 @@ struct AppState {
     del_btn: int         // Delete button handle (label swaps while armed)
     scan_start_t: float  // when the current scan started (frame clock)
     scan_secs: float     // duration of the last completed scan
+    // Scan-lifecycle buttons ghost when inapplicable: Stop is live only
+    // while a scan drains; Rescan only when idle.
+    stop_btn: int
+    rescan_btn: int
 }
 
 CRUMBS() -> int { return 8 }
@@ -1210,7 +1215,7 @@ crumb_handle(s: *AppState, i: int) -> int {
 }
 
 mk_state(root: *FileEntry) -> *AppState {
-    s = malloc(256) as *AppState
+    s = malloc(320) as *AppState
     s.root = root
     s.current = root
     s.stack = list.new()
@@ -1249,6 +1254,8 @@ mk_state(root: *FileEntry) -> *AppState {
     s.del_btn = 0
     s.scan_start_t = 0.0
     s.scan_secs = 0.0
+    s.stop_btn = 0
+    s.rescan_btn = 0
     relayout(s)
     retarget_watch(s)
     return s
@@ -1440,6 +1447,7 @@ start_rescan(s: *AppState, e: *FileEntry) {
     s.scanning = 1
     s.scan_start_t = s.frame_t
     clear_selection(s)
+    scan_buttons(s)
     relayout(s)
 }
 
@@ -1504,6 +1512,7 @@ finish_scan(s: *AppState) {
     relayout(s)
     update_crumbs(s)
     retarget_watch(s)   // events during the scan were stale; re-arm fresh
+    scan_buttons(s)
     if s.status != 0 {
         msg = "Scan complete: ${s.dirs_done} folders, ${s.files_seen} files, "
         aether_ui_text_set_string(s.status, string.concat(msg, fmt_size(s.root.total_size)))
@@ -1520,12 +1529,24 @@ stop_scan(s: *AppState) {
     relayout(s)
     update_crumbs(s)
     retarget_watch(s)
+    scan_buttons(s)
     if s.status != 0 {
         aether_ui_text_set_string(s.status, "Scan stopped — sizes are partial; Rescan to redo")
     }
 }
 
 set_scheme(s: *AppState, scheme: int) { s.scheme = scheme; s.dirty = 1 }
+
+// Ghost the scan-lifecycle buttons to match state: Stop is clickable only
+// while a scan runs; Rescan only when idle. (No-op before the toolbar is
+// built — the initial scan starts ahead of the window.)
+scan_buttons(s: *AppState) {
+    if s.stop_btn == 0 { return }
+    live = 0
+    if s.scanning == 1 { live = 1 }
+    aether_ui_set_enabled(s.stop_btn, live)
+    aether_ui_set_enabled(s.rescan_btn, 1 - live)
+}
 
 // The app's heartbeat (30Hz timer): pump the incremental scan, poll the
 // fs.watch, and repaint ONLY when dirty. A static treemap costs nothing;
@@ -1601,8 +1622,8 @@ main() {
                 if st.selected != null { drill_deep(st, st.selected) }
             }
             btn("Zoom Out") callback { drill_up(st) }
-            btn("Rescan") callback { start_rescan(st, st.current) }
-            btn("Stop") callback { stop_scan(st) }
+            st.rescan_btn = btn("Rescan") callback { start_rescan(st, st.current) }
+            st.stop_btn = btn("Stop") callback { stop_scan(st) }
             btn("Open") callback { do_open(st) }
             btn("Reveal") callback { do_reveal(st) }
             st.del_btn = btn("Delete") callback { do_delete(st) }
@@ -1610,6 +1631,8 @@ main() {
             btn("by Depth") callback { set_scheme(st, 1) }
             btn("by Type") callback { set_scheme(st, 2) }
         }
+        // Reflect the already-running initial scan in the fresh toolbar.
+        scan_buttons(st)
 
         // Breadcrumb NAV: the drill path as clickable segments (a fixed pool,
         // relabelled/hidden by update_crumbs as the stack changes).
