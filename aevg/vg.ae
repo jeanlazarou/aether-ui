@@ -51,6 +51,7 @@ exports (
     // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
     scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
     scene_set_canvas, scene_canvas, scene_set_ctx, mk_node,
+    scene_px_to_vb_x, scene_px_to_vb_y,
     scene_set_event_state, scene_event_state,
     // Deferred flush (the live path): record shapes during the block, then
     // dispatch them with their final cached style after the block closes.
@@ -65,6 +66,7 @@ exports (
 import std.string
 import std.map
 import std.list
+import grammar_context
 import grammar_shapes
 import grammar_element
 import grammar_events
@@ -150,6 +152,24 @@ node_payload(p: ptr) -> ptr { n = p as *VgNode; return n.payload }
 
 scene_ctx(p: ptr) -> ptr     { s = p as *VgScene; return s.ctx }
 scene_backend(p: ptr) -> ptr { s = p as *VgScene; return s.backend }
+
+// scene_px_to_vb_x/y — invert the viewBox→canvas mapping: canvas-PIXEL
+// coords (what canvas_on_click/on_move/on_release deliver) → viewBox units.
+// An app that hit-tests its own geometry in viewBox space must route event
+// coords through these, or its picks drift as soon as the canvas allocation
+// differs from the viewBox (any window resize): the scene rescales visually
+// but raw pixel coords no longer equal viewBox units.
+scene_px_to_vb_x(p: ptr, px: float) -> float {
+    m = grammar_context.ctx_mapping(scene_ctx(p))
+    v = (px - grammar_context.mapping_offset_x(m)) / grammar_context.mapping_scale(m)
+    return v + grammar_context.mapping_vb_min_x(m)
+}
+
+scene_px_to_vb_y(p: ptr, py: float) -> float {
+    m = grammar_context.ctx_mapping(scene_ctx(p))
+    v = (py - grammar_context.mapping_offset_y(m)) / grammar_context.mapping_scale(m)
+    return v + grammar_context.mapping_vb_min_y(m)
+}
 
 // scene_set_ctx — swap the AevgContext (viewBox→canvas mapping). Used on
 // resize: rebuild the mapping for the new canvas size, swap it in, then

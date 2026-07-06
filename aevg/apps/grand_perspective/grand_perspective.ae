@@ -1634,7 +1634,14 @@ main() {
             // Click routing by pane: legend toggles a type highlight; the
             // list pane selects (double-click drills a dir; ".." drills up);
             // the treemap selects the deepest tile (double-click drills).
-            canvas_on_click(cid) callback |cx: float, cy: float| {
+            canvas_on_click(cid) callback |pcx: float, pcy: float| {
+                // GTK delivers canvas-PIXEL coords; all our geometry (rects,
+                // pane bounds, list rows) is in viewBox units. Identical only
+                // while the canvas allocation is exactly 1356x600 — after any
+                // window resize every pick lands on the wrong tile without
+                // this unmapping.
+                cx = vg.scene_px_to_vb_x(st.scene, pcx)
+                cy = vg.scene_px_to_vb_y(st.scene, pcy)
                 dt = st.frame_t - st.last_click_t
                 dx = cx - st.last_click_x
                 if dx < 0.0 { dx = 0.0 - dx }
@@ -1685,8 +1692,9 @@ main() {
             // Hover → hit-test → show name + size + %-of-parent in the status
             // line (covers tiles too small to carry their own label). Also
             // remembers the hovered entry for the context menu.
-            canvas_on_move(cid) callback |mx: float, my: float| {
-                he = hit(st, mx, my)
+            canvas_on_move(cid) callback |pmx: float, pmy: float| {
+                he = hit(st, vg.scene_px_to_vb_x(st.scene, pmx),
+                             vg.scene_px_to_vb_y(st.scene, pmy))
                 st.hovered = he
                 if he == null {
                     aether_ui_text_set_string(st.status, "—")

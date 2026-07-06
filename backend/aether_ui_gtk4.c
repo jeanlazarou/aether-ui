@@ -2325,6 +2325,9 @@ void aether_ui_clear_children_impl(int handle) {
 //   GET  /state/{id}                — get reactive state value
 //   POST /state/{id}/set?v=X        — set reactive state value
 //   POST /canvas/{id}/click?x=&y=   — click a canvas at (x,y); hit-tests AeVG shapes
+//   POST /canvas/{id}/move?x=&y=    — pointer-move (hover) at (x,y)
+//   POST /canvas/{id}/key?name=X    — key press by GDK name ("Down", "Return", …)
+//   POST /window/resize?w=&h=       — resize the app's top-level window
 // ---------------------------------------------------------------------------
 
 #include <sys/socket.h>
@@ -2452,6 +2455,11 @@ static int widget_to_json(int handle, char* buf, int bufsize) {
     // Parent handle
     int parent_id = parent_handle_for(handle);
     n += snprintf(buf + n, bufsize - n, ",\"parent\":%d", parent_id);
+
+    // Current allocation (0x0 until mapped). Tests use a canvas's real size
+    // to compute the viewBox→pixel mapping after a /window/resize.
+    n += snprintf(buf + n, bufsize - n, ",\"w\":%d,\"h\":%d",
+                  gtk_widget_get_width(w), gtk_widget_get_height(w));
 
     // Add type-specific values
     if (GTK_IS_CHECK_BUTTON(w)) {
@@ -2590,6 +2598,70 @@ static gboolean canvas_click_idle(gpointer data) {
         a->result = 0;
     } else {
         a->result = 3;
+    }
+    a->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
+// Canvas pointer-move — fires on_move with (x, y), as the motion controller
+// would. Lets the driver test hover paths (hit-test → status line).
+static gboolean canvas_move_idle(gpointer data) {
+    CanvasClickAction* a = (CanvasClickAction*)data;
+    CanvasState* cs = get_canvas_state(a->canvas_id);
+    if (cs && cs->on_move && cs->on_move->fn) {
+        ((void(*)(void*, double, double))cs->on_move->fn)(cs->on_move->env, a->x, a->y);
+        a->result = 0;
+    } else {
+        a->result = 3;
+    }
+    a->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
+// Canvas key press — fires on_key with a GDK key name ("Down", "Return",
+// "Escape", "a"), as the key controller would. No focus needed: the closure
+// is invoked directly, so tests can drive keyboard nav deterministically.
+typedef struct {
+    int canvas_id;
+    char name[64];
+    int done;
+    int result;
+} CanvasKeyAction;
+
+static gboolean canvas_key_idle(gpointer data) {
+    CanvasKeyAction* a = (CanvasKeyAction*)data;
+    CanvasState* cs = get_canvas_state(a->canvas_id);
+    if (cs && cs->on_key && cs->on_key->fn) {
+        ((void(*)(void*, const char*))cs->on_key->fn)(cs->on_key->env, a->name);
+        a->result = 0;
+    } else {
+        a->result = 3;
+    }
+    a->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
+// Window resize — set_default_size on the top-level acts as a resize request
+// on a mapped GTK4 window. Lets tests exercise the resize → viewBox-remap →
+// coordinate-unmapping path (a maximize/unmaximize regression hid here).
+typedef struct {
+    int w, h;
+    int done;
+    int result;
+} WindowResizeAction;
+
+static gboolean window_resize_idle(gpointer data) {
+    WindowResizeAction* a = (WindowResizeAction*)data;
+    GtkWidget* root = aether_ui_get_widget(1);
+    a->result = 3;
+    if (root) {
+        GtkWidget* toplevel = root;
+        while (gtk_widget_get_parent(toplevel))
+            toplevel = gtk_widget_get_parent(toplevel);
+        if (GTK_IS_WINDOW(toplevel)) {
+            gtk_window_set_default_size(GTK_WINDOW(toplevel), a->w, a->h);
+            a->result = 0;
+        }
     }
     a->done = 1;
     return G_SOURCE_REMOVE;
@@ -2816,24 +2888,67 @@ static void handle_test_request(int client_fd) {
     // widget-level click which has no coordinates.
     if (method == 1 && strncmp(path, "/canvas/", 8) == 0) {
         char* action_part = strchr(path + 8, '/');
-        if (action_part && strncmp(action_part, "/click", 6) == 0) {
+        if (action_part && (strncmp(action_part, "/click", 6) == 0 ||
+                            strncmp(action_part, "/move", 5) == 0)) {
             CanvasClickAction ca = {0};
             ca.canvas_id = atoi(path + 8);
             const char* xs = extract_query_param(path, "x");
             const char* ys = extract_query_param(path, "y");
             ca.x = xs ? atof(xs) : 0.0;
             ca.y = ys ? atof(ys) : 0.0;
-            g_idle_add(canvas_click_idle, &ca);
+            int is_move = action_part[1] == 'm';
+            g_idle_add(is_move ? canvas_move_idle : canvas_click_idle, &ca);
             while (!ca.done) usleep(1000);
             if (ca.result == 0) {
                 send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
             } else {
                 send_response(client_fd, 404, "Not Found", "application/json",
-                              "{\"error\":\"no canvas click handler\"}");
+                              is_move ? "{\"error\":\"no canvas move handler\"}"
+                                      : "{\"error\":\"no canvas click handler\"}");
             }
             close(client_fd);
             return;
         }
+        if (action_part && strncmp(action_part, "/key", 4) == 0) {
+            CanvasKeyAction ka = {0};
+            ka.canvas_id = atoi(path + 8);
+            const char* ns = extract_query_param(path, "name");
+            if (ns) {
+                strncpy(ka.name, ns, sizeof(ka.name) - 1);
+                char* amp = strchr(ka.name, '&'); if (amp) *amp = '\0';
+            }
+            g_idle_add(canvas_key_idle, &ka);
+            while (!ka.done) usleep(1000);
+            if (ka.result == 0) {
+                send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+            } else {
+                send_response(client_fd, 404, "Not Found", "application/json",
+                              "{\"error\":\"no canvas key handler\"}");
+            }
+            close(client_fd);
+            return;
+        }
+    }
+
+    // POST /window/resize?w=..&h=.. — resize the app's top-level window.
+    if (method == 1 && strncmp(path, "/window/resize", 14) == 0) {
+        WindowResizeAction ra = {0};
+        const char* ws = extract_query_param(path, "w");
+        const char* hs = extract_query_param(path, "h");
+        ra.w = ws ? atoi(ws) : 0;
+        ra.h = hs ? atoi(hs) : 0;
+        if (ra.w > 0 && ra.h > 0) {
+            g_idle_add(window_resize_idle, &ra);
+            while (!ra.done) usleep(1000);
+        }
+        if (ra.w > 0 && ra.h > 0 && ra.result == 0) {
+            send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        } else {
+            send_response(client_fd, 400, "Bad Request", "application/json",
+                          "{\"error\":\"need w>0, h>0 and a top-level window\"}");
+        }
+        close(client_fd);
+        return;
     }
 
     // POST /widget/{id}/context_menu        — open the right-click menu

@@ -64,6 +64,22 @@ for _ in $(seq 1 40); do
     status_line | grep -q "Scan complete" && break
     sleep 0.3
 done
+# Wait for the first-layout dance to settle: clicks unmap px→viewBox through
+# the live mapping, so a click during a transient early allocation lands on
+# the wrong row. Two identical canvas sizes 0.3s apart = settled.
+canvas_size() {
+    curl -s "$BASE/widgets" | python3 -c "
+import json,sys
+c=next((w for w in json.load(sys.stdin) if w['type']=='canvas'),None)
+print('%s %s' % (c['w'], c['h']) if c else '0 0')"
+}
+PREV=""
+for _ in $(seq 1 20); do
+    CUR=$(canvas_size)
+    [ -n "$PREV" ] && [ "$CUR" = "$PREV" ] && [ "$CUR" != "0 0" ] && break
+    PREV="$CUR"
+    sleep 0.3
+done
 
 echo ""
 echo "--- Test 1: async scan completed with correct totals ---"
@@ -126,6 +142,73 @@ else
 fi
 curl -s -X POST "$BASE/widget/$DEL/click" > /dev/null; sleep 0.3
 assert_contains "guard after trash (no selection)" "Select" "$(status_line)"
+
+echo ""
+echo "--- Test 7: double-click a map tile drills; crumb click returns ---"
+# sub's tile sits in the lower-right of the map at the default 1356x600
+# canvas (fixture: big.bin left half, mid.bin top right, sub bottom right).
+curl -s -X POST "$BASE/canvas/1/click?x=860&y=450" > /dev/null; sleep 0.1
+curl -s -X POST "$BASE/canvas/1/click?x=860&y=450" > /dev/null; sleep 0.4
+assert_contains "double-click drilled into sub" "sub" "$(crumbs)"
+ROOTB=$(wid_of "root")
+curl -s -X POST "$BASE/widget/$ROOTB/click" > /dev/null; sleep 0.4
+C=$(crumbs)
+if echo "$C" | grep -q "sub"; then
+    echo "  FAIL: root crumb did not return (crumbs: $C)"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: root crumb returned to root"; PASS=$((PASS+1))
+fi
+
+echo ""
+echo "--- Test 8: keyboard nav — Down selects, Right drills, Left returns ---"
+curl -s -X POST "$BASE/canvas/1/key?name=Escape" > /dev/null; sleep 0.2
+curl -s -X POST "$BASE/canvas/1/key?name=Down" > /dev/null; sleep 0.3
+assert_contains "Down selects row 0" "big.bin" "$(status_line)"
+curl -s -X POST "$BASE/canvas/1/key?name=Down" > /dev/null; sleep 0.2
+curl -s -X POST "$BASE/canvas/1/key?name=Down" > /dev/null; sleep 0.3
+assert_contains "Down x3 reaches the dir row" "sub" "$(status_line)"
+curl -s -X POST "$BASE/canvas/1/key?name=Right" > /dev/null; sleep 0.4
+assert_contains "Right drills the selected dir" "sub" "$(crumbs)"
+curl -s -X POST "$BASE/canvas/1/key?name=Left" > /dev/null; sleep 0.4
+C=$(crumbs)
+if echo "$C" | grep -q "sub"; then
+    echo "  FAIL: Left did not go up (crumbs: $C)"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: Left went back up"; PASS=$((PASS+1))
+fi
+curl -s -X POST "$BASE/canvas/1/key?name=Escape" > /dev/null; sleep 0.2
+
+echo ""
+echo "--- Test 9: hover (canvas move) drives the status line ---"
+curl -s -X POST "$BASE/canvas/1/move?x=400&y=300" > /dev/null; sleep 0.3
+assert_contains "hover over big.bin names it" "big.bin" "$(status_line)"
+curl -s -X POST "$BASE/canvas/1/move?x=1300&y=550" > /dev/null; sleep 0.3
+S=$(status_line)
+if [ "$S" = "—" ]; then
+    echo "  PASS: hover off-map clears to em-dash"; PASS=$((PASS+1))
+else
+    echo "  FAIL: hover off-map (expected '—', got '$S')"; FAIL=$((FAIL+1))
+fi
+
+echo ""
+echo "--- Test 10: clicks still land after a window resize ---"
+# Grow the window, then double-click sub's tile at its NEW pixel position,
+# computed through the same xMidYMid-meet mapping the scene uses. Before the
+# px→viewBox unmapping fix this hit the wrong pane and nothing drilled.
+curl -s -X POST "$BASE/window/resize?w=1716&h=830" > /dev/null; sleep 1.0
+XY=$(curl -s "$BASE/widgets" | python3 -c "
+import json,sys
+ws=json.load(sys.stdin)
+c=next(w for w in ws if w['type']=='canvas')
+cw,ch=c['w'],c['h']
+s=min(cw/1356.0, ch/600.0)
+ox,oy=(cw-1356.0*s)/2.0,(ch-600.0*s)/2.0
+print('%.0f %.0f %d %d' % (860*s+ox, 450*s+oy, cw, ch))")
+PX=$(echo "$XY" | cut -d' ' -f1); PY=$(echo "$XY" | cut -d' ' -f2)
+echo "  (canvas now $(echo "$XY" | cut -d' ' -f3)x$(echo "$XY" | cut -d' ' -f4); sub tile at px $PX,$PY)"
+curl -s -X POST "$BASE/canvas/1/click?x=$PX&y=$PY" > /dev/null; sleep 0.1
+curl -s -X POST "$BASE/canvas/1/click?x=$PX&y=$PY" > /dev/null; sleep 0.4
+assert_contains "double-click drills at the new scale" "sub" "$(crumbs)"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
