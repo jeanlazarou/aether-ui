@@ -392,26 +392,39 @@ void aether_ui_button_set_label(int handle, const char* label) {
 // ---------------------------------------------------------------------------
 // Right-click context menus.
 //
-// The surface is a BORDERLESS TOP-LEVEL WINDOW, not a GtkPopover. On ChromeOS
-// (Crostini/sommelier) GTK4 popovers — xdg_popup subsurfaces — report
-// mapped=1 but the compositor never displays them (verified: a stock
-// GtkMenuButton/GtkDropDown popover is equally invisible there). A top-level
-// window maps fine on every backend we target, so the menu is one.
+// Two surfaces, chosen at runtime:
+//
+//   * DEFAULT: a GtkPopover (GtkListBox of rows) parented to the owner. This
+//     is the correct native menu on every mainstream Linux desktop — it
+//     positions at the pointer, carries the theme's menu styling, and
+//     auto-dismisses. Verified working on GNOME/KDE (Wayland) and X11.
+//
+//   * SOMMELIER FALLBACK: a borderless top-level window. On ChromeOS
+//     Crostini's sommelier compositor, GTK4 popovers (xdg_popup subsurfaces)
+//     report mapped=1 but never DISPLAY — verified a stock GtkMenuButton /
+//     GtkDropDown is equally invisible there. A top-level window maps fine.
+//     The trade-off (no pointer-anchored placement, plainer chrome) is
+//     accepted only where the popover doesn't work at all. Detected via
+//     $SOMMELIER_VERSION (set by sommelier, absent elsewhere).
+//     KNOWN WART: sommelier sometimes doesn't present this transient
+//     top-level on the first right-click (menu appears on the second tap, or
+//     the window can land behind the app) — a sommelier window-management
+//     quirk, not a logic bug (each open logs mapped=1). Left as-is; the menu
+//     is reachable. A create-once hide/show window may help if it recurs.
 //
 // The trigger is a GtkEventControllerLegacy filtering for button 3, NOT a
-// GtkGestureClick: on sommelier a two-finger-tap delivers button-3
-// press/release that the click gesture silently drops (verified: the gesture
-// never fired while the legacy controller saw every event). The legacy
-// controller sees the raw button events on all backends.
+// GtkGestureClick: on sommelier a two-finger tap delivers button-3
+// press/release that the click gesture silently drops (verified). The legacy
+// controller sees the raw button events on every backend, so it is used
+// unconditionally.
 //
-// Each context_menu_item call records {label, closure}; the window is built
-// on first right-click (when the owner is realized, so screen coordinates
-// resolve). Item click fires the closure and closes; Escape or focus-out
-// closes without firing.
+// Each context_menu_item call records {label, closure}; the surface is built
+// on first right-click. Item activation fires the closure and closes.
 // ---------------------------------------------------------------------------
 typedef struct {
     GtkWidget* owner;
-    GtkWidget* menu_win;            // GtkWindow — built/destroyed per open
+    GtkWidget* popover;             // popover surface (default path)
+    GtkWidget* menu_win;            // window surface (sommelier fallback)
     GPtrArray* labels;              // char* (owned copies)
     GPtrArray* closures;            // AeClosure* (boxed, owned by Aether side)
 } CtxMenu;
@@ -421,21 +434,40 @@ static int aeui_ctx_debug(void) {
     return v && v[0] && v[0] != '0';
 }
 
+// True when GTK4 popovers don't display and we must fall back to a window.
+// sommelier (ChromeOS Crostini) is the only known case; it exports
+// $SOMMELIER_VERSION. $AETHER_UI_MENU=window forces the fallback for testing.
+static int aeui_ctx_use_window(void) {
+    const char* force = getenv("AETHER_UI_MENU");
+    if (force && strcmp(force, "window") == 0) return 1;
+    if (force && strcmp(force, "popover") == 0) return 0;
+    return getenv("SOMMELIER_VERSION") != NULL;
+}
+
 static void ctx_menu_close(CtxMenu* cm) {
+    if (cm->popover) { gtk_popover_popdown(GTK_POPOVER(cm->popover)); }
     if (cm->menu_win) {
         gtk_window_destroy(GTK_WINDOW(cm->menu_win));
         cm->menu_win = NULL;
     }
 }
 
-static void on_ctx_menu_item_clicked(GtkButton* btn, gpointer data) {
-    CtxMenu* cm = (CtxMenu*)data;
-    AeClosure* c = g_object_get_data(G_OBJECT(btn), "aeui-closure");
+// A menu item fired (popover row or window button) — close, then run closure.
+static void ctx_menu_fire(CtxMenu* cm, AeClosure* c) {
     ctx_menu_close(cm);
     if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
 }
 
-// Escape closes the menu window.
+static void on_ctx_menu_row_activated(GtkListBox* lb, GtkListBoxRow* row,
+                                      gpointer data) {
+    (void)lb;
+    ctx_menu_fire((CtxMenu*)data, g_object_get_data(G_OBJECT(row), "aeui-closure"));
+}
+
+static void on_ctx_menu_item_clicked(GtkButton* btn, gpointer data) {
+    ctx_menu_fire((CtxMenu*)data, g_object_get_data(G_OBJECT(btn), "aeui-closure"));
+}
+
 static gboolean on_ctx_menu_key(GtkEventControllerKey* k, guint keyval,
                                 guint code, GdkModifierType st, gpointer data) {
     (void)k; (void)code; (void)st;
@@ -443,23 +475,56 @@ static gboolean on_ctx_menu_key(GtkEventControllerKey* k, guint keyval,
     return FALSE;
 }
 
-// Losing focus (click elsewhere) closes it — the menu-dismissal contract.
+// Window-fallback: losing focus (click elsewhere) closes it.
 static void on_ctx_menu_win_active(GObject* win, GParamSpec* ps, gpointer data) {
     (void)ps;
     if (!gtk_window_is_active(GTK_WINDOW(win))) ctx_menu_close((CtxMenu*)data);
 }
 
-// Open the menu near (root_x, root_y) — screen coordinates.
-static void ctx_menu_open_at(CtxMenu* cm, int root_x, int root_y) {
+// --- Default surface: a GtkPopover anchored at (x, y) in owner-local px. ---
+static void ctx_menu_open_popover(CtxMenu* cm, double x, double y) {
+    ctx_menu_close(cm);
+    if (!cm->popover) {
+        GtkWidget* list = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+        g_signal_connect(list, "row-activated",
+                         G_CALLBACK(on_ctx_menu_row_activated), cm);
+        for (guint i = 0; i < cm->labels->len; i++) {
+            GtkWidget* lbl =
+                gtk_label_new((const char*)g_ptr_array_index(cm->labels, i));
+            gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+            gtk_widget_set_margin_start(lbl, 8);  gtk_widget_set_margin_end(lbl, 8);
+            gtk_widget_set_margin_top(lbl, 4);    gtk_widget_set_margin_bottom(lbl, 4);
+            GtkWidget* row = gtk_list_box_row_new();
+            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), lbl);
+            g_object_set_data(G_OBJECT(row), "aeui-closure",
+                              g_ptr_array_index(cm->closures, i));
+            gtk_list_box_append(GTK_LIST_BOX(list), row);
+        }
+        cm->popover = gtk_popover_new();
+        gtk_popover_set_has_arrow(GTK_POPOVER(cm->popover), FALSE);
+        gtk_popover_set_child(GTK_POPOVER(cm->popover), list);
+        gtk_widget_set_parent(cm->popover, cm->owner);
+    }
+    GdkRectangle at = { (int)x, (int)y, 1, 1 };
+    gtk_popover_set_pointing_to(GTK_POPOVER(cm->popover), &at);
+    gtk_popover_popup(GTK_POPOVER(cm->popover));
+    if (aeui_ctx_debug()) {
+        fprintf(stderr, "[aeui-ctxmenu] popover at %.0f,%.0f mapped=%d\n",
+                x, y, gtk_widget_get_mapped(cm->popover));
+    }
+}
+
+// --- Fallback surface: a borderless top-level window (sommelier). ---
+static void ctx_menu_open_window(CtxMenu* cm) {
     ctx_menu_close(cm);
     GtkWidget* win = gtk_window_new();
     cm->menu_win = win;
     gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
     gtk_window_set_resizable(GTK_WINDOW(win), FALSE);
     GtkRoot* owner_root = gtk_widget_get_root(cm->owner);
-    if (GTK_IS_WINDOW(owner_root)) {
+    if (GTK_IS_WINDOW(owner_root))
         gtk_window_set_transient_for(GTK_WINDOW(win), GTK_WINDOW(owner_root));
-    }
     gtk_widget_add_css_class(win, "aui-context-menu");
 
     GtkWidget* list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -483,24 +548,17 @@ static void ctx_menu_open_at(CtxMenu* cm, int root_x, int root_y) {
     gtk_widget_add_controller(win, key);
     g_signal_connect(win, "notify::is-active",
                      G_CALLBACK(on_ctx_menu_win_active), cm);
-
-    // Note: GTK4 has no portable client-side window positioning — Wayland
-    // leaves placement to the compositor, and X11 placement post-map is
-    // unreliable. The menu maps as its own small top-level; the compositor
-    // places it. (root_x/root_y are kept for a future X11-specific nicety.)
-    (void)root_x; (void)root_y;
     gtk_window_present(GTK_WINDOW(win));
-    if (aeui_ctx_debug()) {
-        fprintf(stderr, "[aeui-ctxmenu] menu window presented at %d,%d mapped=%d\n",
-                root_x, root_y, gtk_widget_get_mapped(win));
-    }
+    if (aeui_ctx_debug())
+        fprintf(stderr, "[aeui-ctxmenu] menu window mapped=%d\n",
+                gtk_widget_get_mapped(win));
 }
 
-// Open the menu. Placement is compositor-driven (see ctx_menu_open_at); the
-// coordinates are advisory only, so we pass the pointer position through for
-// the future X11 nicety but do not depend on it.
+// Open the menu at (x, y) owner-local. Routes to the popover (default) or the
+// window fallback (sommelier).
 static void ctx_menu_open_local(CtxMenu* cm, double x, double y) {
-    ctx_menu_open_at(cm, (int)x, (int)y);
+    if (aeui_ctx_use_window()) ctx_menu_open_window(cm);
+    else ctx_menu_open_popover(cm, x, y);
 }
 
 // Legacy controller: fire on button-3 RELEASE. A GtkGestureClick set to
@@ -524,11 +582,18 @@ static void on_ctx_menu_legacy_event(GtkEventControllerLegacy* c,
     }
 }
 
+// Whichever surface is in use, is it currently mapped?
+static int ctx_menu_is_mapped(CtxMenu* cm) {
+    if (cm->menu_win) return gtk_widget_get_mapped(cm->menu_win) ? 1 : 0;
+    if (cm->popover)  return gtk_widget_get_mapped(cm->popover)  ? 1 : 0;
+    return 0;
+}
+
 // AetherUIDriver hooks — drive and OBSERVE the context menu from the HTTP
 // test server (run on the GTK thread via idle callback).
 //   aeui_ctx_menu_present:  -1 no menu attached, else item count
 //   aeui_ctx_menu_open:     open at the widget's centre; 1 if it mapped
-//   aeui_ctx_menu_mapped:   1 if the menu window is currently mapped
+//   aeui_ctx_menu_mapped:   1 if the menu surface is currently mapped
 //   aeui_ctx_menu_activate: fire item[idx]'s closure (as an item click does)
 int aeui_ctx_menu_present(int handle) {
     GtkWidget* w = aether_ui_get_widget(handle);
@@ -545,15 +610,15 @@ int aeui_ctx_menu_open(int handle) {
     if (!cm) return -1;
     ctx_menu_open_local(cm, gtk_widget_get_width(w) / 2.0,
                             gtk_widget_get_height(w) / 2.0);
-    return (cm->menu_win && gtk_widget_get_mapped(cm->menu_win)) ? 1 : 0;
+    return ctx_menu_is_mapped(cm);
 }
 
 int aeui_ctx_menu_mapped(int handle) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (!w) return -1;
     CtxMenu* cm = g_object_get_data(G_OBJECT(w), "aeui-ctxmenu");
-    if (!cm || !cm->menu_win) return 0;
-    return gtk_widget_get_mapped(cm->menu_win) ? 1 : 0;
+    if (!cm) return 0;
+    return ctx_menu_is_mapped(cm);
 }
 
 int aeui_ctx_menu_activate(int handle, int idx) {
@@ -572,6 +637,9 @@ static void on_ctx_menu_owner_destroy(GtkWidget* owner, gpointer data) {
     (void)owner;
     CtxMenu* cm = (CtxMenu*)data;
     ctx_menu_close(cm);
+    // The popover is parented to the owner; unparent it before the owner is
+    // disposed or GTK warns about a live child.
+    if (cm->popover) { gtk_widget_unparent(cm->popover); cm->popover = NULL; }
 }
 
 void aether_ui_context_menu_item_impl(int handle, const char* label,

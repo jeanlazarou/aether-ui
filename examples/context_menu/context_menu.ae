@@ -12,10 +12,12 @@
 //   - the status line at the bottom reports each action
 //
 // Platform note: GTK4 (Linux) has the full implementation. The menu surface
-// is a small borderless top-level window, not a popover — GTK4 popovers
-// (xdg_popup) do not display on ChromeOS/Crostini's sommelier compositor,
-// while top-level windows do. AppKit/Win32 are currently no-op stubs (same
-// precedent as canvas_on_move).
+// is a native GtkPopover (positions at the pointer, themed) on mainstream
+// Linux desktops. On ChromeOS/Crostini's sommelier compositor — where GTK4
+// popovers report mapped but never display — it falls back to a borderless
+// top-level window (auto-detected via $SOMMELIER_VERSION; override with
+// $AETHER_UI_MENU=popover|window). AppKit/Win32 are currently no-op stubs
+// (same precedent as canvas_on_move).
 //
 // Automation note: AetherUIDriver drives it directly:
 //   POST /widget/{id}/context_menu        → open the menu ({"mapped":1})
