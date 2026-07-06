@@ -453,6 +453,16 @@ static int aeui_ctx_debug(void) {
     return v && v[0] && v[0] != '0';
 }
 
+// Claim the button-3 sequence at press so the widgets underneath never
+// process the right-click as an ordinary press — otherwise they go
+// "active", the popup's grab steals the unwind, and GTK sprays "Broken
+// accounting of active state" warnings.
+static void on_ctx_menu_pressed_claim(GtkGestureClick* gesture, int n_press,
+                                      double x, double y, gpointer data) {
+    (void)n_press; (void)x; (void)y; (void)data;
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+}
+
 // Open on button RELEASE, not press. Opening on press means the popup takes
 // its grab while the button is still down; on some Wayland compositors
 // (ChromeOS sommelier) the following release is then delivered to the popup
@@ -503,6 +513,7 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
         GtkGesture* gesture = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture),
                                       GDK_BUTTON_SECONDARY);
+        g_signal_connect(gesture, "pressed", G_CALLBACK(on_ctx_menu_pressed_claim), cm);
         g_signal_connect(gesture, "released", G_CALLBACK(on_ctx_menu_released), cm);
         gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(gesture));
         g_signal_connect(w, "destroy", G_CALLBACK(on_ctx_menu_owner_destroy), cm);
