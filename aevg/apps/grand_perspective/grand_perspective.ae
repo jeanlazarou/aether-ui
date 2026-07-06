@@ -876,6 +876,82 @@ do_reveal(s: *AppState) {
     open_path(s, d)
 }
 
+// ─── Delete → trash, with a two-click confirm ────────────────────
+//
+// First press arms ("Confirm delete?" on the button + the path in the
+// status line); a second press within the window executes `gio trash`.
+// The arm times out (tick disarms) and any navigation clears selection,
+// which also effectively disarms. Only an explicit SELECTION can be
+// deleted — never the hover target.
+DEL_CONFIRM_SECS() -> float { return 6.0 }
+
+disarm_delete(s: *AppState) {
+    s.del_armed_t = 0.0 - 1.0
+    if s.del_btn != 0 { _ = set_button_label(s.del_btn, "Delete") }
+}
+
+do_delete(s: *AppState) {
+    if s.selected == null {
+        if s.status != 0 { aether_ui_text_set_string(s.status, "Select a tile or row first, then Delete") }
+        return
+    }
+    if s.del_armed_t > 0.0 {
+        if s.frame_t - s.del_armed_t < DEL_CONFIRM_SECS() {
+            execute_trash(s)
+            return
+        }
+    }
+    s.del_armed_t = s.frame_t
+    if s.del_btn != 0 { _ = set_button_label(s.del_btn, "Confirm delete?") }
+    if s.status != 0 {
+        aether_ui_text_set_string(s.status,
+            string.concat("Move to trash: ", string.concat(s.selected.path, "   — press Delete again to confirm")))
+    }
+}
+
+execute_trash(s: *AppState) {
+    e = s.selected
+    av = list.new()
+    _ = list.add(av, "trash")
+    _ = list.add(av, e.path)
+    _tout, tstatus, terr = run_capture("gio", av, null)
+    list.free(av)
+    disarm_delete(s)
+    ok = 1
+    if string.length(terr) > 0 { ok = 0 }
+    if tstatus != 0 { ok = 0 }
+    if ok == 0 {
+        if s.status != 0 { aether_ui_text_set_string(s.status, string.concat("Trash FAILED: ", e.path)) }
+        return
+    }
+    // Retract the subtree from the model: bytes + file counts up the
+    // ancestor chain, then unlink the node from its parent.
+    fdel = e.file_count
+    if e.is_dir == 0 { fdel = 1 }
+    long ebytes = e.total_size
+    bump_ancestors(e, 0 - ebytes, 0 - fdel)
+    if e.parent != null {
+        pc = e.parent.children
+        n = list.size(pc)
+        i = 0
+        while i < n {
+            it, _ = list.get(pc, i)
+            if it as *FileEntry == e { list.remove(pc, i); i = n }
+            i = i + 1
+        }
+    }
+    s.freed = s.freed + ebytes
+    s.total = s.root.total_size
+    clear_selection(s)
+    rebuild_type_stats(s)
+    relayout(s)
+    if s.status != 0 {
+        fmsg = fmt_size(ebytes)
+        aether_ui_text_set_string(s.status,
+            string.concat("Moved to trash: ", string.concat(e.path, string.concat("   (freed ", string.concat(fmsg, ")")))))
+    }
+}
+
 // ─── Type legend pane (right of the treemap) ─────────────────────
 LEG_TOP() -> float   { return 52.0 }
 LEG_ROW_H() -> float { return 27.0 }
@@ -1066,6 +1142,12 @@ struct AppState {
     hl_ext: string   // highlighted extension, "" = no highlight
     hl_on: int       // 1 = highlight active ("" ext is a valid type)
     lrows: ptr       // list pane rows: current dir's children, sorted desc
+    // Delete-to-trash: a two-click confirm on the toolbar button (no modal
+    // needed). freed accumulates trashed bytes — GrandPerspective's
+    // "Freed space" stat.
+    freed: long
+    del_armed_t: float   // when the confirm was armed; <=0 = disarmed
+    del_btn: int         // Delete button handle (label swaps while armed)
 }
 
 CRUMBS() -> int { return 8 }
@@ -1113,6 +1195,9 @@ mk_state(root: *FileEntry) -> *AppState {
     s.hl_ext = ""
     s.hl_on = 0
     s.lrows = list.new()
+    s.freed = 0
+    s.del_armed_t = 0.0 - 1.0
+    s.del_btn = 0
     relayout(s)
     retarget_watch(s)
     return s
@@ -1391,6 +1476,10 @@ tick(s: *AppState) {
             if fs.watch_wait(s.watch, 0) == 1 { start_rescan(s, s.current) }
         }
     }
+    // Delete-confirm timeout: disarm quietly when the window lapses.
+    if s.del_armed_t > 0.0 {
+        if s.frame_t - s.del_armed_t >= DEL_CONFIRM_SECS() { disarm_delete(s) }
+    }
     if s.dirty == 1 {
         if s.cid != 0 {
             aether_ui.canvas_clear(s.cid)
@@ -1453,6 +1542,7 @@ main() {
             btn("Stop") callback { stop_scan(st) }
             btn("Open") callback { do_open(st) }
             btn("Reveal") callback { do_reveal(st) }
+            st.del_btn = btn("Delete") callback { do_delete(st) }
             btn("by Size") callback { set_scheme(st, 0) }
             btn("by Depth") callback { set_scheme(st, 1) }
             btn("by Type") callback { set_scheme(st, 2) }
@@ -1537,6 +1627,13 @@ main() {
             cwid = aether_ui_canvas_get_widget(cid)
             context_menu_item(cwid, "Open") callback { do_open(st) }
             context_menu_item(cwid, "Reveal in file manager") callback { do_reveal(st) }
+            context_menu_item(cwid, "Move to Trash") callback {
+                tsel = op_target(st)
+                if tsel != null {
+                    if st.selected == null { select_entry(st, tsel) }
+                    do_delete(st)
+                }
+            }
             context_menu_item(cwid, "Copy path") callback {
                 tgt = op_target(st)
                 if tgt != null {
