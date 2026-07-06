@@ -60,12 +60,19 @@ case "$OS" in
             -framework AppKit -framework Foundation -framework QuartzCore -pthread -lm \
             $AETHER_LIBS
         ;;
-    Linux)
+    Linux|FreeBSD)
         if ! pkg-config --exists gtk4 2>/dev/null; then
             echo "Error: GTK4 dev libraries not found."
+            [ "$OS" = "FreeBSD" ] && echo "  FreeBSD: pkg install gtk4 pkgconf; ensure a zlib.pc exists for freetype2->zlib."
             exit 1
         fi
-        echo "Platform: Linux (GTK4)"
+        echo "Platform: $OS (GTK4)"
+        # C compiler: honor $CC, else gcc on Linux, clang on FreeBSD (whose
+        # base system ships clang, not gcc). Mirrors ae build's $AE_CC/$CC.
+        CC_BIN="${CC:-}"
+        if [ -z "$CC_BIN" ]; then
+            if [ "$OS" = "FreeBSD" ]; then CC_BIN=clang; else CC_BIN=gcc; fi
+        fi
         # libnotify is optional — if present, the GTK4 backend wires real
         # OS notifications via NotifyNotification; otherwise notify*()
         # land in the registry only (still drivable via AetherUIDriver).
@@ -83,7 +90,7 @@ case "$OS" in
         # std.regex-using modules (e.g. the AeVG port's rasterize/parser)
         # need -lpcre2-8 at link time; plain -laether doesn't pull it in.
         AETHER_LIBS="$(ae cflags --libs 2>/dev/null || true)"
-        gcc -O0 -g -pipe \
+        "$CC_BIN" -O0 -g -pipe \
             $(pkg-config --cflags gtk4) \
             $AETHER_INCLUDES \
             $LIBNOTIFY_CFLAGS \
