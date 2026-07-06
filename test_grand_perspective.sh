@@ -193,19 +193,24 @@ else
 fi
 
 echo ""
-echo "--- Test 10: scheme buttons act as a radio group (active = ghosted) ---"
+echo "--- Test 10: colour-scheme radio group (grouped toggles) ---"
 enabled_of() {
     curl -s "$BASE/widgets" | python3 -c "
 import json,sys
 print(next(str(w['enabled']).lower() for w in json.load(sys.stdin) if w.get('text')==sys.argv[1]))" "$1"
 }
-assert_contains "by Type ghosted initially (the default scheme)" "false" "$(enabled_of 'by Type')"
+active_of() {
+    curl -s "$BASE/widgets" | python3 -c "
+import json,sys
+print(next(str(w['active']).lower() for w in json.load(sys.stdin) if w.get('text')==sys.argv[1]))" "$1"
+}
+assert_contains "by Type active initially (the default scheme)" "true" "$(active_of 'by Type')"
 BD=$(wid_of "by Depth")
-curl -s -X POST "$BASE/widget/$BD/click" > /dev/null; sleep 0.3
-assert_contains "by Depth ghosted after click" "false" "$(enabled_of 'by Depth')"
-assert_contains "by Type re-enabled" "true" "$(enabled_of 'by Type')"
+curl -s -X POST "$BASE/widget/$BD/toggle" > /dev/null; sleep 0.3
+assert_contains "by Depth active after toggle" "true" "$(active_of 'by Depth')"
+assert_contains "by Type deactivated by the group" "false" "$(active_of 'by Type')"
 BT=$(wid_of "by Type")
-curl -s -X POST "$BASE/widget/$BT/click" > /dev/null; sleep 0.3   # restore default
+curl -s -X POST "$BASE/widget/$BT/toggle" > /dev/null; sleep 0.3   # restore default
 assert_contains "Stop ghosted when idle" "false" "$(enabled_of 'Stop')"
 
 echo ""

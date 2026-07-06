@@ -642,6 +642,14 @@ int aether_ui_toggle_get_active(int handle) {
     return 0;
 }
 
+// Radio-group a toggle with another. STUB: AppKit radio exclusivity comes
+// from setButtonType:NSButtonTypeRadio + a shared action/superview; wiring
+// that retroactively is not yet done. The GTK4 backend is real; callers get
+// plain checkboxes here (no exclusivity).
+void aether_ui_toggle_set_group(int handle, int group_with) {
+    (void)handle; (void)group_with;
+}
+
 // Slider — continuous; target invokes closure with double value.
 @interface AetherSliderTarget : NSObject
 @property (assign) AeClosure* closure;

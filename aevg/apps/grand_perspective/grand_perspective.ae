@@ -66,6 +66,7 @@
 import aether_ui
 import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_key, timer,
+    toggle, toggle_group, set_toggle,
     set_button_label, set_hidden, context_menu_item, clipboard_write, margin_of)
 import vg_live (vg, canvas_region, vg_flush_live, region_set_animated)
 import vg
@@ -1222,9 +1223,9 @@ struct AppState {
     // synthetic, and acting on them lets a repaint clobber status text.
     hov_px_x: float
     hov_px_y: float
-    // Colour-scheme buttons act as a radio group: the ACTIVE scheme's
-    // button is ghosted ("you are here"). A real dropdown is out — its
-    // popover never displays under sommelier (ChromeOS).
+    // Colour-scheme radio group (grouped toggles; GTK renders them with
+    // round radio indicators). A dropdown is out — its popover never
+    // displays under sommelier (ChromeOS).
     scheme_btn0: int
     scheme_btn1: int
     scheme_btn2: int
@@ -1576,22 +1577,15 @@ set_scheme(s: *AppState, scheme: int) {
     scheme_buttons(s)
 }
 
-// Radio-group behaviour for the three colour-scheme buttons: ghost the
-// active one so the toolbar always shows which scheme is in effect.
+// Tick the active scheme's radio; the group unchecks the others itself.
+// Needed at build time (the radios start unchecked) and harmless later —
+// setting an already-active radio emits no change notification.
 scheme_buttons(s: *AppState) {
     if s.scheme_btn0 == 0 { return }
-    if dbg_on() == 1 {
-        println("gp-scheme: active=${s.scheme} handles=${s.scheme_btn0},${s.scheme_btn1},${s.scheme_btn2}")
-    }
-    on0 = 1
-    on1 = 1
-    on2 = 1
-    if s.scheme == 0 { on0 = 0 }
-    if s.scheme == 1 { on1 = 0 }
-    if s.scheme == 2 { on2 = 0 }
-    aether_ui_set_enabled(s.scheme_btn0, on0)
-    aether_ui_set_enabled(s.scheme_btn1, on1)
-    aether_ui_set_enabled(s.scheme_btn2, on2)
+    h = s.scheme_btn0
+    if s.scheme == 1 { h = s.scheme_btn1 }
+    if s.scheme == 2 { h = s.scheme_btn2 }
+    _ = set_toggle(h, 1)
 }
 
 // Ghost the scan-lifecycle buttons to match state: Stop is clickable only
@@ -1684,12 +1678,24 @@ main() {
             btn("Open") callback { do_open(st) }
             btn("Reveal") callback { do_reveal(st) }
             st.del_btn = btn("Delete") callback { do_delete(st) }
-            st.scheme_btn0 = btn("by Size") callback { set_scheme(st, 0) }
-            st.scheme_btn1 = btn("by Depth") callback { set_scheme(st, 1) }
-            st.scheme_btn2 = btn("by Type") callback { set_scheme(st, 2) }
+            // Colour scheme: a real radio group (grouped toggles). A radio
+            // fires its change callback on BOTH the leaving and entering
+            // member — only act on active=1.
+            text("      Colour:")
+            st.scheme_btn0 = toggle("by Size") callback |a: int| {
+                if a == 1 { set_scheme(st, 0) }
+            }
+            st.scheme_btn1 = toggle("by Depth") callback |a: int| {
+                if a == 1 { set_scheme(st, 1) }
+            }
+            st.scheme_btn2 = toggle("by Type") callback |a: int| {
+                if a == 1 { set_scheme(st, 2) }
+            }
+            toggle_group(st.scheme_btn1, st.scheme_btn0)
+            toggle_group(st.scheme_btn2, st.scheme_btn0)
         }
         // Reflect the already-running initial scan in the fresh toolbar,
-        // and mark the active colour scheme.
+        // and tick the active colour scheme's radio.
         scan_buttons(st)
         scheme_buttons(st)
 

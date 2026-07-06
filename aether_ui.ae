@@ -20,7 +20,7 @@ exports (
     vstack, hstack, scrollview, zstack, form, section, navstack,
     nav_push, nav_pop,
     text, button, btn, spacer, divider,
-    textfield, securefield, toggle, slider, picker, picker_add,
+    textfield, securefield, toggle, toggle_group, slider, picker, picker_add,
     textarea, progressbar,
     ui_state, ui_get, ui_set, text_bound,
     set_text, get_text, set_toggle, get_toggle,
@@ -113,6 +113,7 @@ extern aether_ui_securefield_create(placeholder: string, boxed_closure: ptr) -> 
 extern aether_ui_toggle_create(label: string, boxed_closure: ptr) -> int
 extern aether_ui_toggle_set_active(handle: int, active: int)
 extern aether_ui_toggle_get_active(handle: int) -> int
+extern aether_ui_toggle_set_group(handle: int, group_with: int)
 
 extern aether_ui_slider_create(min_val: float, max_val: float,
                                initial: float, boxed_closure: ptr) -> int
@@ -580,6 +581,16 @@ toggle(_ctx: ptr, label: string, on_change: fn) {
         aether_ui_widget_add_child_ctx(_ctx, handle)
     }
     return handle
+}
+
+// toggle_group(handle, group_with) — put a toggle in a mutual-exclusion
+// group with another: exactly one member is active, and GTK renders the
+// members as RADIO buttons (round indicator). Chain each member to the
+// group's first toggle. Radio groups beat a picker for few-option choices
+// on ChromeOS: GtkDropDown's list is a popover, which sommelier never
+// displays. (Win32/macOS: stubbed — plain checkboxes, no exclusivity yet.)
+toggle_group(handle: int, group_with: int) {
+    aether_ui_toggle_set_group(handle, group_with)
 }
 
 slider(_ctx: ptr, min_val: float, max_val: float, initial: float, on_change: fn) {

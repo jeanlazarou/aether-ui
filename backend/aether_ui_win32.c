@@ -1337,6 +1337,14 @@ int aether_ui_toggle_get_active(int handle) {
     return SendMessageW(w->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
 }
 
+// Radio-group a toggle with another. STUB: Win32 radio semantics need
+// BS_AUTORADIOBUTTON + WS_GROUP at creation time; grouping an existing
+// checkbox after the fact requires a style swap not yet wired. The GTK4
+// backend is real; callers get plain checkboxes here (no exclusivity).
+void aether_ui_toggle_set_group(int handle, int group_with) {
+    (void)handle; (void)group_with;
+}
+
 int aether_ui_slider_create(double min_val, double max_val,
                             double initial, void* boxed_closure) {
     ensure_win_init();

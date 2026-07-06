@@ -861,6 +861,19 @@ int aether_ui_toggle_get_active(int handle) {
     return 0;
 }
 
+// Put a toggle in a mutual-exclusion group with another: GTK4 renders
+// grouped check buttons as RADIO buttons (round indicator) and enforces
+// exactly-one-active itself. Chain each new member to the group's first
+// toggle. Radio groups beat a dropdown here: GtkDropDown's option list is a
+// popover, which never displays under sommelier (ChromeOS).
+void aether_ui_toggle_set_group(int handle, int group_with) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    GtkWidget* g = aether_ui_get_widget(group_with);
+    if (w && g && GTK_IS_CHECK_BUTTON(w) && GTK_IS_CHECK_BUTTON(g)) {
+        gtk_check_button_set_group(GTK_CHECK_BUTTON(w), GTK_CHECK_BUTTON(g));
+    }
+}
+
 // Slider — horizontal scale with min/max/initial and on_change callback.
 // Callback receives the new double value.
 static void on_slider_changed(GtkRange* range, gpointer data) {
@@ -2501,6 +2514,7 @@ static const char* widget_text_content(GtkWidget* w) {
         GtkEntryBuffer* buf = gtk_entry_get_buffer(GTK_ENTRY(w));
         return gtk_entry_buffer_get_text(buf);
     }
+    if (GTK_IS_CHECK_BUTTON(w)) return gtk_check_button_get_label(GTK_CHECK_BUTTON(w));
     if (GTK_IS_BUTTON(w)) return gtk_button_get_label(GTK_BUTTON(w));
     return "";
 }
