@@ -99,15 +99,18 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // Resize: rescale the scene to the new canvas allocation. The hook fires
     // from the draw func with the new (rw, rh); rebuild the viewBox→canvas
     // mapping at that size, swap it into the scene, clear the stale command
-    // buffer, and re-flush the recorded shapes — they re-map through the new
-    // context, so the vector scene crisply rescales. The viewBox (vb) is fixed
-    // SVG space, so only the mapping changes. (No canvas_redraw here: the hook
-    // runs INSIDE the draw func, which replays the freshly-flushed buffer.)
+    // buffer, and re-render — a FULL live render, not just the recorded static
+    // shapes: draw-region content (canvas_region) isn't retained between
+    // frames, so flushing only recordings would blank it until the app's next
+    // dirty repaint (seen as an empty pane after maximize/un-maximize). The
+    // viewBox (vb) is fixed SVG space, so only the mapping changes. (No
+    // canvas_redraw here: the hook runs INSIDE the draw func, which replays
+    // the freshly-flushed buffer.)
     aether_ui.canvas_on_resize(canvas_id) callback |rw: int, rh: int| {
         new_ctx = _build_ctx(vb, rw, rh)
         vg.scene_set_ctx(scene, new_ctx)
         aether_ui.canvas_clear(canvas_id)
-        _flush_clipped(scene, canvas_id)
+        _flush_live(scene, canvas_id, ms_to_secs(now_monotonic_ms()))
     }
     // Animation loop: a ~60fps timer drives the scene's animations. It no-ops
     // when nothing is animating (cheap idle), and otherwise advances them to
