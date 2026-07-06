@@ -239,6 +239,23 @@ run_server_test "$(EX_BIN context_menu)" \
                 "$SCRIPT_DIR/test_context_menu.sh" context_menu || FAIL=$((FAIL + 1))
 
 echo
+echo "=== Phase 6: AetherUIDriver grand_perspective tests ==="
+# The app scans $AEVG_DIR on launch; the test script asserts against the
+# same fixture via $GP_FIXTURE (incl. that Delete really trashes a file).
+GP_FIX=$(mktemp -d)
+mkdir -p "$GP_FIX/sub"
+head -c 400000 /dev/urandom > "$GP_FIX/big.bin"
+head -c 250000 /dev/urandom > "$GP_FIX/mid.bin"
+head -c 200000 /dev/urandom > "$GP_FIX/sub/inner.bin"
+export AEVG_DIR="$GP_FIX" GP_FIXTURE="$GP_FIX"
+# Xvfb runs need the cairo renderer (GTK's NGL on llvmpipe churns memory).
+case "$LAUNCH_PREFIX" in xvfb*) export GSK_RENDERER=cairo ;; esac
+run_server_test "$ROOT/target/build/aevg/apps/grand_perspective/bin/grand_perspective" \
+                "$SCRIPT_DIR/test_grand_perspective.sh" grand_perspective || FAIL=$((FAIL + 1))
+unset AEVG_DIR GP_FIXTURE GSK_RENDERER
+rm -rf "$GP_FIX"
+
+echo
 if [ "$FAIL" -eq 0 ]; then
     echo "=== CI result: all phases passed ==="
     exit 0

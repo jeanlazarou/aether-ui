@@ -24,29 +24,44 @@
 //
 // ─── What it is ──────────────────────────────────────────────────
 //
-// Scans a directory tree, lays it out as a NESTED squarified treemap — every
-// leaf file visible at once, directories as rings around their children,
-// down to a pixel cutoff (the WinDirStat / Disk Inventory X look) — drawn
-// into a per-frame AeVG DRAW region, and adds:
-//   - a button row: Zoom In / Zoom Out / Rescan / Stop / by Size|Depth|Type
-//   - breadcrumb NAV under the buttons: each segment of the drill path is a
-//     button — click one to jump straight to that ancestor. Right-click any
-//     segment → "Copy path" (puts the current directory on the clipboard).
-//   - CLICK any tile (any depth) to SELECT it (white+blue outline, path +
-//     size + %-of-parent in the status line); DOUBLE-CLICK to drill into it
-//     (a file drills to its directory); Zoom In drills to the selection
-//   - a hover status line at the bottom: name + size of the pointed-at tile
-//   - LIVE refresh: an fs.watch on the current directory; when something
-//     changes in it, the current subtree is rescanned automatically
-//   - ASYNC scan: the window opens immediately; the scan runs incrementally
-//     in the frame tick (a queue of dirs, a batch expanded per frame), the
-//     treemap grows live, the status line shows progress, and Stop abandons
-//     the rest (partial view stays usable; Rescan restarts).
+// A three-pane disk-usage analyser in the WinDirStat / Disk Inventory X
+// shape, single-source-file in the pseudo-declarative DSL style:
 //
-//   DISPLAY=:0 ./build/grand_perspective  [dir]     (dir via argv[1] or $HOME)
-//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
-//     POST /widget/{id}/click drives the buttons; POST /canvas/1/click?x=&y=
-//     drives a treemap tile (drill-down / file select). Hover has no driver route.
+//   LEFT   directory list — the current dir's children largest-first: type
+//          chip, name, size, %-of-current bar; header shows the rollup
+//          (size, file count, last scan duration, freed space); ".." walks
+//          up; rows past 20 fold into "+N more…".
+//   MIDDLE NESTED squarified treemap — every leaf file visible at once,
+//          directories as rings around their children, down to a pixel
+//          cutoff, coloured by file type (default), size, or depth.
+//   RIGHT  file-type legend — per-extension bytes + counts, top 12 with a
+//          stable palette + an "other" row; CLICK a row to HIGHLIGHT that
+//          type across the map (non-matching tiles dim).
+//
+// Interaction:
+//   - CLICK selects (any pane, any tile depth — white+blue outline, path +
+//     size + %-of-parent in the status line); DOUBLE-CLICK drills (a file
+//     drills to its directory); ".." / Zoom Out / Left go up; Zoom In /
+//     Right / Enter drill the selection; Up/Down walk the list rows;
+//     Escape clears selection + highlight.
+//   - Toolbar: Zoom In/Out, Rescan, Stop, Open (xdg-open), Reveal
+//     (containing dir), Delete (gio trash — two-click confirm on the
+//     button), by Size / by Depth / by Type.
+//   - Right-click the map: Open / Reveal / Move to Trash (same confirm
+//     flow) / Copy path — on the selection, else the hovered tile.
+//     Right-click a breadcrumb: Copy path of the current dir.
+//   - ASYNC scan (window opens instantly, treemap grows live, Stop keeps
+//     the partial view) + LIVE refresh via fs.watch on the current dir.
+//     Rendering is EVENT-DRIVEN: a 30Hz heartbeat pumps scan/watch and
+//     repaints only on a dirty flag — idle costs nothing.
+//
+//   DISPLAY=:0 ./target/build/aevg/apps/grand_perspective/bin/grand_perspective [dir]
+//     (dir via argv[1] > $AEVG_DIR > $HOME > /tmp)
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server
+//     (9222). Buttons via POST /widget/{id}/click; every pane is clickable
+//     via POST /canvas/1/click?x=&y= (list rows, tiles, legend rows at
+//     computable coords); the map menu via POST /widget/{cw}/context_menu.
+//     Under Xvfb use GSK_RENDERER=cairo. See test_grand_perspective.sh.
 
 import aether_ui
 import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
