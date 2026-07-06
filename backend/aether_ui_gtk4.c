@@ -2028,9 +2028,17 @@ void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure) {
 // Pointer-move on the canvas: forward canvas-local (x, y) to the boxed closure.
 // The GtkEventControllerMotion "motion" signal already reports widget-relative
 // coords (unlike the enter/leave handlers, which discard them).
+//
+// Suppressed while the AetherUIDriver is armed: GTK re-synthesizes a motion
+// at the parked pointer after every relayout, and under Xvfb that phantom
+// hover clobbers state (status text) between a test's action and its
+// assertion. Automation injects pointer-moves via POST /canvas/{id}/move,
+// which calls the closure directly and stays deterministic.
+static int aeui_remote_controlled(void);
 static void on_canvas_move(GtkEventControllerMotion* ctrl, double x, double y,
                             gpointer data) {
     (void)ctrl;
+    if (aeui_remote_controlled()) return;
     AeClosure* c = (AeClosure*)data;
     if (c && c->fn) {
         ((void(*)(void*, double, double))c->fn)(c->env, x, y);
@@ -3337,6 +3345,9 @@ static void inject_remote_control_banner(int root_handle) {
 }
 
 static int test_server_port = 0;
+
+// Nonzero once the driver's test server is armed (see on_canvas_move).
+static int aeui_remote_controlled(void) { return test_server_port != 0; }
 
 void aether_ui_enable_test_server_impl(int port, int root_handle) {
     test_server_port = port;

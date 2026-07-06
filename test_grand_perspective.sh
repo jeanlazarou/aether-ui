@@ -150,7 +150,9 @@ echo "--- Test 7: double-click a map tile drills; crumb click returns ---"
 curl -s -X POST "$BASE/canvas/1/click?x=860&y=450" > /dev/null; sleep 0.1
 curl -s -X POST "$BASE/canvas/1/click?x=860&y=450" > /dev/null; sleep 0.4
 assert_contains "double-click drilled into sub" "sub" "$(crumbs)"
-ROOTB=$(wid_of "root")
+# The root crumb is labelled with the ~-abbreviated scan path, not "root".
+ROOTLBL="~${GP_FIXTURE#"$HOME"}"
+ROOTB=$(wid_of "$ROOTLBL")
 curl -s -X POST "$BASE/widget/$ROOTB/click" > /dev/null; sleep 0.4
 C=$(crumbs)
 if echo "$C" | grep -q "sub"; then

@@ -65,12 +65,17 @@ if [ "$PLATFORM" = "unknown" ]; then
 fi
 
 # Decide how to launch GUI binaries. On Linux CI runners without a display,
-# wrap with xvfb-run so GTK4 has a framebuffer.
+# wrap with xvfb-run so GTK4 has a framebuffer. The screen must be big enough
+# that Xvfb's pointer (parked at screen centre) starts OUTSIDE the app
+# window: GTK synthesizes crossing/motion events at the pointer position on
+# every relayout, and a pointer sitting over the canvas fires the app's hover
+# handler between test steps — rewriting the status line the assertions read.
+launch_xvfb() { xvfb-run -a -s "-screen 0 3200x2000x24" "$@"; }
 LAUNCH_PREFIX=""
 if [ "$PLATFORM" = "linux" ]; then
     if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
         if command -v xvfb-run > /dev/null 2>&1; then
-            LAUNCH_PREFIX="xvfb-run -a"
+            LAUNCH_PREFIX="launch_xvfb"
             echo "no display detected — wrapping GUI launches with xvfb-run"
         else
             echo "NOTICE: no display and xvfb-run missing — will build-only."
@@ -251,7 +256,7 @@ head -c 250000 /dev/urandom > "$GP_FIX/mid.bin"
 head -c 200000 /dev/urandom > "$GP_FIX/sub/inner.bin"
 export AEVG_DIR="$GP_FIX" GP_FIXTURE="$GP_FIX"
 # Xvfb runs need the cairo renderer (GTK's NGL on llvmpipe churns memory).
-case "$LAUNCH_PREFIX" in xvfb*) export GSK_RENDERER=cairo ;; esac
+case "$LAUNCH_PREFIX" in *xvfb*) export GSK_RENDERER=cairo ;; esac
 run_server_test "$ROOT/target/build/aevg/apps/grand_perspective/bin/grand_perspective" \
                 "$SCRIPT_DIR/test_grand_perspective.sh" grand_perspective || FAIL=$((FAIL + 1))
 unset AEVG_DIR GP_FIXTURE GSK_RENDERER

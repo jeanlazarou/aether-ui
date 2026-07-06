@@ -111,6 +111,23 @@ dbg_on() -> int {
     return 1
 }
 
+// Human label for the scan root: "~/scm" beats "root" (which told the user
+// nothing) in the breadcrumbs and the list-pane header. $HOME-relative paths
+// abbreviate to ~; anything else keeps its full path.
+root_label(path: string) -> string {
+    home = os_getenv("HOME")
+    if home != null {
+        if string.length(home) > 0 {
+            if string.equals(path, home) == 1 { return "~" }
+            if string.starts_with(path, string.concat(home, "/")) == 1 {
+                rest = string.substring(path, string.length(home) + 1, string.length(path))
+                return string.concat("~/", rest)
+            }
+        }
+    }
+    return path
+}
+
 // ─── Data model ──────────────────────────────────────────────────
 //
 // FileEntry / Rect are heap nodes (Aether structs cross fn boundaries as
@@ -739,12 +756,14 @@ list_chip_color(s: *AppState, e: *FileEntry) -> string {
 draw_list(root: ptr, s: *AppState) {
     bg = vg.rect(root, 0.0, 0.0, LIST_W(), CANVAS_H())
     vg.fill(bg, "#fafafa"); vg.stroke(bg, "#cccccc", 1.0)
-    // Header: the current directory + its rollup.
-    hd = vg.text_sized(root, 10.0, 24.0, 16.0, clip_name(s.current.name))
+    // Header: the current directory + its rollup. The renderer draws text at
+    // a fixed ~17px above the given baseline, so a 16px header at y=24 had
+    // its ascenders cut by the viewport clip — sit the block lower.
+    hd = vg.text_sized(root, 10.0, 30.0, 16.0, clip_name(s.current.name))
     vg.fill(hd, "#000000")
     sub0 = fmt_size(s.current.total_size)
     sub = "${sub0}   ${s.current.file_count} files"
-    hs = vg.text_sized(root, 10.0, 44.0, 12.0, sub)
+    hs = vg.text_sized(root, 10.0, 48.0, 12.0, sub)
     vg.fill(hs, "#666666")
     // Scan-info strip: duration of the last scan + freed-space rollup
     // (GrandPerspective's info panel, folded into the header).
@@ -759,7 +778,7 @@ draw_list(root: ptr, s: *AppState) {
         info = string.concat(info, string.concat("freed ", fr))
     }
     if string.length(info) > 0 {
-        inf = vg.text_sized(root, 10.0, 60.0, 12.0, info)
+        inf = vg.text_sized(root, 10.0, 62.0, 12.0, info)
         vg.fill(inf, "#999999")
     }
 
@@ -1198,6 +1217,11 @@ struct AppState {
     // while a scan drains; Rescan only when idle.
     stop_btn: int
     rescan_btn: int
+    // Last pointer-move position (canvas px). GTK re-synthesizes a motion
+    // event at the parked pointer after every relayout; identical coords =
+    // synthetic, and acting on them lets a repaint clobber status text.
+    hov_px_x: float
+    hov_px_y: float
 }
 
 CRUMBS() -> int { return 8 }
@@ -1256,6 +1280,8 @@ mk_state(root: *FileEntry) -> *AppState {
     s.scan_secs = 0.0
     s.stop_btn = 0
     s.rescan_btn = 0
+    s.hov_px_x = 0.0 - 1.0
+    s.hov_px_y = 0.0 - 1.0
     relayout(s)
     retarget_watch(s)
     return s
@@ -1610,7 +1636,7 @@ main() {
     long rsize = fsize          // 64-bit size (ae 0.359 #1021); long-typed local
     if rsize < 0 { rsize = 0 }
     if is_dir == 1 { rsize = 0 }
-    root = mk_entry("root", start, rsize, is_dir, null as *FileEntry)
+    root = mk_entry(root_label(start), start, rsize, is_dir, null as *FileEntry)
     st = mk_state(root)
     if is_dir == 1 { start_rescan(st, root) }
     println("GrandPerspective: scanning ${start} — the window is live while it fills in; Stop abandons the scan.")
@@ -1752,6 +1778,12 @@ main() {
             // line (covers tiles too small to carry their own label). Also
             // remembers the hovered entry for the context menu.
             canvas_on_move(cid) callback |pmx: float, pmy: float| {
+                // A motion at the exact same spot is GTK's post-relayout
+                // re-synthesis, not the user — ignore it or every repaint
+                // overwrites the status line with hover text.
+                if pmx == st.hov_px_x { if pmy == st.hov_px_y { return } }
+                st.hov_px_x = pmx
+                st.hov_px_y = pmy
                 he = hit(st, vg.scene_px_to_vb_x(st.scene, pmx),
                              vg.scene_px_to_vb_y(st.scene, pmy))
                 st.hovered = he
