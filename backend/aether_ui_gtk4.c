@@ -398,8 +398,11 @@ void aether_ui_button_set_label(int handle, const char* label) {
 // owner's gesture.
 // ---------------------------------------------------------------------------
 typedef struct {
-    GtkWidget* popover;             // GtkPopover, parented to the owner
+    GtkWidget* owner;
+    GtkWidget* popover;             // GtkPopover — built lazily on first use
     GtkWidget* list;                // GtkListBox of items (menu-like rows)
+    GPtrArray* labels;              // char* (owned copies)
+    GPtrArray* closures;            // AeClosure* (boxed, owned by Aether side)
 } CtxMenu;
 
 static void on_ctx_menu_row_activated(GtkListBox* lb, GtkListBoxRow* row,
@@ -413,10 +416,43 @@ static void on_ctx_menu_row_activated(GtkListBox* lb, GtkListBoxRow* row,
     }
 }
 
+// Build the popover on FIRST right-click, not at attach time. A popover
+// parented to a not-yet-visible / zero-size widget (e.g. a hidden pooled
+// breadcrumb button) gets size-allocated with negative dimensions on some
+// compositors (Wayland/sommelier: "allocate GtkListBox with width -18",
+// then a pixman invalid-rect error). By popup time the owner is visible
+// and sized, so the allocation is sane.
+static void ctx_menu_build(CtxMenu* cm) {
+    cm->list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(cm->list),
+                                    GTK_SELECTION_NONE);
+    g_signal_connect(cm->list, "row-activated",
+                     G_CALLBACK(on_ctx_menu_row_activated), cm);
+    for (guint i = 0; i < cm->labels->len; i++) {
+        GtkWidget* item_label =
+            gtk_label_new((const char*)g_ptr_array_index(cm->labels, i));
+        gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
+        gtk_widget_set_margin_start(item_label, 8);
+        gtk_widget_set_margin_end(item_label, 8);
+        gtk_widget_set_margin_top(item_label, 4);
+        gtk_widget_set_margin_bottom(item_label, 4);
+        GtkWidget* row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), item_label);
+        g_object_set_data(G_OBJECT(row), "aeui-closure",
+                          g_ptr_array_index(cm->closures, i));
+        gtk_list_box_append(GTK_LIST_BOX(cm->list), row);
+    }
+    cm->popover = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(cm->popover), FALSE);
+    gtk_popover_set_child(GTK_POPOVER(cm->popover), cm->list);
+    gtk_widget_set_parent(cm->popover, cm->owner);
+}
+
 static void on_ctx_menu_pressed(GtkGestureClick* gesture, int n_press,
                                 double x, double y, gpointer data) {
     (void)gesture; (void)n_press;
     CtxMenu* cm = (CtxMenu*)data;
+    if (!cm->popover) ctx_menu_build(cm);
     GdkRectangle at = { (int)x, (int)y, 1, 1 };
     gtk_popover_set_pointing_to(GTK_POPOVER(cm->popover), &at);
     gtk_popover_popup(GTK_POPOVER(cm->popover));
@@ -445,15 +481,9 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
     CtxMenu* cm = g_object_get_data(G_OBJECT(w), "aeui-ctxmenu");
     if (!cm) {
         cm = g_new0(CtxMenu, 1);
-        cm->list = gtk_list_box_new();
-        gtk_list_box_set_selection_mode(GTK_LIST_BOX(cm->list),
-                                        GTK_SELECTION_NONE);
-        cm->popover = gtk_popover_new();
-        gtk_popover_set_has_arrow(GTK_POPOVER(cm->popover), FALSE);
-        gtk_popover_set_child(GTK_POPOVER(cm->popover), cm->list);
-        gtk_widget_set_parent(cm->popover, w);
-        g_signal_connect(cm->list, "row-activated",
-                         G_CALLBACK(on_ctx_menu_row_activated), cm);
+        cm->owner = w;
+        cm->labels = g_ptr_array_new_with_free_func(g_free);
+        cm->closures = g_ptr_array_new();
         GtkGesture* gesture = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture),
                                       GDK_BUTTON_SECONDARY);
@@ -462,16 +492,8 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
         g_signal_connect(w, "destroy", G_CALLBACK(on_ctx_menu_owner_destroy), cm);
         g_object_set_data(G_OBJECT(w), "aeui-ctxmenu", cm);
     }
-    GtkWidget* item_label = gtk_label_new(label ? label : "");
-    gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
-    gtk_widget_set_margin_start(item_label, 8);
-    gtk_widget_set_margin_end(item_label, 8);
-    gtk_widget_set_margin_top(item_label, 4);
-    gtk_widget_set_margin_bottom(item_label, 4);
-    GtkWidget* row = gtk_list_box_row_new();
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), item_label);
-    g_object_set_data(G_OBJECT(row), "aeui-closure", boxed_closure);
-    gtk_list_box_append(GTK_LIST_BOX(cm->list), row);
+    g_ptr_array_add(cm->labels, g_strdup(label ? label : ""));
+    g_ptr_array_add(cm->closures, boxed_closure);
 }
 
 static void on_button_clicked(GtkButton* btn, gpointer data) {
