@@ -58,6 +58,7 @@ exports (
     bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start,
     animate, scene_animation_manager, scene_is_animating, scene_tick, scene_advance,
     scene_add_live_region, scene_live_regions, scene_render_live_draws, render_one_draw,
+    scene_free_recording,
     scene_set_refreshing, scene_is_refreshing, scene_eval_bindings
 )
 
@@ -74,7 +75,9 @@ import live_region
 import parser
 
 extern malloc(size: int) -> ptr
+extern free(p: ptr)
 extern string_retain(s: string)
+extern string_release(s: string)
 
 // ─── VgScene: the shared drawing target ──────────────────────────
 //
@@ -106,6 +109,10 @@ struct VgScene {
     refreshing: int // 1 = the live loop re-evaluates bind_pos/when bindings each
                     //   frame (the live analogue of CVG's poll()); set by a
                     //   binding-driven scene like a clock.
+    nodes: ptr      // when non-null: every mk_node is tracked here so
+                    //   scene_free_recording can free them. Set ONLY on the
+                    //   per-frame draw-region sub-scenes (render_one_draw);
+                    //   null (untracked) for ordinary long-lived scenes.
 }
 
 // One deferred shape: enough to dispatch it after its style is known.
@@ -133,6 +140,8 @@ mk_node(scene: ptr, payload: ptr) -> ptr {
     n = malloc(16) as *VgNode
     n.scene = scene
     n.payload = payload
+    s = scene as *VgScene
+    if s.nodes != null { _ = list.add(s.nodes, n) }
     return n
 }
 
@@ -187,6 +196,7 @@ scene_new(ctx: ptr, backend: ptr) -> ptr {
     s.anim_mgr = null
     s.live_regions = null
     s.refreshing = 0
+    s.nodes = null
     return s
 }
 
@@ -539,7 +549,11 @@ record_text(scene: ptr, x: float, y: float, size: float, content: string) -> ptr
     p.element = el
     p.tx = x
     p.ty = y
-    p.content = content
+    // Own a copy: the caller's string may be scope-freed before the flush
+    // reads it, and scene_free_recording releases it symmetrically.
+    cc = string.copy(content)
+    string_retain(cc)
+    p.content = cc
     p.font_size = size
     p.tracked = 0
     _ = list.add(s.pending, p)
@@ -662,10 +676,19 @@ scene_animation_manager(scene: ptr) -> ptr {
 
 scene_is_animating(scene: ptr) -> int {
     s = scene as *VgScene
-    // A scene with any live region animates continuously (it produces new
-    // content every frame), as does one with active timed animations.
+    // A scene with an ANIMATED live region renders continuously (a video
+    // source, a t-keyed draw like the tumbling cube). A region marked
+    // static-until-dirty (region_set_animated(lr, 0) — e.g. a treemap that
+    // only changes on navigation) does NOT keep the loop hot: the app
+    // re-renders it explicitly via vg_flush_live when its state changes.
     if s.live_regions != null {
-        if list.size(s.live_regions) > 0 { return 1 }
+        n = list.size(s.live_regions)
+        i = 0
+        while i < n {
+            it, _ = list.get(s.live_regions, i)
+            if live_region.region_animated(it) == 1 { return 1 }
+            i = i + 1
+        }
     }
     if s.anim_mgr == null { return 0 }
     return grammar_animations.is_animating(s.anim_mgr)
@@ -707,19 +730,61 @@ scene_render_live_draws(scene: ptr, t: float) {
     }
 }
 
+// Free a per-frame recording sub-scene: every pending (attrs map, element,
+// owned text string), every tracked VgNode, the pending/node lists, and the
+// scene itself. This is the other half of render_one_draw's fresh-scene-per-
+// frame design — without it a draw region leaked its entire recording every
+// frame (a heavy region = gigabytes per minute). Only valid on sub-scenes
+// whose elements carry no interaction handlers (draw regions: event_state is
+// null, nothing is tracked elsewhere).
+scene_free_recording(scene: ptr) {
+    s = scene as *VgScene
+    if s.pending != null {
+        n = list.size(s.pending)
+        i = 0
+        while i < n {
+            item, _ = list.get(s.pending, i)
+            pend = item as *VgPending
+            if pend.attrs != null { map.free(pend.attrs) }
+            if pend.kind == 4 { string_release(pend.content) }
+            grammar_element.element_release(pend.element)
+            free(item)
+            i = i + 1
+        }
+        list.free(s.pending)
+        s.pending = null
+    }
+    if s.nodes != null {
+        n2 = list.size(s.nodes)
+        j = 0
+        while j < n2 {
+            nd, _ = list.get(s.nodes, j)
+            free(nd)
+            j = j + 1
+        }
+        list.free(s.nodes)
+        s.nodes = null
+    }
+    free(scene)
+}
+
 // Render a single DRAW region: a FRESH deferred sub-scene sharing this scene's
 // ctx + backend — the callback's shapes record into it (so a trailing fill() is
-// known before dispatch, the colour-ordering fix), then flush + discard. Fresh
-// each call → no `pending` accumulation. Exported so the z-ordered live driver
-// renders one region at its z slot.
+// known before dispatch, the colour-ordering fix), then flush + FREE. Fresh
+// each call → no `pending` accumulation; the free returns the frame's whole
+// recording (pendings, elements, nodes, style strings). Exported so the
+// z-ordered live driver renders one region at its z slot.
 render_one_draw(scene: ptr, region: ptr, t: float) {
     s = scene as *VgScene
     df = live_region.region_draw_fn(region)
     if df == null { return }
     sub = scene_new(s.ctx, s.backend)
     scene_set_deferred(sub, 1)
+    sub_s = sub as *VgScene
+    sub_s.nodes = list.new()          // track nodes so the free can reap them
     live_region.invoke_region_draw(df, vg_root(sub), t)
     vg_flush(sub)
+    scene_free_recording(sub)
 }
 
 // scene_advance(scene, now_ms) — advance animations to `now_ms` WITHOUT
@@ -807,6 +872,11 @@ flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
         if grammar_element.element_shape_type(el) == grammar_element.SHAPE_NONE() {
             copy_shape_geo(el, drawn)
         }
+        // The dispatched element only exists to carry bounds/geo back to the
+        // placeholder (copied above) — free it, or every re-flush of every
+        // shape leaks a 384-byte element (a 60fps draw region leaked
+        // thousands per second).
+        grammar_element.element_release(drawn)
     }
 }
 

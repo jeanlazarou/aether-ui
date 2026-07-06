@@ -40,7 +40,7 @@
 // A selective import alone shadows the full module for transitive callees;
 // see example_vg.ae's 4-line preamble.
 
-exports ( vg, vg_redraw, video_region, video_source, canvas_region, vg_flush_live )
+exports ( vg, vg_redraw, video_region, video_source, canvas_region, vg_flush_live, region_set_animated )
 
 import aether_ui
 import vg
@@ -195,6 +195,14 @@ canvas_region(_ctx: ptr, x: float, y: float, w: float, h: float, draw: fn) -> pt
 // the monotonic-seconds clock). Without it the region is static (push once).
 video_source(region: ptr, src: fn) {
     live_region.region_set_source(region, src)
+}
+
+// region_set_animated(region, 0) — mark a draw region STATIC-UNTIL-DIRTY: the
+// 60fps live loop skips it (zero idle cost); the app re-renders explicitly
+// via vg_flush_live when its state changes. Default is 1 (continuous), which
+// t-keyed draws (the tumbling cube) and video sources need.
+region_set_animated(region: ptr, on: int) {
+    live_region.region_set_animated(region, on)
 }
 
 // _flush_live(scene, canvas_id, t) — the full per-frame render: static shapes

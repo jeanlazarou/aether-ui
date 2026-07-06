@@ -25,6 +25,7 @@
 exports (
     LIVE_RASTER, LIVE_DRAW,
     live_raster_new, live_draw_new,
+    region_set_animated, region_animated,
     region_kind, region_x, region_y, region_w, region_h,
     region_push, region_frame, region_frame_len, region_pw, region_ph,
     new_frame_buffer, buf_set_px, frame_finish,
@@ -63,6 +64,13 @@ struct LiveRegion {
     src_fn: ptr      // RASTER: optional boxed fn(region, t) called each frame to
                      //   produce + push the next frame (animated source). null =
                      //   static (frame pushed once). DRAW: null.
+    animated: int    // 1 (default) = the region produces new content every
+                     //   frame, so the live loop must render continuously
+                     //   (a video source, a t-keyed draw like the tumbling
+                     //   cube). 0 = STATIC-UNTIL-DIRTY: the region only
+                     //   changes when the app explicitly re-flushes
+                     //   (vg_flush_live) — the live loop stays idle, costing
+                     //   nothing. A treemap/chart-style draw region sets 0.
 }
 
 // live_raster_new(x, y, ext_w, ext_h, pixel_w, pixel_h) — a raster region whose
@@ -85,6 +93,7 @@ live_raster_new(x: float, y: float, ext_w: float, ext_h: float,
     r.draw_fn = null
     r.z = 0
     r.src_fn = null
+    r.animated = 1
     return r
 }
 
@@ -150,10 +159,13 @@ live_draw_new(x: float, y: float, w: float, h: float, draw_fn: fn) -> ptr {
     r.draw_fn = draw_fn
     r.z = 0
     r.src_fn = null
+    r.animated = 1
     return r
 }
 
 region_kind(p: ptr) -> int       { r = p as *LiveRegion; return r.kind }
+region_set_animated(p: ptr, on: int) { r = p as *LiveRegion; r.animated = on }
+region_animated(p: ptr) -> int   { r = p as *LiveRegion; return r.animated }
 region_x(p: ptr) -> float        { r = p as *LiveRegion; return r.x }
 region_y(p: ptr) -> float        { r = p as *LiveRegion; return r.y }
 region_w(p: ptr) -> float        { r = p as *LiveRegion; return r.w }
