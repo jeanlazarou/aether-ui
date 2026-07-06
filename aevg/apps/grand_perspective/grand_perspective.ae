@@ -50,7 +50,7 @@
 
 import aether_ui
 import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
-    canvas_on_click, canvas_on_move, timer,
+    canvas_on_click, canvas_on_move, canvas_on_key, timer,
     set_button_label, set_hidden, context_menu_item, clipboard_write, margin_of)
 import vg_live (vg, canvas_region, vg_flush_live, region_set_animated)
 import vg
@@ -69,11 +69,13 @@ extern lrint(x: float) -> long           // round-to-nearest; narrows at an int 
 extern string_retain(s: string)          // keep a heap string alive in a struct field
 extern aether_ui_text_set_string(handle: int, text: string)  // update a label's text
 
-CANVAS_W() -> float { return 800.0 }     // treemap area width (canvas px)
+LIST_W() -> float   { return 280.0 }     // directory list pane (left)
+MAP_X() -> float    { return 288.0 }     // treemap area origin
+CANVAS_W() -> float { return 760.0 }     // treemap area width (canvas px)
 CANVAS_H() -> float { return 600.0 }
-LEGEND_X() -> float { return 812.0 }     // type-legend pane (right of the map)
-LEGEND_W() -> float { return 348.0 }
-TOTAL_W() -> float  { return 1160.0 }    // full canvas: treemap + legend
+LEGEND_X() -> float { return 1056.0 }    // type-legend pane (right of the map)
+LEGEND_W() -> float { return 300.0 }
+TOTAL_W() -> float  { return 1356.0 }    // full canvas: list + treemap + legend
 MIN_TILE_AREA() -> float { return 2.0 }  // px²: tiles projecting smaller are dropped
 MIN_NEST_AREA() -> float { return 120.0 } // px²: dir tiles smaller don't nest deeper
 NEST_INSET() -> float { return 2.0 }     // px ring of parent visible around children
@@ -92,6 +94,7 @@ struct FileEntry {
     path: string
     total_size: long
     is_dir: int
+    file_count: int      // files in this subtree (propagated like bytes)
     children: ptr        // list of *FileEntry
     parent: *FileEntry   // null at the root
 }
@@ -102,6 +105,7 @@ mk_entry(name: string, path: string, size: long, is_dir: int, parent: *FileEntry
     e.path = path; string_retain(path)
     e.total_size = size
     e.is_dir = is_dir
+    e.file_count = 0
     e.children = list.new()
     e.parent = parent
     return e
@@ -113,12 +117,14 @@ mk_entry(name: string, path: string, size: long, is_dir: int, parent: *FileEntry
 // the return instead. Use this for ALL float math over byte totals.
 to_float(v: long) -> float { return v / 1.0 }
 
-// Add `delta` bytes to every ANCESTOR of e (not e itself) — how sizes
-// propagate up while the scan streams, and how a rescan retracts a subtree.
-bump_ancestors(e: *FileEntry, delta: long) {
+// Add `delta` bytes + `dfiles` file-count to every ANCESTOR of e (not e
+// itself) — how sizes stream up while the scan runs, and how a rescan
+// retracts a subtree.
+bump_ancestors(e: *FileEntry, delta: long, dfiles: int) {
     p = e.parent
     while p != null {
         p.total_size = p.total_size + delta
+        p.file_count = p.file_count + dfiles
         p = p.parent
     }
 }
@@ -313,7 +319,8 @@ expand_dir(pending: ptr, d: *FileEntry) -> int {
             if sz < 0 { sz = 0 }
             _ = list.add(d.children, mk_entry(child_name, child_path, sz, 0, d))
             d.total_size = d.total_size + sz
-            bump_ancestors(d, sz)
+            d.file_count = d.file_count + 1
+            bump_ancestors(d, sz, 1)
             files = files + 1
         }
         // kind 3 (symlink) / 4 (other): skipped — never followed, no cycles.
@@ -595,7 +602,7 @@ render_shaded(root: ptr, r: *Rect, h: float, s: float, l: float) {
 //   3. selection — a GrandPerspective-style double outline (white + blue),
 //      drawn last so no later tile overpaints it
 draw_treemap(root: ptr, s: *AppState) {
-    bg = vg.rect(root, 0.0, 0.0, CANVAS_W(), CANVAS_H())
+    bg = vg.rect(root, MAP_X(), 0.0, CANVAS_W(), CANVAS_H())
     vg.fill(bg, "#f5f5f5"); vg.stroke(bg, "#cccccc", 1.0)
 
     rects = s.rects
@@ -683,6 +690,150 @@ clip_name(name: string) -> string {
     return name
 }
 
+// ─── Directory list pane (left of the treemap) ───────────────────
+//
+// WinDirStat's tree column, folded to one level: the CURRENT directory's
+// children, largest first — colour chip, name, size, %-of-current bar,
+// file count. ".." walks up; rows past the pane height fold into
+// "+N more". Selection syncs both ways with the treemap.
+LIST_TOP() -> float   { return 68.0 }
+LIST_ROW_H() -> float { return 25.0 }
+LIST_MAX() -> int     { return 20 }
+
+list_chip_color(s: *AppState, e: *FileEntry) -> string {
+    if e.is_dir == 1 { return hsl_rgb(255.0, 0.25, 0.50) }
+    t = find_tstat(s.tstats, ext_of(e.name))
+    if t != null { if t.ranked == 1 { return hsl_rgb(t.hue, 0.70, 0.55) } }
+    return "#bbbbbb"
+}
+
+draw_list(root: ptr, s: *AppState) {
+    bg = vg.rect(root, 0.0, 0.0, LIST_W(), CANVAS_H())
+    vg.fill(bg, "#fafafa"); vg.stroke(bg, "#cccccc", 1.0)
+    // Header: the current directory + its rollup.
+    hd = vg.text_sized(root, 10.0, 24.0, 16.0, clip_name(s.current.name))
+    vg.fill(hd, "#000000")
+    sub0 = fmt_size(s.current.total_size)
+    sub = "${sub0}   ${s.current.file_count} files"
+    hs = vg.text_sized(root, 10.0, 44.0, 12.0, sub)
+    vg.fill(hs, "#666666")
+
+    // ".." row (when not at the root of the drill stack).
+    if list.size(s.stack) > 1 {
+        up = vg.text_sized(root, 12.0, LIST_TOP() - 6.0, 14.0, "..")
+        vg.fill(up, "#333333")
+    }
+
+    n = list.size(s.lrows)
+    shown = n
+    if shown > LIST_MAX() { shown = LIST_MAX() }
+    i = 0
+    while i < shown {
+        it, _ = list.get(s.lrows, i)
+        e = it as *FileEntry
+        ry = LIST_TOP() + LIST_ROW_H() * (i / 1.0)
+        // selected row backdrop
+        if e == s.selected {
+            sb = vg.rect(root, 2.0, ry - 2.0, LIST_W() - 4.0, LIST_ROW_H() - 2.0)
+            vg.fill(sb, "none"); vg.stroke(sb, "#3399ff", 1.5)
+        }
+        chip = vg.rect(root, 8.0, ry + 2.0, 12.0, 12.0)
+        vg.fill(chip, list_chip_color(s, e)); vg.stroke(chip, "#888888", 0.8)
+        nm = vg.text_sized(root, 26.0, ry + 13.0, 13.0, clip_list_name(e.name))
+        vg.fill(nm, "#000000")
+        sz = vg.text_sized(root, 150.0, ry + 13.0, 12.0, fmt_size(e.total_size))
+        vg.fill(sz, "#333333")
+        // %-of-current mini bar, WinDirStat's Teilbaum-Anteil column.
+        p = pct_of_parent(e)
+        bw = (LIST_W() - 232.0) * (p / 100.0)
+        bbg = vg.rect(root, 224.0, ry + 4.0, LIST_W() - 232.0, 8.0)
+        vg.fill(bbg, "#e8e8e8")
+        if bw > 0.5 {
+            bfg = vg.rect(root, 224.0, ry + 4.0, bw, 8.0)
+            vg.fill(bfg, "#8899cc")
+        }
+        i = i + 1
+    }
+    if n > shown {
+        more = n - shown
+        mrow = vg.text_sized(root, 12.0, LIST_TOP() + LIST_ROW_H() * (shown / 1.0) + 13.0, 12.0, "+ ${more} more…")
+        vg.fill(mrow, "#888888")
+    }
+}
+
+clip_list_name(name: string) -> string {
+    if string.length(name) > 15 {
+        return string.concat(string.substring(name, 0, 13), "…")
+    }
+    return name
+}
+
+// Click in the list pane. `dbl` = the shared double-click detection from the
+// canvas handler. Single click selects (syncs the treemap outline);
+// double-click drills into a directory row; ".." always drills up.
+list_click(s: *AppState, cx: float, cy: float, dbl: int) {
+    if list.size(s.stack) > 1 {
+        if cy >= LIST_TOP() - 20.0 {
+            if cy < LIST_TOP() - 2.0 { drill_up(s); return }
+        }
+    }
+    n = list.size(s.lrows)
+    shown = n
+    if shown > LIST_MAX() { shown = LIST_MAX() }
+    row = lrint(math.floor((cy - LIST_TOP()) / LIST_ROW_H()))
+    if row < 0 { return }
+    if row >= shown { return }
+    it, _ = list.get(s.lrows, row)
+    e = it as *FileEntry
+    if dbl == 1 {
+        if e.is_dir == 1 { drill_deep(s, e); return }
+    }
+    select_entry(s, e)
+}
+
+// Keyboard navigation (canvas_on_key): Up/Down move the selection through
+// the list rows, Right/Enter drill into a selected directory, Left goes up,
+// Escape clears selection + type highlight.
+handle_nav_key(s: *AppState, key: string) {
+    if string.equals(key, "Left") == 1 { drill_up(s); return }
+    if string.equals(key, "Right") == 1 { nav_drill(s); return }
+    if string.equals(key, "Return") == 1 { nav_drill(s); return }
+    if string.equals(key, "Escape") == 1 {
+        clear_selection(s)
+        s.hl_on = 0
+        s.hl_ext = ""
+        s.dirty = 1
+        return
+    }
+    if string.equals(key, "Up") == 1 { nav_move(s, 0 - 1); return }
+    if string.equals(key, "Down") == 1 { nav_move(s, 1); return }
+}
+
+nav_drill(s: *AppState) {
+    if s.selected == null { return }
+    if s.selected.is_dir == 1 { drill_deep(s, s.selected) }
+}
+
+nav_move(s: *AppState, delta: int) {
+    n = list.size(s.lrows)
+    if n == 0 { return }
+    shown = n
+    if shown > LIST_MAX() { shown = LIST_MAX() }
+    // Find the selected entry among the rows; -1 when none/elsewhere.
+    idx = 0 - 1
+    i = 0
+    while i < shown {
+        it, _ = list.get(s.lrows, i)
+        if it as *FileEntry == s.selected { idx = i; i = shown }
+        i = i + 1
+    }
+    nidx = idx + delta
+    if nidx < 0 { nidx = 0 }
+    if nidx >= shown { nidx = shown - 1 }
+    it2, _ = list.get(s.lrows, nidx)
+    select_entry(s, it2 as *FileEntry)
+}
+
 // ─── Type legend pane (right of the treemap) ─────────────────────
 LEG_TOP() -> float   { return 52.0 }
 LEG_ROW_H() -> float { return 27.0 }
@@ -730,7 +881,7 @@ draw_legend(root: ptr, s: *AppState) {
         vg.fill(lb, "#000000")
         sz = vg.text_sized(root, LEGEND_X() + 150.0, ry + 14.0, 14.0, fmt_size(t.bytes))
         vg.fill(sz, "#000000")
-        fc = vg.text_sized(root, LEGEND_X() + 260.0, ry + 14.0, 14.0, "${t.files} files")
+        fc = vg.text_sized(root, LEGEND_X() + 232.0, ry + 14.0, 12.0, "${t.files} files")
         vg.fill(fc, "#666666")
         if s.hl_on == 1 {
             if string.equals(s.hl_ext, t.ext) == 1 {
@@ -748,7 +899,7 @@ draw_legend(root: ptr, s: *AppState) {
         vg.fill(lb2, "#000000")
         sz2 = vg.text_sized(root, LEGEND_X() + 150.0, ry2 + 14.0, 14.0, fmt_size(other_bytes))
         vg.fill(sz2, "#000000")
-        fc2 = vg.text_sized(root, LEGEND_X() + 260.0, ry2 + 14.0, 14.0, "${other_files} files")
+        fc2 = vg.text_sized(root, LEGEND_X() + 232.0, ry2 + 14.0, 12.0, "${other_files} files")
         vg.fill(fc2, "#666666")
     }
 }
@@ -872,6 +1023,7 @@ struct AppState {
     tstats: ptr      // list of *TypeStat, sorted desc by bytes
     hl_ext: string   // highlighted extension, "" = no highlight
     hl_on: int       // 1 = highlight active ("" ext is a valid type)
+    lrows: ptr       // list pane rows: current dir's children, sorted desc
 }
 
 CRUMBS() -> int { return 8 }
@@ -918,6 +1070,7 @@ mk_state(root: *FileEntry) -> *AppState {
     s.tstats = list.new()
     s.hl_ext = ""
     s.hl_on = 0
+    s.lrows = list.new()
     relayout(s)
     retarget_watch(s)
     return s
@@ -985,7 +1138,18 @@ relayout(s: *AppState) {
     s.rects = list.new()
     ctx = malloc(16) as *LayoutCtx
     ctx.remaining = RECT_BUDGET()
-    layout_treemap(ctx, s.rects, 0.0, 0.0, CANVAS_W(), CANVAS_H(), s.current.children, 0)
+    layout_treemap(ctx, s.rects, MAP_X(), 0.0, CANVAS_W(), CANVAS_H(), s.current.children, 0)
+    // List pane rows: the current dir's children, largest first (a fresh
+    // sorted copy — the children list itself keeps scan order).
+    s.lrows = list.new()
+    nc = list.size(s.current.children)
+    ci = 0
+    while ci < nc {
+        it, _ = list.get(s.current.children, ci)
+        _ = list.add(s.lrows, it)
+        ci = ci + 1
+    }
+    sort_desc_by_size(s.lrows)
     s.dirty = 1
 }
 
@@ -1077,8 +1241,9 @@ select_entry(s: *AppState, e: *FileEntry) {
 start_rescan(s: *AppState, e: *FileEntry) {
     if s.scanning == 1 { return }
     if e.is_dir == 0 { return }
-    bump_ancestors(e, 0 - e.total_size)
+    bump_ancestors(e, 0 - e.total_size, 0 - e.file_count)
     e.total_size = 0
+    e.file_count = 0
     e.children = list.new()
     s.pending = list.new()
     _ = list.add(s.pending, e)
@@ -1235,7 +1400,7 @@ main() {
     if is_dir == 1 { start_rescan(st, root) }
     println("GrandPerspective: scanning ${start} — the window is live while it fills in; Stop abandons the scan.")
 
-    window("GrandPerspective — disk usage", 1180, 680) {
+    window("GrandPerspective — disk usage", 1376, 680) {
       vstack(6) {
         hstack(6) {
             btn("Zoom In") callback {
@@ -1264,7 +1429,7 @@ main() {
         // The leftmost segment sits 10px further in than the row above.
         _ = margin_of(st.crumb0, 0, 0, 0, 10)
 
-        vg(view_box(0, 0, 1160, 600), 1160, 600) {
+        vg(view_box(0, 0, 1356, 600), 1356, 600) {
             // A BARE shape verb gets _ctx injected; derive the vg root from it.
             anchor = rect(0, 0, 0, 0)
             root_node = vg.vg_root(vg.node_scene(anchor))
@@ -1276,7 +1441,8 @@ main() {
 
             // DRAW region: renders the treemap from `st` whenever the tick
             // flushes (dirty), not on a fixed frame clock.
-            treg = canvas_region(root_node, 0.0, 0.0, 1160.0, 600.0) callback |rn: ptr, t: float| {
+            treg = canvas_region(root_node, 0.0, 0.0, 1356.0, 600.0) callback |rn: ptr, t: float| {
+                draw_list(rn, st)
                 draw_treemap(rn, st)
                 draw_legend(rn, st)
             }
@@ -1290,25 +1456,36 @@ main() {
             // Click = SELECT the deepest tile at the point (file or dir) —
             // the references' model. Double-click (two clicks within 0.45s,
             // ~6px) = DRILL to the clicked tile (a file drills to its dir).
+            // Click routing by pane: legend toggles a type highlight; the
+            // list pane selects (double-click drills a dir; ".." drills up);
+            // the treemap selects the deepest tile (double-click drills).
             canvas_on_click(cid) callback |cx: float, cy: float| {
+                dt = st.frame_t - st.last_click_t
+                dx = cx - st.last_click_x
+                if dx < 0.0 { dx = 0.0 - dx }
+                dy = cy - st.last_click_y
+                if dy < 0.0 { dy = 0.0 - dy }
+                dbl = 0
+                if dt < 0.45 { if dx + dy < 8.0 { dbl = 1 } }
                 if cx >= LEGEND_X() { legend_click(st, cx, cy) }
-                e = hit(st, cx, cy)
-                if e != null {
-                    dt = st.frame_t - st.last_click_t
-                    dx = cx - st.last_click_x
-                    if dx < 0.0 { dx = 0.0 - dx }
-                    dy = cy - st.last_click_y
-                    if dy < 0.0 { dy = 0.0 - dy }
-                    if dt < 0.45 {
-                        if dx + dy < 8.0 { drill_deep(st, e) }
-                        else { select_entry(st, e) }
-                    } else {
-                        select_entry(st, e)
+                else {
+                    if cx < LIST_W() { list_click(st, cx, cy, dbl) }
+                    else {
+                        e = hit(st, cx, cy)
+                        if e != null {
+                            if dbl == 1 { drill_deep(st, e) }
+                            else { select_entry(st, e) }
+                        }
                     }
-                    st.last_click_t = st.frame_t
-                    st.last_click_x = cx
-                    st.last_click_y = cy
                 }
+                st.last_click_t = st.frame_t
+                st.last_click_x = cx
+                st.last_click_y = cy
+            }
+            // Keyboard: Up/Down move selection through the list rows,
+            // Right/Enter drill a selected dir, Left goes up, Esc clears.
+            canvas_on_key(cid) callback |key: string| {
+                handle_nav_key(st, key)
             }
             // Hover → hit-test → show name + size + %-of-parent in the status
             // line (covers tiles too small to carry their own label). Also
