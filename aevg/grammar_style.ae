@@ -61,29 +61,38 @@ import grammar_utils
 // enumerate the same 15.
 
 cascade_one(out: ptr, key: string, attrs: ptr, inline_style: ptr, css: ptr, parent: ptr) {
-    // Try each source in priority order; first non-empty wins.
+    // Try each source in priority order; first non-empty wins. The winner is
+    // COPIED into `out` (string.copy → the owned-put route), so `out` is
+    // self-contained: it survives its source maps, and map_free(out) releases
+    // its values. Without the copy, `out` held bare pointers into the source
+    // maps, which forced them to leak (freeing them would dangle `out`) —
+    // megabytes/second under a 60fps draw region.
     av, _ = map.get(attrs, key)
     if av != null {
-        e1 = map.put(out, key, av)
+        c1 = string.copy(av)
+        e1 = map.put(out, key, c1)
         if string.length(e1) > 0 { } // ignore
         return
     }
     sv, _ = map.get(inline_style, key)
     if sv != null {
-        e2 = map.put(out, key, sv)
+        c2 = string.copy(sv)
+        e2 = map.put(out, key, c2)
         if string.length(e2) > 0 { }
         return
     }
     cv, _ = map.get(css, key)
     if cv != null {
-        e3 = map.put(out, key, cv)
+        c3 = string.copy(cv)
+        e3 = map.put(out, key, c3)
         if string.length(e3) > 0 { }
         return
     }
     if parent != null {
         pv, _ = map.get(parent, key)
         if pv != null {
-            e4 = map.put(out, key, pv)
+            c4 = string.copy(pv)
+            e4 = map.put(out, key, c4)
             if string.length(e4) > 0 { }
         }
     }
@@ -191,6 +200,13 @@ resolve_style(ctx: ptr, attrs: ptr, tag: string, class_name: string) -> ptr {
     cascade_one(merged, "text-anchor",    attrs, inline_style, css, parent)
     cascade_one(merged, "filter",         attrs, inline_style, css, parent)
     cascade_one(merged, "clip-path",      attrs, inline_style, css, parent)
+
+    // `merged` copied every winner (cascade_one), so the intermediates are
+    // dead now. resolve_style runs once per shape DISPATCH — a 60fps draw
+    // region resolves thousands of times a second, and these two maps were
+    // leaked on every one of them.
+    map.free(inline_style)
+    map.free(css)
 
     return merged
 }

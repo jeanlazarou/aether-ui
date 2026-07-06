@@ -145,7 +145,28 @@ backend_clear(p: ptr) {
 
 record_one(p: ptr, kind: string, opts: ptr) -> ptr {
     b = p as *Backend
-    c = mk_call(kind, opts)
+    // SNAPSHOT the opts. The dispatch contract is consume-by-value: the GTK
+    // adapter parses values during the call, and the shape factories free
+    // `opts` immediately after dispatch (the per-dispatch leak fix). Holding
+    // the caller's pointer here would read freed memory — copy the entries
+    // into an owned map instead (string.copy → the owned-put route).
+    snap = map.new()
+    ks = map.keys_raw(opts)
+    if ks != null {
+        n = string_array_size(ks)
+        i = 0
+        while i < n {
+            k = string_array_get(ks, i)
+            v, _ = map.get(opts, k)
+            if v != null {
+                cv = string.copy(v)
+                _ = map.put(snap, k, cv)
+            }
+            i = i + 1
+        }
+        map.keys_free(ks)
+    }
+    c = mk_call(kind, snap)
     _ = list.add(b.calls, c)
     return c
 }

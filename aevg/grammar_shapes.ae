@@ -315,6 +315,7 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
         maybe_pop_transform(ctx, did_push)
         el_w = grammar_element.element_new(el_raster)
         grammar_element.element_set_shape_circle(el_w, cx_raw, cy_raw, r_raw)
+        map.free(style)
         return el_w
     }
 
@@ -322,7 +323,9 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     // direct-circle dispatch below emits a solid fillColor). A circle is an
     // ellipse with rx==ry, so reuse ellipse_to_path. Mirrors rect_via_path.
     if string.length(style_grad_id_of(style, "fill")) > 0 {
-        return circle_via_path(ctx, backend, attrs, style, cx_raw, cy_raw, r_raw, did_push)
+        elv = circle_via_path(ctx, backend, attrs, style, cx_raw, cy_raw, r_raw, did_push)
+        map.free(style)
+        return elv
     }
 
     p = grammar_rendering.map_point(ctx, cx_raw, cy_raw)
@@ -364,6 +367,11 @@ shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     // Record SVG-space geometry so a bindPos result can recompute
     // bounds on refresh (grammar_reactive.recompute_bounds).
     grammar_element.element_set_shape_circle(el, cx_raw, cy_raw, r_raw)
+    // The adapter consumed opts by value at dispatch; the cascade copied the
+    // style's winners. Freeing both per dispatch is what keeps a 60fps draw
+    // region (thousands of dispatches/second) memory-stable.
+    map.free(opts)
+    map.free(style)
     return el
 }
 
@@ -395,6 +403,7 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
         maybe_pop_transform(ctx, did_push)
         el_w = grammar_element.element_new(el_raster)
         grammar_element.element_set_shape_rect(el_w, px, py, pw, ph)
+        map.free(style)
         return el_w
     }
 
@@ -412,14 +421,14 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     has_rot = 0
     if math.abs_float(transform.affine_b(cur_x)) > 0.000001 { has_rot = 1 }
     if math.abs_float(transform.affine_c(cur_x)) > 0.000001 { has_rot = 1 }
-    if has_grad == 1 {
-        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
-    }
-    if has_round == 1 {
-        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
-    }
-    if has_rot == 1 {
-        return rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+    needs_path = 0
+    if has_grad == 1 { needs_path = 1 }
+    if has_round == 1 { needs_path = 1 }
+    if has_rot == 1 { needs_path = 1 }
+    if needs_path == 1 {
+        elv = rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+        map.free(style)
+        return elv
     }
 
     // Project the four corners and compute axis-aligned bounds.
@@ -478,6 +487,11 @@ shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     el = grammar_element.element_new(underlying)
     grammar_element.element_set_bounds(el, min_x, min_y, max_x - min_x, max_y - min_y)
     grammar_element.element_set_shape_rect(el, px, py, pw, ph)
+    // The adapter consumed opts by value at dispatch; the cascade copied the
+    // style's winners. Freeing both per dispatch is what keeps a 60fps draw
+    // region (thousands of dispatches/second) memory-stable.
+    map.free(opts)
+    map.free(style)
     return el
 }
 
@@ -521,6 +535,7 @@ rect_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
 
     el = shape_path(ctx, backend, pa)
     maybe_pop_transform(ctx, did_push)
+    map.free(pa)
     return el
 }
 
@@ -538,6 +553,7 @@ circle_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
     el = shape_path(ctx, backend, pa)
     maybe_pop_transform(ctx, did_push)
     grammar_element.element_set_shape_circle(el, cx, cy, r)
+    map.free(pa)
     return el
 }
 
@@ -660,6 +676,8 @@ shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     hi_y = my1; if my2 > hi_y { hi_y = my2 }
     grammar_element.element_set_bounds(el, lo_x, lo_y, hi_x - lo_x, hi_y - lo_y)
     grammar_element.element_set_shape_line(el, x1_raw, y1_raw, x2_raw, y2_raw)
+    map.free(opts)
+    map.free(style)
     return el
 }
 
@@ -788,6 +806,8 @@ shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
     if has_pt == 1 {
         grammar_element.element_set_bounds(el, mnx, mny, mxx - mnx, mxy - mny)
     }
+    map.free(opts)
+    map.free(style)
     return el
 }
 

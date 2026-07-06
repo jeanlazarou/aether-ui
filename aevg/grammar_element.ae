@@ -46,8 +46,8 @@
 //   - destroy() — needs backend widget removal hook
 
 exports (
-    // Construction
-    element_new,
+    // Construction / destruction
+    element_new, element_release,
 
     // Identity / name
     element_set_name, element_name,
@@ -524,6 +524,26 @@ element_hit_test(p: ptr, px: float, py: float) -> int {
 // same idiom path_builder uses for its heap-string struct fields.
 
 extern string_retain(s: string)
+extern string_release(s: string)
+extern free(p: ptr)
+
+// Free an element created by element_new, releasing the style strings the
+// set_* cache setters copy+retain (fill / stroke colour / text / transform /
+// linecap / linejoin — no-ops when still the "" init literal). Borrowed
+// strings (name/tooltip/cursor) and closure ptrs belong to the caller;
+// last_pos_props belongs to its binding closure. This is the per-frame
+// recycle for draw-region recordings (vg.scene_free_recording) — without it
+// every live-region frame leaked its elements.
+element_release(p: ptr) {
+    e = p as *AevgElement
+    string_release(e.last_fill)
+    string_release(e.last_stroke_color)
+    string_release(e.last_text)
+    string_release(e.last_transform)
+    string_release(e.last_linecap)
+    string_release(e.last_linejoin)
+    free(p)
+}
 
 element_set_fill(p: ptr, color: string) {
     e = p as *AevgElement
