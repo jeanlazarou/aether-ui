@@ -41,7 +41,7 @@ EXAMPLES=(counter form picker styled system canvas testable calculator context_m
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
-SMOKE_EXAMPLES=(counter form picker styled system canvas context_menu)
+SMOKE_EXAMPLES=(counter form picker styled system canvas)
 FAIL=0
 
 OS="$(uname -s)"
@@ -232,6 +232,11 @@ echo
 echo "=== Phase 4: AetherUIDriver testable tests ==="
 run_server_test "$(EX_BIN testable)" \
                 "$SCRIPT_DIR/test_automation.sh" testable || FAIL=$((FAIL + 1))
+
+echo
+echo "=== Phase 5: AetherUIDriver context-menu tests ==="
+run_server_test "$(EX_BIN context_menu)" \
+                "$SCRIPT_DIR/test_context_menu.sh" context_menu || FAIL=$((FAIL + 1))
 
 echo
 if [ "$FAIL" -eq 0 ]; then

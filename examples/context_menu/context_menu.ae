@@ -11,13 +11,18 @@
 //     left-click keeps its normal callback, right-click opens the menu
 //   - the status line at the bottom reports each action
 //
-// Platform note: GTK4 (Linux) has the full popover implementation;
-// AppKit/Win32 are currently no-op stubs (same precedent as canvas_on_move).
+// Platform note: GTK4 (Linux) has the full implementation. The menu surface
+// is a small borderless top-level window, not a popover — GTK4 popovers
+// (xdg_popup) do not display on ChromeOS/Crostini's sommelier compositor,
+// while top-level windows do. AppKit/Win32 are currently no-op stubs (same
+// precedent as canvas_on_move).
 //
-// Automation note: the menu is a GtkListBox of activatable rows, so it can
-// be driven by synthetic X11 input (XTest) on a WM-less Xvfb — mouse-click a
-// row directly, or use the keyboard (first row is focused on popup: Return
-// activates it, Down/Up move between rows).
+// Automation note: AetherUIDriver drives it directly:
+//   POST /widget/{id}/context_menu        → open the menu ({"mapped":1})
+//   POST /widget/{id}/context_menu/{idx}  → open, then activate item idx
+// See test_context_menu.sh. The trigger is a right-click (button 3 /
+// two-finger tap), delivered via a legacy event controller so it works even
+// where GtkGestureClick drops the emulated button (sommelier).
 //
 //   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server
 //   (9222). GET /widgets shows the label/status mutations after menu use.
