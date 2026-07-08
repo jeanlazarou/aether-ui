@@ -15,23 +15,23 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: file operations") {
         aeocha.it("copies the selection's path from the map context menu") callback {
-            _ = gp_driver.click(100.0, 90.0)                       // select big.bin
+            gp_driver.click(100.0, 90.0)                       // select big.bin
             _ = gp_driver.wait_status_contains("big.bin", 20)
             cw = gp_driver.canvas_widget_id()
-            r = gp_driver.post("/widget/${cw}/context_menu/3")     // item 3 = Copy path
-            aeocha.assert_eq(r, 1, "context-menu route reachable")
+            aeocha.expect_http_post_status(gp_driver.url_of("/widget/${cw}/context_menu/3"),
+                200, "context-menu Copy path route")               // item 3 = Copy path
             ok = gp_driver.wait_status_contains("Copied", 20)
             aeocha.assert_true(ok, "status shows Copied")
         }
         aeocha.it("Delete arms, confirms to trash, then guards with no selection") callback {
             del = gp_driver.widget_id_by_text("Delete")
-            _ = gp_driver.click(100.0, 115.0)                      // select mid.bin (row 1)
+            gp_driver.click(100.0, 115.0)                      // select mid.bin (row 1)
             _ = gp_driver.wait_status_contains("mid.bin", 20)
-            _ = gp_driver.click_widget(del)
+            gp_driver.click_widget(del)
             sleep(300)
             aeocha.assert_contains(gp_driver.widget_text_by_id(del), "Confirm",
                 "armed: button relabelled")
-            _ = gp_driver.click_widget(del)                        // confirm
+            gp_driver.click_widget(del)                        // confirm
             // Poll for the file leaving the disk (gio trash + watch rescan).
             gone = 0
             i = 0
@@ -46,7 +46,7 @@ main() {
             // The watch-triggered rescan after the trash cleared the
             // selection; a Delete press now must hit the no-selection guard.
             sleep(500)
-            _ = gp_driver.click_widget(del)
+            gp_driver.click_widget(del)
             ok = gp_driver.wait_status_contains("Select", 20)
             aeocha.assert_true(ok, "guard after trash (no selection)")
         }

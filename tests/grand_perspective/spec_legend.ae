@@ -13,10 +13,10 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: legend + colour schemes") {
         aeocha.it("legend row click toggles a type highlight") callback {
-            _ = gp_driver.click(1100.0, 65.0)
+            gp_driver.click(1100.0, 65.0)
             ok = gp_driver.wait_status_contains("Highlighting", 20)
             aeocha.assert_true(ok, "highlight on")
-            _ = gp_driver.click(1100.0, 65.0)
+            gp_driver.click(1100.0, 65.0)
             ok2 = gp_driver.wait_status_contains("Highlight off", 20)
             aeocha.assert_true(ok2, "highlight off")
         }
@@ -24,14 +24,14 @@ main() {
             aeocha.assert_eq(gp_driver.widget_bool_by_text("by Type", "active"), 1,
                 "by Type active initially (the default scheme)")
             bd = gp_driver.widget_id_by_text("by Depth")
-            _ = gp_driver.toggle_widget(bd)
+            gp_driver.toggle_widget(bd)
             sleep(300)
             aeocha.assert_eq(gp_driver.widget_bool_by_text("by Depth", "active"), 1,
                 "by Depth active after toggle")
             aeocha.assert_eq(gp_driver.widget_bool_by_text("by Type", "active"), 0,
                 "by Type deactivated by the group")
             bt = gp_driver.widget_id_by_text("by Type")
-            _ = gp_driver.toggle_widget(bt)     // restore the default
+            gp_driver.toggle_widget(bt)     // restore the default
             sleep(300)
             aeocha.assert_eq(gp_driver.widget_bool_by_text("by Type", "active"), 1,
                 "by Type active again")

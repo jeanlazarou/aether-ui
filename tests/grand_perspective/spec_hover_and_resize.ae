@@ -14,15 +14,15 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: hover + resize") {
         aeocha.it("hover names the tile under the pointer; off-map clears") callback {
-            _ = gp_driver.move_to(400.0, 300.0)
+            gp_driver.move_to(400.0, 300.0)
             ok = gp_driver.wait_status_contains("big.bin", 20)
             aeocha.assert_true(ok, "hover over big.bin names it")
-            _ = gp_driver.move_to(1300.0, 550.0)
+            gp_driver.move_to(1300.0, 550.0)
             ok2 = gp_driver.wait_status_contains("—", 20)
             aeocha.assert_true(ok2, "hover off-map clears to em-dash")
         }
         aeocha.it("double-click still drills after a window resize") callback {
-            _ = gp_driver.resize_window(1716, 830)
+            gp_driver.resize_window(1716, 830)
             sleep(1000)
             // Recompute sub's tile position through the same xMidYMid-meet
             // mapping the scene uses: px = vb*s + centered offset.
@@ -37,9 +37,9 @@ main() {
             oy = ((ch / 1.0) - 600.0 * s) / 2.0
             px = 860.0 * s + ox
             py = 450.0 * s + oy
-            _ = gp_driver.click(px, py)
+            gp_driver.click(px, py)
             sleep(120)
-            _ = gp_driver.click(px, py)
+            gp_driver.click(px, py)
             ok = gp_driver.wait_crumbs_contains("sub", 20)
             aeocha.assert_true(ok, "double-click drills at the new scale")
         }

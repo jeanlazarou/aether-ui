@@ -8,7 +8,7 @@
 // ($GP_FIXTURE = $AEVG_DIR); ci.sh launches both per spec.
 
 exports (
-    get_body, post, click, click_widget, toggle_widget, key, move_to,
+    get_body, url_of, click, click_widget, toggle_widget, key, move_to,
     resize_window,
     status_line, crumbs_line, widget_id_by_text, widget_bool_by_text,
     widget_text_by_id, canvas_w, canvas_h, canvas_widget_id,
@@ -22,6 +22,7 @@ import std.os
 import std.os (os_getenv)
 import std.json
 import std.http.client
+import aeocha
 
 BASE() -> string { return "http://127.0.0.1:9222" }
 
@@ -56,32 +57,31 @@ get_body(path: string) -> string {
     return body
 }
 
-post(path: string) -> int {
-    req = client.request("POST", string.concat(BASE(), path))
-    resp, cerr = client.send_request(req)
-    client.request_free(req)
-    if string.length(cerr) > 0 { return 0 }
-    client.response_free(resp)
-    return 1
-}
+// Full URL for a driver path — for specs that assert a POST directly via
+// aeocha's expect_http_post_* matchers.
+url_of(path: string) -> string { return string.concat(BASE(), path) }
 
-click(x: float, y: float) -> int {
+// Driver actions assert through aeocha's POST matchers (asks/
+// http-post-and-assert-matchers.md, shipped): a 404'd route or non-2xx
+// fails the surrounding `it` with a message, instead of the old helper's
+// silently-swallowed status.
+click(x: float, y: float) {
     xi = f_to_i(x)
     yi = f_to_i(y)
-    return post("/canvas/1/click?x=${xi}&y=${yi}")
+    aeocha.expect_http_post_ok(url_of("/canvas/1/click?x=${xi}&y=${yi}"), "POST canvas click")
 }
 
-click_widget(id: int) -> int { return post("/widget/${id}/click") }
-toggle_widget(id: int) -> int { return post("/widget/${id}/toggle") }
-key(name: string) -> int { return post(string.concat("/canvas/1/key?name=", name)) }
+click_widget(id: int) { aeocha.expect_http_post_ok(url_of("/widget/${id}/click"), "POST widget click") }
+toggle_widget(id: int) { aeocha.expect_http_post_ok(url_of("/widget/${id}/toggle"), "POST widget toggle") }
+key(name: string) { aeocha.expect_http_post_ok(url_of(string.concat("/canvas/1/key?name=", name)), "POST canvas key") }
 
-move_to(x: float, y: float) -> int {
+move_to(x: float, y: float) {
     xi = f_to_i(x)
     yi = f_to_i(y)
-    return post("/canvas/1/move?x=${xi}&y=${yi}")
+    aeocha.expect_http_post_ok(url_of("/canvas/1/move?x=${xi}&y=${yi}"), "POST canvas move")
 }
 
-resize_window(w: int, h: int) -> int { return post("/window/resize?w=${w}&h=${h}") }
+resize_window(w: int, h: int) { aeocha.expect_http_post_ok(url_of("/window/resize?w=${w}&h=${h}"), "POST window resize") }
 
 extern lrint(x: float) -> long
 f_to_i(x: float) -> int { return lrint(x) }
