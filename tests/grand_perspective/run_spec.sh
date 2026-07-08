@@ -1,15 +1,14 @@
 #!/bin/bash
 # run_spec.sh — launcher glue for the Aeocha specs.
 # The specs are Aether programs (spec_*.ae, helpers in gp_driver.ae); this
-# wrapper only materializes aeocha.ae as a local sibling and runs ae from a
+# wrapper only points AETHER_LIB_DIR at the aeocha clone and runs ae from a
 # stable cwd. Which spec: $GP_SPEC (ci.sh sets it per iteration) or $1.
 # ci.sh's run_server_test passes the port as the first arg — the driver's
 # port is fixed at 9222, so a numeric $1 is ignored.
 #
-# Why a SYMLINK instead of AETHER_INCLUDE_PATH: with `import aeocha` resolved
-# via the include path, adding ANY std import (std.string, std.json, ...) to
-# the same file makes aeocha's exports fail to merge (E0301 on aeocha.init).
-# Same-directory resolution is immune. Candidate compiler issue, 2026-07-08.
+# NB: the module-search env var is AETHER_LIB_DIR (aether #413) — the
+# AETHER_INCLUDE_PATH name that aeocha's README mentions is not read by the
+# compiler at all.
 #
 #   AEOCHA_DIR   where aeocha.ae lives (default ~/scm/aeocha)
 set -e
@@ -21,5 +20,4 @@ if [ ! -f "$AEOCHA_DIR/aeocha.ae" ]; then
     exit 1
 fi
 cd "$DIR"
-ln -sf "$AEOCHA_DIR/aeocha.ae" aeocha.ae
-exec ae run "spec_${SPEC}.ae"
+exec env AETHER_LIB_DIR="$AEOCHA_DIR" ae run "spec_${SPEC}.ae"
