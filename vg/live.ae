@@ -35,14 +35,14 @@
 // IMPORT PREAMBLE GOTCHA: a consumer that wants the bare DSL names (`window`,
 // `circle`, `fill`, …) AND links this module needs the companion-import
 // pattern — a full `import M` (so M's functions used *transitively* by
-// vg_live/aevg_gtk_backend resolve, e.g. aether_ui.canvas_*, vg.scene_new)
+// vg_live/aevg_gtk_backend resolve, e.g. ui.canvas_*, vg.scene_new)
 // PLUS a selective `import M (names…)` (so the names read bare in the block).
 // A selective import alone shadows the full module for transitive callees;
 // see example_vg.ae's 4-line preamble.
 
 exports ( vg, vg_redraw, video_region, video_source, canvas_region, vg_flush_live, region_set_animated )
 
-import aether_ui
+import ui
 import vg
 import vg.grammar.factories
 import vg.backend.gtk
@@ -81,20 +81,20 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // presence on the scene is what makes flush track interactive elements.
     es = events.event_state_new()
     vg.scene_set_event_state(scene, es)
-    aether_ui.register_deferred_flush() callback {
+    ui.register_deferred_flush() callback {
         _flush_clipped(scene, canvas_id)
-        aether_ui.canvas_redraw(canvas_id)
+        ui.canvas_redraw(canvas_id)
     }
     // Click: hit-test the tracked shapes and fire the topmost handler, then
     // re-render. dispatch_click runs the handler (which may recolor an element
     // via vg.element_set_fill); we then clear + re-flush (vg_flush reads each
     // element's CURRENT fill) + redraw so the new colour shows. Read the
     // scene's ctx live (resize swaps it) rather than capturing `ctx`.
-    aether_ui.canvas_on_click(canvas_id) callback |cx: float, cy: float| {
+    ui.canvas_on_click(canvas_id) callback |cx: float, cy: float| {
         events.dispatch_click(es, vg.scene_ctx(scene), cx, cy)
-        aether_ui.canvas_clear(canvas_id)
+        ui.canvas_clear(canvas_id)
         _flush_clipped(scene, canvas_id)
-        aether_ui.canvas_redraw(canvas_id)
+        ui.canvas_redraw(canvas_id)
     }
     // Resize: rescale the scene to the new canvas allocation. The hook fires
     // from the draw func with the new (rw, rh); rebuild the viewBox→canvas
@@ -106,17 +106,17 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
     // viewBox (vb) is fixed SVG space, so only the mapping changes. (No
     // canvas_redraw here: the hook runs INSIDE the draw func, which replays
     // the freshly-flushed buffer.)
-    aether_ui.canvas_on_resize(canvas_id) callback |rw: int, rh: int| {
+    ui.canvas_on_resize(canvas_id) callback |rw: int, rh: int| {
         new_ctx = _build_ctx(vb, rw, rh)
         vg.scene_set_ctx(scene, new_ctx)
-        aether_ui.canvas_clear(canvas_id)
+        ui.canvas_clear(canvas_id)
         _flush_live(scene, canvas_id, ms_to_secs(now_monotonic_ms()))
     }
     // Animation loop: a ~60fps timer drives the scene's animations. It no-ops
     // when nothing is animating (cheap idle), and otherwise advances them to
     // the current monotonic time, re-renders (clear + clip + flush), and
     // redraws. The animations are registered by vg.animate inside the block.
-    _tid = aether_ui.timer(16) callback {
+    _tid = ui.timer(16) callback {
         live = 0
         if vg.scene_is_animating(scene) == 1 { live = 1 }
         if vg.scene_is_refreshing(scene) == 1 { live = 1 }
@@ -128,11 +128,11 @@ vg(_ctx: ptr, vb: string, w: int, h: int) -> ptr {
             if vg.scene_is_refreshing(scene) == 1 {
                 _ = vg.scene_eval_bindings(scene)
             }
-            aether_ui.canvas_clear(canvas_id)
+            ui.canvas_clear(canvas_id)
             // t = seconds since an arbitrary epoch (monotonic), a
             // continuously-growing clock the live-draw callbacks key off.
             _flush_live(scene, canvas_id, ms_to_secs(now))
-            aether_ui.canvas_redraw(canvas_id)
+            ui.canvas_redraw(canvas_id)
         }
     }
     return vg.vg_root(scene)
@@ -156,7 +156,7 @@ _flush_clipped(scene: ptr, canvas_id: int) {
     cy0 = transform.pt_y(p_tl)
     cx1 = transform.pt_x(p_br)
     cy1 = transform.pt_y(p_br)
-    aether_ui.canvas_clip_rect(canvas_id, cx0, cy0, cx1 - cx0, cy1 - cy0)
+    ui.canvas_clip_rect(canvas_id, cx0, cy0, cx1 - cx0, cy1 - cy0)
     vg.vg_flush(scene)
 }
 
@@ -298,7 +298,7 @@ _blit_one_raster(scene: ptr, canvas_id: int, region: ptr) {
     dh = transform.pt_y(p_br) - cy0
     pw = region.region_pw(region)
     ph = region.region_ph(region)
-    aether_ui.canvas_draw_image_scaled(canvas_id, cx0, cy0, dw, dh, pw, ph, frame, flen)
+    ui.canvas_draw_image_scaled(canvas_id, cx0, cy0, dw, dh, pw, ph, frame, flen)
 }
 
 extern lrint(x: float) -> long
@@ -322,14 +322,14 @@ _build_ctx(vb: string, w: int, h: int) -> ptr {
 vg_redraw(node: ptr) {
     cid = vg.scene_canvas(vg.node_scene(node))
     if cid != 0 {
-        aether_ui.canvas_redraw(cid)
+        ui.canvas_redraw(cid)
     }
 }
 
 // ─── canvas wiring ───────────────────────────────────────────────
 
 // Create a canvas and attach it to the surface _ctx (mirrors
-// aether_ui.canvas_create's ctx behaviour, calling the externs directly so
+// ui.canvas_create's ctx behaviour, calling the externs directly so
 // we pass the vg call's surface _ctx through).
 extern aether_ui_canvas_create_impl(width: int, height: int) -> int
 extern aether_ui_canvas_get_widget(canvas_id: int) -> int

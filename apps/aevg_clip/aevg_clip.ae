@@ -6,8 +6,8 @@
 // only the part within 0..100 should show. A green reference rect sits fully
 // inside. Driver-verifiable: AETHER_UI_TEST_PORT=9222 + GET /screenshot.
 
-import aether_ui
-import aether_ui (window, enable_test_server)
+import ui
+import ui (window, enable_test_server)
 import vg.live (vg)
 import vg
 import vg (view_box, rect, fill)

@@ -9,7 +9,7 @@
 // Proves the raster path links + runs without crashing on a real
 // display.
 
-import aether_ui
+import ui
 import vg.backend.gtk
 import vg.raster.render_as_raster
 import vg.grammar.context
@@ -29,12 +29,12 @@ mk_ctx() -> ptr {
 }
 
 main() {
-    root = aether_ui.root_vstack(10) {
-        title = aether_ui.text("AeVG — canvas_raster blit")
-        aether_ui.style_font_size(title, 16)
-        aether_ui.divider()
+    root = ui.root_vstack(10) {
+        title = ui.text("AeVG — canvas_raster blit")
+        ui.style_font_size(title, 16)
+        ui.divider()
 
-        c = aether_ui.canvas_create(200, 200)
+        c = ui.canvas_create(200, 200)
         backend = gtk.gtk_backend_new(c)
         ctx = mk_ctx()
 
@@ -47,8 +47,8 @@ main() {
             rasterize.fill_rect_in_buffer(buf, w, h, off_x, off_y, 60.0, 60.0, r, g, b, a)
         }
 
-        aether_ui.canvas_redraw(c)
+        ui.canvas_redraw(c)
     }
-    aether_ui.margin(root, 12, 12, 12, 12)
-    aether_ui.app_run("Raster Demo", 240, 290, root)
+    ui.margin(root, 12, 12, 12, 12)
+    ui.app_run("Raster Demo", 240, 290, root)
 }

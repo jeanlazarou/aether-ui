@@ -39,7 +39,7 @@ exports (
 import std.string
 import std.map
 import std.math
-import aether_ui
+import ui
 import vg.raster.rasterize
 import vg.backend.dispatch
 import std.cryptography
@@ -55,7 +55,7 @@ struct GtkBackend {
 }
 
 // Create an adapter backend around an existing aether_ui canvas id.
-// Callers make the canvas via aether_ui.canvas_create(w, h) and pass
+// Callers make the canvas via ui.canvas_create(w, h) and pass
 // the returned id here. Returns a *dispatch.Dispatch the
 // shape factories dispatch through — the GtkBackend handle is the
 // `be` threaded into the op-switch closure.
@@ -83,7 +83,7 @@ gtk_backend_canvas_id(p: ptr) -> int {
 
 gtk_backend_redraw(p: ptr) {
     b = dispatch.backend_self(p) as *GtkBackend
-    aether_ui.canvas_redraw(b.canvas_id)
+    ui.canvas_redraw(b.canvas_id)
 }
 
 // ─── opts helpers ────────────────────────────────────────────────
@@ -178,15 +178,15 @@ canvas_circle(p: ptr, opts: ptr) -> ptr {
 
     // Fill: build the circle path, fill it.
     if string.length(fill) > 0 {
-        aether_ui.canvas_begin_path(cid)
-        aether_ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
-        aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+        ui.canvas_begin_path(cid)
+        ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
+        ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
                                    color_b01(fill), color_a01(fill))
     }
     // Stroke: rebuild the path, stroke it.
     if string.length(stroke) > 0 {
-        aether_ui.canvas_begin_path(cid)
-        aether_ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
+        ui.canvas_begin_path(cid)
+        ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
         stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
@@ -210,17 +210,17 @@ canvas_rectangle(p: ptr, opts: ptr) -> ptr {
     sw = opt_f(opts, "strokeWidth", 1.0)
 
     if string.length(fill) > 0 {
-        aether_ui.canvas_fill_rect(cid, x, y, w, h,
+        ui.canvas_fill_rect(cid, x, y, w, h,
             color_r01(fill), color_g01(fill), color_b01(fill), color_a01(fill))
     }
     if string.length(stroke) > 0 {
         // Outline: a closed 4-segment polyline.
-        aether_ui.canvas_begin_path(cid)
-        aether_ui.canvas_move_to(cid, x, y)
-        aether_ui.canvas_line_to(cid, x2, y)
-        aether_ui.canvas_line_to(cid, x2, y2)
-        aether_ui.canvas_line_to(cid, x, y2)
-        aether_ui.canvas_close_path(cid)
+        ui.canvas_begin_path(cid)
+        ui.canvas_move_to(cid, x, y)
+        ui.canvas_line_to(cid, x2, y)
+        ui.canvas_line_to(cid, x2, y2)
+        ui.canvas_line_to(cid, x, y2)
+        ui.canvas_close_path(cid)
         stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
@@ -240,9 +240,9 @@ canvas_line(p: ptr, opts: ptr) -> ptr {
     sw = opt_f(opts, "strokeWidth", 1.0)
 
     if string.length(stroke) > 0 {
-        aether_ui.canvas_begin_path(cid)
-        aether_ui.canvas_move_to(cid, x1, y1)
-        aether_ui.canvas_line_to(cid, x2, y2)
+        ui.canvas_begin_path(cid)
+        ui.canvas_move_to(cid, x1, y1)
+        ui.canvas_line_to(cid, x2, y2)
         stroke_path(cid, stroke, sw, opts)
     }
     return fresh_handle()
@@ -287,7 +287,7 @@ canvas_path(p: ptr, opts: ptr) -> ptr {
     } else {
         if string.length(fill) > 0 {
             replay_path(cid, pts)
-            aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+            ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
                                        color_b01(fill), color_a01(fill))
         }
     }
@@ -350,13 +350,13 @@ apply_gradient(cid: int, opts: ptr, prefix: string, grad_type: string, line_widt
         r  = opt_f(opts, string.concat(prefix, "R"),  0.0)
         fx = opt_f(opts, string.concat(prefix, "FX"), cx)
         fy = opt_f(opts, string.concat(prefix, "FY"), cy)
-        aether_ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba, line_width, extend)
+        ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba, line_width, extend)
     } else {
         x1 = opt_f(opts, string.concat(prefix, "X1"), 0.0)
         y1 = opt_f(opts, string.concat(prefix, "Y1"), 0.0)
         x2 = opt_f(opts, string.concat(prefix, "X2"), 0.0)
         y2 = opt_f(opts, string.concat(prefix, "Y2"), 0.0)
-        aether_ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba, line_width, extend)
+        ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba, line_width, extend)
     }
 }
 
@@ -385,7 +385,7 @@ linejoin_code(opts: ptr) -> int {
 // Stroke the current path with the resolved colour + width, honouring the
 // stroke-linecap/linejoin opts (SVG defaults butt/miter).
 stroke_path(cid: int, stroke: string, sw: float, opts: ptr) {
-    aether_ui.canvas_stroke_cj(cid, color_r01(stroke), color_g01(stroke),
+    ui.canvas_stroke_cj(cid, color_r01(stroke), color_g01(stroke),
         color_b01(stroke), color_a01(stroke), sw,
         linecap_code(opts), linejoin_code(opts))
 }
@@ -395,7 +395,7 @@ stroke_path(cid: int, stroke: string, sw: float, opts: ptr) {
 // sub-path is a move_to; subsequent points are line_to; "M" forces
 // the next point to be a move_to; "Z" closes the sub-path.
 replay_path(cid: int, pts: string) {
-    aether_ui.canvas_begin_path(cid)
+    ui.canvas_begin_path(cid)
     toks = string_split(pts, " ")
     n = string_array_size(toks)
     pen_down = 0       // 0 = next coord is a move_to
@@ -412,7 +412,7 @@ replay_path(cid: int, pts: string) {
             continue
         }
         if string.equals(tok, "Z") == 1 {
-            aether_ui.canvas_close_path(cid)
+            ui.canvas_close_path(cid)
             pen_down = 0
             i = i + 1
             continue
@@ -427,10 +427,10 @@ replay_path(cid: int, pts: string) {
             if ex == "" {
                 if ey == "" {
                     if pen_down == 0 {
-                        aether_ui.canvas_move_to(cid, x, y)
+                        ui.canvas_move_to(cid, x, y)
                         pen_down = 1
                     } else {
-                        aether_ui.canvas_line_to(cid, x, y)
+                        ui.canvas_line_to(cid, x, y)
                     }
                 }
             }
@@ -455,7 +455,7 @@ canvas_text(p: ptr, opts: ptr) -> ptr {
     color = opt_s(opts, "color")
     if string.length(color) == 0 { color = "black" }
 
-    aether_ui.canvas_fill_text(cid, text, x, y, size,
+    ui.canvas_fill_text(cid, text, x, y, size,
         color_r01(color), color_g01(color), color_b01(color), color_a01(color))
     return fresh_handle()
 }
@@ -492,7 +492,7 @@ canvas_raster(p: ptr, opts: ptr) -> ptr {
         return fresh_handle()
     }
 
-    aether_ui.canvas_draw_image(cid, x, y, w, h, pixels, n)
+    ui.canvas_draw_image(cid, x, y, w, h, pixels, n)
     return fresh_handle()
 }
 

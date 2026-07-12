@@ -3,53 +3,53 @@
 // Build and run:
 //   ./build.sh example_canvas.ae build/perry_canvas
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    aether_ui.window("Canvas Demo", 440, 500) {
-    root = aether_ui.vstack(10) {
-        title = aether_ui.text("Canvas Drawing Demo")
+    ui.window("Canvas Demo", 440, 500) {
+    root = ui.vstack(10) {
+        title = ui.text("Canvas Drawing Demo")
         title.style_font_size(18).style_font_bold()
 
-        aether_ui.divider()
+        ui.divider()
 
         // Canvas with some drawings
-        c = aether_ui.canvas_create(400, 250)
+        c = ui.canvas_create(400, 250)
 
         // Background
-        aether_ui.canvas_fill_rect(c, 0, 0, 400, 250, 0.95, 0.95, 1.0, 1.0)
+        ui.canvas_fill_rect(c, 0, 0, 400, 250, 0.95, 0.95, 1.0, 1.0)
 
         // Draw a triangle
-        aether_ui.canvas_begin_path(c)
-        aether_ui.canvas_move_to(c, 200, 30)
-        aether_ui.canvas_line_to(c, 350, 200)
-        aether_ui.canvas_line_to(c, 50, 200)
-        aether_ui.canvas_line_to(c, 200, 30)
-        aether_ui.canvas_stroke(c, 0.2, 0.4, 0.8, 1.0, 3.0)
+        ui.canvas_begin_path(c)
+        ui.canvas_move_to(c, 200, 30)
+        ui.canvas_line_to(c, 350, 200)
+        ui.canvas_line_to(c, 50, 200)
+        ui.canvas_line_to(c, 200, 30)
+        ui.canvas_stroke(c, 0.2, 0.4, 0.8, 1.0, 3.0)
 
         // Draw a cross
-        aether_ui.canvas_begin_path(c)
-        aether_ui.canvas_move_to(c, 50, 30)
-        aether_ui.canvas_line_to(c, 350, 220)
-        aether_ui.canvas_stroke(c, 0.8, 0.2, 0.2, 1.0, 2.0)
+        ui.canvas_begin_path(c)
+        ui.canvas_move_to(c, 50, 30)
+        ui.canvas_line_to(c, 350, 220)
+        ui.canvas_stroke(c, 0.8, 0.2, 0.2, 1.0, 2.0)
 
-        aether_ui.canvas_begin_path(c)
-        aether_ui.canvas_move_to(c, 350, 30)
-        aether_ui.canvas_line_to(c, 50, 220)
-        aether_ui.canvas_stroke(c, 0.8, 0.2, 0.2, 1.0, 2.0)
+        ui.canvas_begin_path(c)
+        ui.canvas_move_to(c, 350, 30)
+        ui.canvas_line_to(c, 50, 220)
+        ui.canvas_stroke(c, 0.8, 0.2, 0.2, 1.0, 2.0)
 
         // Filled rectangle
-        aether_ui.canvas_fill_rect(c, 160, 90, 80, 60, 0.2, 0.7, 0.3, 0.5)
+        ui.canvas_fill_rect(c, 160, 90, 80, 60, 0.2, 0.7, 0.3, 0.5)
 
-        aether_ui.canvas_redraw(c)
+        ui.canvas_redraw(c)
 
-        aether_ui.divider()
+        ui.divider()
 
         // Hover-sensitive label
-        hover_label = aether_ui.text("Hover over me!")
-        aether_ui.on_hover(hover_label) callback |hovering: int| {
+        hover_label = ui.text("Hover over me!")
+        ui.on_hover(hover_label) callback |hovering: int| {
             if hovering == 1 {
                 println("Mouse entered!")
             } else {
@@ -58,21 +58,21 @@ main() {
         }
 
         // Double-click area
-        dbl = aether_ui.text("Double-click me!")
-        aether_ui.on_double_click(dbl) callback {
+        dbl = ui.text("Double-click me!")
+        ui.on_double_click(dbl) callback {
             println("Double clicked!")
         }
 
-        aether_ui.spacer()
+        ui.spacer()
 
-        aether_ui.hstack(5) {
-            aether_ui.btn("Clear Canvas") callback {
-                aether_ui.canvas_clear(c)
+        ui.hstack(5) {
+            ui.btn("Clear Canvas") callback {
+                ui.canvas_clear(c)
             }
-            aether_ui.spacer()
+            ui.spacer()
         }
     }
-    aether_ui.margin_of(root, 12, 12, 12, 12)
+    ui.margin_of(root, 12, 12, 12, 12)
 
     }
 }

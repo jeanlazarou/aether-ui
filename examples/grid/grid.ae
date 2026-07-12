@@ -9,37 +9,37 @@
 //   ./build/grid          (Linux/macOS)
 //   ./build/grid.exe      (Windows)
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
     // Top-level 2-column grid with 6px row spacing and 8px col spacing.
-    form = aether_ui.root_grid(2, 6, 8)
+    form = ui.root_grid(2, 6, 8)
 
     // Row 0: Username label + text field
-    lbl_user = aether_ui.text("Username:")
-    fld_user = aether_ui.textfield("jane.doe") callback { }
-    aether_ui.grid_place(form, lbl_user, 0, 0, 1, 1)
-    aether_ui.grid_place(form, fld_user, 0, 1, 1, 1)
+    lbl_user = ui.text("Username:")
+    fld_user = ui.textfield("jane.doe") callback { }
+    ui.grid_place(form, lbl_user, 0, 0, 1, 1)
+    ui.grid_place(form, fld_user, 0, 1, 1, 1)
 
     // Row 1: Password label + secure field
-    lbl_pass = aether_ui.text("Password:")
-    fld_pass = aether_ui.securefield("") callback { }
-    aether_ui.grid_place(form, lbl_pass, 1, 0, 1, 1)
-    aether_ui.grid_place(form, fld_pass, 1, 1, 1, 1)
+    lbl_pass = ui.text("Password:")
+    fld_pass = ui.securefield("") callback { }
+    ui.grid_place(form, lbl_pass, 1, 0, 1, 1)
+    ui.grid_place(form, fld_pass, 1, 1, 1, 1)
 
     // Row 2: Remember-me checkbox (col 1 only, no label)
-    remember = aether_ui.toggle("Remember me") callback { }
-    aether_ui.grid_place(form, remember, 2, 1, 1, 1)
+    remember = ui.toggle("Remember me") callback { }
+    ui.grid_place(form, remember, 2, 1, 1, 1)
 
     // Row 3: "Sign In" button spans both columns
-    sign_in = aether_ui.btn("Sign In") callback {
+    sign_in = ui.btn("Sign In") callback {
         println("Sign in clicked")
     }
-    aether_ui.grid_place(form, sign_in, 3, 0, 1, 2)
+    ui.grid_place(form, sign_in, 3, 0, 1, 2)
 
     // Grid root is built imperatively (cells grid_place'd into a
     // pre-created root), so the explicit-root window form fits.
-    aether_ui.window_run("Login — Grid Layout", 400, 220, form)
+    ui.window_run("Login — Grid Layout", 400, 220, form)
 }

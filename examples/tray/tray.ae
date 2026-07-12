@@ -13,36 +13,36 @@
 // implementation (see aether_ui_gtk4.c System tray section);
 // libnotify lights up notifications today when available.
 
-import aether_ui
+import ui
 import std.os (os_getenv)
 
 extern println(s: string)
 
 main() {
     // Reactive state: 0=clean, 1=syncing, 2=conflict.
-    sync_status = aether_ui.ui_state(0)
+    sync_status = ui.ui_state(0)
 
     // Popup menu — reused as the tray's right-click target.
-    m = aether_ui.menu("AvnSync")
-    aether_ui.menu_item(m, "Sync now") callback {
+    m = ui.menu("AvnSync")
+    ui.menu_item(m, "Sync now") callback {
         println("Sync now clicked")
-        aether_ui.ui_set(sync_status, 1.0)
-        aether_ui.notify("AvnSync", "Sync started")
+        ui.ui_set(sync_status, 1.0)
+        ui.notify("AvnSync", "Sync started")
     }
-    aether_ui.menu_item(m, "Open folder") callback {
+    ui.menu_item(m, "Open folder") callback {
         println("Open folder clicked")
     }
-    aether_ui.menu_separator(m)
-    aether_ui.menu_item(m, "Quit") callback {
+    ui.menu_separator(m)
+    ui.menu_item(m, "Quit") callback {
         println("Quit clicked")
         // app_run_headless's main loop would exit here in a real
         // backend; for this demo we just log.
     }
 
     // Tray icon — register with an optional left-click handler.
-    tray = aether_ui.tray_icon("avnsync") callback {
+    tray = ui.tray_icon("avnsync") callback {
         println("Tray left-clicked")
-        aether_ui.notify("AvnSync", "Status check requested")
+        ui.notify("AvnSync", "Status check requested")
     }
     // UFCS chain — each tray_set_* returns the tray id.
     tray.tray_set_tooltip("AvnSync — synced")
@@ -62,19 +62,19 @@ main() {
         // needs SOMETHING to anchor the banner. Hand it a dummy
         // root_vstack and let the driver enumerate /tray + /notifications
         // independently. The banner is invisible in headless mode.
-        dummy = aether_ui.root_vstack(0)
-        aether_ui.enable_test_server_root(9234, dummy)
+        dummy = ui.root_vstack(0)
+        ui.enable_test_server_root(9234, dummy)
         println("AetherUIDriver listening for tray + notifications")
     }
 
     // Fire a couple of notifications so the test has something to dismiss.
-    n1 = aether_ui.notify("AvnSync", "Ready")
-    n2 = aether_ui.notify_full("AvnSync",
+    n1 = ui.notify("AvnSync", "Ready")
+    n2 = ui.notify_full("AvnSync",
                                 "Push rejected — conflict in README.md",
                                 "",
                                 "avnsync-conflict-README.md") callback {
         println("Notification clicked")
     }
 
-    aether_ui.app_run_headless()
+    ui.app_run_headless()
 }

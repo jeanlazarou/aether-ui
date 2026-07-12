@@ -3,36 +3,36 @@
 // Build and run:
 //   ./build.sh example_form.ae build/perry_form
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    slider_state = aether_ui.ui_state(50)
+    slider_state = ui.ui_state(50)
 
-    aether_ui.window("Perry Form", 500, 600) {
-    root = aether_ui.vstack(8) {
-        aether_ui.text("Aether UI Form Demo")
-        aether_ui.divider()
+    ui.window("Perry Form", 500, 600) {
+    root = ui.vstack(8) {
+        ui.text("Aether UI Form Demo")
+        ui.divider()
 
         // Text input
-        aether_ui.hstack(5) {
-            aether_ui.text("Name:")
-            aether_ui.textfield("Enter your name") callback |val: string| {
+        ui.hstack(5) {
+            ui.text("Name:")
+            ui.textfield("Enter your name") callback |val: string| {
                 println("Name changed: ${val}")
             }
         }
 
         // Password input
-        aether_ui.hstack(5) {
-            aether_ui.text("Password:")
-            aether_ui.securefield("Enter password") callback |val: string| {
+        ui.hstack(5) {
+            ui.text("Password:")
+            ui.securefield("Enter password") callback |val: string| {
                 println("Password changed (hidden)")
             }
         }
 
         // Toggle
-        aether_ui.toggle("Enable notifications") callback |active: int| {
+        ui.toggle("Enable notifications") callback |active: int| {
             if active == 1 {
                 println("Notifications ON")
             } else {
@@ -41,33 +41,33 @@ main() {
         }
 
         // Slider with bound text
-        aether_ui.text_bound(slider_state, "Volume: ", "%")
-        aether_ui.slider(0, 100, 50) callback |val: float| {
-            aether_ui.ui_set(slider_state, val)
+        ui.text_bound(slider_state, "Volume: ", "%")
+        ui.slider(0, 100, 50) callback |val: float| {
+            ui.ui_set(slider_state, val)
         }
 
-        aether_ui.divider()
+        ui.divider()
 
         // Textarea
-        aether_ui.text("Notes:")
-        aether_ui.textarea("Type your notes here...") callback |val: string| {
+        ui.text("Notes:")
+        ui.textarea("Type your notes here...") callback |val: string| {
             println("Notes updated")
         }
 
-        aether_ui.divider()
+        ui.divider()
 
         // Progress bar
-        aether_ui.text("Progress:")
-        aether_ui.progressbar(0.75)
+        ui.text("Progress:")
+        ui.progressbar(0.75)
 
-        aether_ui.spacer()
+        ui.spacer()
 
-        aether_ui.hstack(5) {
-            aether_ui.spacer()
-            aether_ui.btn("Submit") callback {
+        ui.hstack(5) {
+            ui.spacer()
+            ui.btn("Submit") callback {
                 println("Form submitted!")
             }
-            aether_ui.btn("Cancel") callback {
+            ui.btn("Cancel") callback {
                 println("Cancelled")
             }
         }

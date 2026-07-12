@@ -7,57 +7,57 @@
 //   ./build/menu          (Linux/macOS)
 //   ./build/menu.exe      (Windows)
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    counter = aether_ui.ui_state(0)
+    counter = ui.ui_state(0)
 
-    root = aether_ui.root_vstack(10) {
-        aether_ui.text("Menu demo — use the bar above.")
-        aether_ui.text_bound(counter, "Actions taken: ", "")
-        aether_ui.divider()
-        aether_ui.text("(Click a menu item to bump the counter.)")
+    root = ui.root_vstack(10) {
+        ui.text("Menu demo — use the bar above.")
+        ui.text_bound(counter, "Actions taken: ", "")
+        ui.divider()
+        ui.text("(Click a menu item to bump the counter.)")
     }
 
-    app = aether_ui.app_create("Menu Demo", 500, 260)
+    app = ui.app_create("Menu Demo", 500, 260)
 
     // --- Build the menu bar ---
-    bar = aether_ui.menu_bar()
+    bar = ui.menu_bar()
 
-    file_menu = aether_ui.menu("File")
-    aether_ui.menu_item(file_menu, "New") callback {
-        aether_ui.ui_set(counter, aether_ui.ui_get(counter) + 1)
+    file_menu = ui.menu("File")
+    ui.menu_item(file_menu, "New") callback {
+        ui.ui_set(counter, ui.ui_get(counter) + 1)
     }
-    aether_ui.menu_item(file_menu, "Open...") callback {
-        aether_ui.ui_set(counter, aether_ui.ui_get(counter) + 1)
+    ui.menu_item(file_menu, "Open...") callback {
+        ui.ui_set(counter, ui.ui_get(counter) + 1)
     }
-    aether_ui.menu_item(file_menu, "Save") callback {
-        aether_ui.ui_set(counter, aether_ui.ui_get(counter) + 1)
+    ui.menu_item(file_menu, "Save") callback {
+        ui.ui_set(counter, ui.ui_get(counter) + 1)
     }
-    aether_ui.menu_separator(file_menu)
-    aether_ui.menu_item(file_menu, "Quit") callback {
+    ui.menu_separator(file_menu)
+    ui.menu_item(file_menu, "Quit") callback {
         println("Quit clicked")
         exit(0)
     }
-    aether_ui.menu_bar_add(bar, file_menu)
+    ui.menu_bar_add(bar, file_menu)
 
-    edit_menu = aether_ui.menu("Edit")
-    aether_ui.menu_item(edit_menu, "Undo") callback {
-        aether_ui.ui_set(counter, aether_ui.ui_get(counter) - 1)
+    edit_menu = ui.menu("Edit")
+    ui.menu_item(edit_menu, "Undo") callback {
+        ui.ui_set(counter, ui.ui_get(counter) - 1)
     }
-    aether_ui.menu_item(edit_menu, "Redo") callback {
-        aether_ui.ui_set(counter, aether_ui.ui_get(counter) + 1)
+    ui.menu_item(edit_menu, "Redo") callback {
+        ui.ui_set(counter, ui.ui_get(counter) + 1)
     }
-    aether_ui.menu_bar_add(bar, edit_menu)
+    ui.menu_bar_add(bar, edit_menu)
 
-    help_menu = aether_ui.menu("Help")
-    aether_ui.menu_item(help_menu, "About") callback {
-        aether_ui.alert("About", "Aether UI menu demo")
+    help_menu = ui.menu("Help")
+    ui.menu_item(help_menu, "About") callback {
+        ui.alert("About", "Aether UI menu demo")
     }
-    aether_ui.menu_bar_add(bar, help_menu)
+    ui.menu_bar_add(bar, help_menu)
 
-    aether_ui.attach_menu_bar(app, bar)
-    aether_ui.app_start(app, root)
+    ui.attach_menu_bar(app, bar)
+    ui.app_start(app, root)
 }

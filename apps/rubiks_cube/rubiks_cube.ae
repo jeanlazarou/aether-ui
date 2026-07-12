@@ -18,8 +18,8 @@
 // Run: DISPLAY=:0 ./build/rubiks_cube
 //   Swipe across a cell to rotate that row/column; Reset / Shuffle / Solve.
 
-import aether_ui
-import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
+import ui
+import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_release)
 import vg.live (vg, canvas_region)
 import vg

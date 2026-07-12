@@ -16,8 +16,8 @@
 //   build:  ./build.sh aevg/svg_render_png.ae build/svg_render
 //   run:    ./build/svg_render heart.svg /tmp/heart.png 400
 
-import aether_ui
-import aether_ui (canvas_create, canvas_write_png)
+import ui
+import ui (canvas_create, canvas_write_png)
 import vg.svg.loader
 import vg.backend.gtk
 import std.string

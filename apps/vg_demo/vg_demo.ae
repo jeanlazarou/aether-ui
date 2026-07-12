@@ -5,8 +5,8 @@
 // the hand-authoring form (and the transpiler's target). Run it on a real
 // display:  DISPLAY=:0 ./build/vg_demo
 
-import aether_ui                  // full — transitive canvas_* must resolve
-import aether_ui (window)         // companion — bare `window`
+import ui                  // full — transitive canvas_* must resolve
+import ui (window)         // companion — bare `window`
 import vg.live (vg)
 import vg                         // full — vg_live uses vg.scene_new transitively
 import vg (view_box, circle, rect, line, path, text, g, fill, stroke)  // bare DSL

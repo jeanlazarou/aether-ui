@@ -1,6 +1,6 @@
 // Aether UI context-menu example — right-click menus on ordinary widgets.
 //
-// Demonstrates aether_ui.context_menu_item(handle, label) callback { … }:
+// Demonstrates ui.context_menu_item(handle, label) callback { … }:
 // attach one or more right-click menu items to ANY widget by handle. The
 // popover and its button-3 gesture are created lazily on the first item;
 // each further call appends an item. Choosing an item closes the menu and
@@ -29,8 +29,8 @@
 //   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server
 //   (9222). GET /widgets shows the label/status mutations after menu use.
 
-import aether_ui
-import aether_ui (window, vstack, btn, text, divider,
+import ui
+import ui (window, vstack, btn, text, divider,
     context_menu_item, clipboard_write, set_button_label, enable_test_server)
 import std.os (os_getenv)
 

@@ -4,8 +4,8 @@
 // fixed time, flushes one frame to a PNG. No window/timer — the verifiable
 // snapshot. CI build+runs it.
 
-import aether_ui
-import aether_ui (canvas_create, canvas_write_png, canvas_clear)
+import ui
+import ui (canvas_create, canvas_write_png, canvas_clear)
 import vg.live (vg, vg_flush_live)
 import vg
 import vg (view_box, circle, line, fill, stroke, bind_pos)

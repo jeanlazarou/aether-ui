@@ -8,8 +8,8 @@
 //
 // Click the red circle → turns green. Click the blue rect → turns orange.
 
-import aether_ui                  // full — transitive canvas_* must resolve
-import aether_ui (window, enable_test_server)   // companion — bare names
+import ui                  // full — transitive canvas_* must resolve
+import ui (window, enable_test_server)   // companion — bare names
 import vg.live (vg)
 import vg                         // full — vg_live uses vg.scene_new transitively
 import vg (view_box, circle, rect, text, fill, stroke, on_click_recolor)

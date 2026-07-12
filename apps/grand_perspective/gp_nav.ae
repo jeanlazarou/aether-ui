@@ -19,7 +19,7 @@ import std.list
 import std.string
 import std.math
 import std.fs
-import aether_ui (set_button_label, set_hidden, set_toggle)
+import ui (set_button_label, set_hidden, set_toggle)
 import gp_model
 import gp_model (FileEntry, TypeStat, to_float, clip_name, ext_label, fmt_size,
     pct_of_parent, dbg_on)

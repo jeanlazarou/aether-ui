@@ -16,17 +16,17 @@
 // Demonstrates the AeVG interactive surface end to end:
 //   • a per-frame DRAW canvas_region that re-renders from game state each tick
 //   • the game loop driven by the region's monotonic `t` (ms) — drop on interval
-//   • aether_ui.canvas_on_key — keyboard input (arrows / WASD / space) routed
+//   • ui.canvas_on_key — keyboard input (arrows / WASD / space) routed
 //     into the game (the keyboard primitive built for this port)
-//   • aether_ui.canvas_on_click — tap-to-play (left/centre/right thirds)
+//   • ui.canvas_on_click — tap-to-play (left/centre/right thirds)
 //   • std.intarr for the flat board + the tetromino shape tables
 //
 // Run: DISPLAY=:0 ./target/build/aether_ui/bin/falling_blocks
 //   New Game button (or any key) starts; arrows/WASD move, Space hard-drops,
 //   P/Esc pause.
 
-import aether_ui
-import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
+import ui
+import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_key)
 import vg.live (vg, canvas_region)
 import vg

@@ -8,8 +8,8 @@
 //
 //   ./build.sh aevg/example_aevg_live_png.ae build/aevg_live_png && ./build/aevg_live_png
 
-import aether_ui
-import aether_ui (canvas_create, canvas_write_png, canvas_clear)
+import ui
+import ui (canvas_create, canvas_write_png, canvas_clear)
 import vg.live (vg, video_region, canvas_region, vg_flush_live)
 import vg
 import vg (view_box)

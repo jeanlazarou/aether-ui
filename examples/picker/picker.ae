@@ -3,29 +3,29 @@
 // Build and run:
 //   ./build.sh example_picker.ae build/perry_picker
 
-import aether_ui
+import ui
 import std.list
 
 extern println(s: string)
 
 main() {
-    selected = aether_ui.ui_state(0)
+    selected = ui.ui_state(0)
 
-    aether_ui.window("Color Picker", 300, 200) {
-    root = aether_ui.vstack(10) {
-        aether_ui.text("Choose a color:")
+    ui.window("Color Picker", 300, 200) {
+    root = ui.vstack(10) {
+        ui.text("Choose a color:")
 
-        colors = aether_ui.picker() callback |idx: int| {
-            aether_ui.ui_set(selected, idx)
+        colors = ui.picker() callback |idx: int| {
+            ui.ui_set(selected, idx)
             println("Selected index: ${idx}")
         }
-        aether_ui.picker_add(colors, "Red")
-        aether_ui.picker_add(colors, "Green")
-        aether_ui.picker_add(colors, "Blue")
-        aether_ui.picker_add(colors, "Yellow")
+        ui.picker_add(colors, "Red")
+        ui.picker_add(colors, "Green")
+        ui.picker_add(colors, "Blue")
+        ui.picker_add(colors, "Yellow")
 
-        aether_ui.divider()
-        aether_ui.text_bound(selected, "Selected index: ", "")
+        ui.divider()
+        ui.text_bound(selected, "Selected index: ", "")
     }
 
     }

@@ -1,7 +1,7 @@
 // aeb build descriptor for the AeVG analog clock — building aether-ui through
 // aeb instead of the hand-rolled build.sh.
 //
-// aether-ui's Aether surface (aether_ui.ae / live.ae / the AeVG grammar_*
+// aether-ui's Aether surface (ui.ae / live.ae / the AeVG grammar_*
 // modules) is a THIN wrapper over a large C backend — its function bodies are
 // `extern` declarations of the C ABI in the platform backend files. So we set
 // no_closure_regen(): aeb compiles the entry with plain `aetherc` (tolerates

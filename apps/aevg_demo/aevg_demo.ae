@@ -5,7 +5,7 @@
 // which forwards to the real aether_ui canvas primitives. Proves
 // the adapter links against the real backend and renders live.
 
-import aether_ui
+import ui
 import vg.backend.gtk
 import vg.svg.loader
 import std.string
@@ -15,14 +15,14 @@ string_concat3(a: string, b: string) -> string {
 }
 
 main() {
-    root = aether_ui.root_vstack(10) {
-        title = aether_ui.text("AeVG — SVG on a real canvas")
-        aether_ui.style_font_size(title, 18)
-        aether_ui.style_font_bold(title)
-        aether_ui.divider()
+    root = ui.root_vstack(10) {
+        title = ui.text("AeVG — SVG on a real canvas")
+        ui.style_font_size(title, 18)
+        ui.style_font_bold(title)
+        ui.divider()
 
         // Real canvas + AeVG adapter backend around its id.
-        c = aether_ui.canvas_create(400, 300)
+        c = ui.canvas_create(400, 300)
         backend = gtk.gtk_backend_new(c)
 
         svg = "<svg viewBox='0 0 400 300'>"
@@ -45,8 +45,8 @@ main() {
         // load_svg parses, builds the context, and dispatches every
         // shape through the adapter onto the real canvas `c`.
         _ctx = loader.load_svg(backend, svg, 400.0, 300.0)
-        aether_ui.canvas_redraw(c)
+        ui.canvas_redraw(c)
     }
-    aether_ui.margin(root, 12, 12, 12, 12)
-    aether_ui.app_run("AeVG Demo", 440, 380, root)
+    ui.margin(root, 12, 12, 12, 12)
+    ui.app_run("AeVG Demo", 440, 380, root)
 }

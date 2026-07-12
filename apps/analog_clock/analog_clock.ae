@@ -15,8 +15,8 @@
 //
 // Headless one-frame proof: analog_clock_png.
 
-import aether_ui
-import aether_ui (window, enable_test_server)
+import ui
+import ui (window, enable_test_server)
 import vg.live
 import vg.live (vg, canvas_region)
 import vg

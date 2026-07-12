@@ -74,8 +74,8 @@
 //     computable coords); the map menu via POST /widget/{cw}/context_menu.
 //     Under Xvfb use GSK_RENDERER=cairo. See tests/grand_perspective/.
 
-import aether_ui
-import aether_ui (window, vstack, hstack, btn, text, enable_test_server,
+import ui
+import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_key, timer,
     toggle, toggle_group,
     context_menu_item, clipboard_write, margin_of)
@@ -125,9 +125,9 @@ tick(s: *AppState) {
     }
     if s.dirty == 1 {
         if s.cid != 0 {
-            aether_ui.canvas_clear(s.cid)
+            ui.canvas_clear(s.cid)
             vg_flush_live(s.scene, s.cid, s.frame_t)
-            aether_ui.canvas_redraw(s.cid)
+            ui.canvas_redraw(s.cid)
             s.dirty = 0
         }
     }

@@ -19,8 +19,8 @@
 //
 //   DISPLAY=:0 ./build/boing
 
-import aether_ui
-import aether_ui (window, enable_test_server)
+import ui
+import ui (window, enable_test_server)
 import vg.live (vg, video_region, video_source)
 import vg
 import vg (view_box, rect, fill)

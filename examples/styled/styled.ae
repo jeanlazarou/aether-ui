@@ -3,88 +3,88 @@
 // Build and run:
 //   ./build.sh example_styled.ae build/perry_styled
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    aether_ui.window("Styled Demo", 500, 600) {
-    root = aether_ui.vstack(0) {
+    ui.window("Styled Demo", 500, 600) {
+    root = ui.vstack(0) {
         // Header with gradient background
-        header = aether_ui.hstack(10) {
-            title = aether_ui.text("Aether UI Styled Demo")
+        header = ui.hstack(10) {
+            title = ui.text("Aether UI Styled Demo")
             // UFCS chain — x.f(a) desugars to f(x, a); each style_* returns
             // its handle so they compose left-to-right.
             title.style_font_size(20).style_font_bold().style_text_color(1.0, 1.0, 1.0)
-            aether_ui.spacer()
+            ui.spacer()
         }
         header.style_bg_gradient(0.2, 0.4, 0.8, 0.1, 0.2, 0.6, 0).edge_insets(16, 16, 16, 16)
 
         // Form with sections
-        aether_ui.form() {
-            aether_ui.section("Personal Info") {
-                aether_ui.hstack(8) {
-                    aether_ui.text("Name:")
-                    aether_ui.textfield("Enter name") callback |val: string| {
+        ui.form() {
+            ui.section("Personal Info") {
+                ui.hstack(8) {
+                    ui.text("Name:")
+                    ui.textfield("Enter name") callback |val: string| {
                         println("Name: ${val}")
                     }
                 }
-                aether_ui.hstack(8) {
-                    aether_ui.text("Email:")
-                    aether_ui.textfield("you@example.com") callback |val: string| {
+                ui.hstack(8) {
+                    ui.text("Email:")
+                    ui.textfield("you@example.com") callback |val: string| {
                         println("Email: ${val}")
                     }
                 }
             }
 
-            aether_ui.section("Preferences") {
-                aether_ui.toggle("Dark mode") callback |active: int| {
+            ui.section("Preferences") {
+                ui.toggle("Dark mode") callback |active: int| {
                     println("Dark mode: ${active}")
                 }
-                aether_ui.toggle("Notifications") callback |active: int| {
+                ui.toggle("Notifications") callback |active: int| {
                     println("Notifications: ${active}")
                 }
             }
         }
 
-        aether_ui.divider()
+        ui.divider()
 
         // ZStack demo — overlapping elements
-        overlay = aether_ui.zstack() {
-            bg = aether_ui.vstack(0) {
-                aether_ui.spacer()
+        overlay = ui.zstack() {
+            bg = ui.vstack(0) {
+                ui.spacer()
             }
             bg.style_bg_color(0.9, 0.95, 1.0, 1.0).height(80)
 
-            label = aether_ui.text("Overlaid text on colored background")
-            aether_ui.margin_of(label, 20, 20, 20, 20)
+            label = ui.text("Overlaid text on colored background")
+            ui.margin_of(label, 20, 20, 20, 20)
         }
-        aether_ui.height(overlay, 80)
+        ui.height(overlay, 80)
 
-        aether_ui.spacer()
+        ui.spacer()
 
         // Styled buttons at the bottom
-        aether_ui.hstack(8) {
-            submit = aether_ui.btn("Submit") callback {
+        ui.hstack(8) {
+            submit = ui.btn("Submit") callback {
                 println("Submitted!")
             }
             submit.style_bg_color(0.2, 0.6, 0.3, 1.0).style_corner_radius(8)
                   .style_tooltip("Click to submit the form")
 
-            cancel = aether_ui.btn("Cancel") callback {
+            cancel = ui.btn("Cancel") callback {
                 println("Cancelled")
             }
             cancel.style_corner_radius(8).style_tooltip("Click to cancel")
 
-            aether_ui.spacer()
+            ui.spacer()
 
-            disabled_btn = aether_ui.btn("Disabled") callback {
+            disabled_btn = ui.btn("Disabled") callback {
                 println("Should not fire")
             }
-            aether_ui.style_enabled(disabled_btn, 0)
+            ui.style_enabled(disabled_btn, 0)
         }
     }
 
-    aether_ui.margin_of(root, 0, 12, 12, 12)
+    ui.margin_of(root, 0, 12, 12, 12)
     }
 }

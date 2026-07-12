@@ -16,7 +16,7 @@ exports (
 import std.list
 import std.string
 import std.os (run_capture)
-import aether_ui (set_button_label)
+import ui (set_button_label)
 import gp_model
 import gp_model (FileEntry, bump_ancestors, fmt_size)
 import gp_state

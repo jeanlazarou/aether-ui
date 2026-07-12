@@ -6,50 +6,50 @@
 //   # Then run the test script:
 //   ./test_automation.sh
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    counter = aether_ui.ui_state(0)
+    counter = ui.ui_state(0)
 
-    aether_ui.window("Testable App", 400, 400) {
-    root = aether_ui.vstack(10) {
-        aether_ui.text("Testable App")
-        aether_ui.divider()
-        aether_ui.text_bound(counter, "Count: ", "")
+    ui.window("Testable App", 400, 400) {
+    root = ui.vstack(10) {
+        ui.text("Testable App")
+        ui.divider()
+        ui.text_bound(counter, "Count: ", "")
 
-        aether_ui.hstack(5) {
-            aether_ui.btn("+1") callback {
-                aether_ui.ui_set(counter, aether_ui.ui_get(counter) + 1)
+        ui.hstack(5) {
+            ui.btn("+1") callback {
+                ui.ui_set(counter, ui.ui_get(counter) + 1)
             }
-            aether_ui.btn("-1") callback {
-                aether_ui.ui_set(counter, aether_ui.ui_get(counter) - 1)
+            ui.btn("-1") callback {
+                ui.ui_set(counter, ui.ui_get(counter) - 1)
             }
         }
 
-        aether_ui.divider()
+        ui.divider()
 
-        aether_ui.textfield("Type here...") callback |val: string| {
+        ui.textfield("Type here...") callback |val: string| {
             println("Input: ${val}")
         }
 
-        aether_ui.toggle("Accept terms") callback |active: int| {
+        ui.toggle("Accept terms") callback |active: int| {
             println("Terms: ${active}")
         }
 
-        aether_ui.spacer()
+        ui.spacer()
 
         // This button is sealed — AetherUIDriver cannot click it
-        danger = aether_ui.btn("Delete Everything") callback {
+        danger = ui.btn("Delete Everything") callback {
             println("DANGER: This should never fire from automation!")
         }
-        aether_ui.seal_widget(danger)
+        ui.seal_widget(danger)
     }
-    aether_ui.margin_of(root, 12, 12, 12, 12)
+    ui.margin_of(root, 12, 12, 12, 12)
 
     // Enable test server on port 9222 — injects "Under Remote Control" banner
-    aether_ui.enable_test_server_root(9222, root)
+    ui.enable_test_server_root(9222, root)
 
     }
 }

@@ -3,53 +3,53 @@
 // Build and run:
 //   ./build.sh example_system.ae build/perry_system
 
-import aether_ui
+import ui
 
 extern println(s: string)
 
 main() {
-    tick_count = aether_ui.ui_state(0)
+    tick_count = ui.ui_state(0)
 
-    aether_ui.window("System Demo", 400, 400) {
-    root = aether_ui.vstack(10) {
-        aether_ui.text("System Integration Demo")
-        aether_ui.divider()
+    ui.window("System Demo", 400, 400) {
+    root = ui.vstack(10) {
+        ui.text("System Integration Demo")
+        ui.divider()
 
         // Dark mode detection
-        dark = aether_ui.is_dark_mode()
+        dark = ui.is_dark_mode()
         if dark == 1 {
-            aether_ui.text("Theme: Dark mode detected")
+            ui.text("Theme: Dark mode detected")
         } else {
-            aether_ui.text("Theme: Light mode")
+            ui.text("Theme: Light mode")
         }
 
-        aether_ui.divider()
+        ui.divider()
 
         // Timer ticks display
-        aether_ui.text_bound(tick_count, "Timer ticks: ", "")
+        ui.text_bound(tick_count, "Timer ticks: ", "")
 
-        aether_ui.divider()
+        ui.divider()
 
         // Clipboard
-        aether_ui.btn("Copy to clipboard") callback {
-            aether_ui.clipboard_write("Hello from Aether UI!")
+        ui.btn("Copy to clipboard") callback {
+            ui.clipboard_write("Hello from Aether UI!")
             println("Copied to clipboard")
         }
 
         // Alert
-        aether_ui.btn("Show Alert") callback {
-            aether_ui.alert("Info", "This is a aether_ui alert!")
+        ui.btn("Show Alert") callback {
+            ui.alert("Info", "This is a aether_ui alert!")
         }
 
         // Sheet (modal dialog)
-        aether_ui.btn("Open Sheet") callback {
-            sheet = aether_ui.sheet_create("Settings", 300, 200)
-            aether_ui.sheet_present(sheet)
+        ui.btn("Open Sheet") callback {
+            sheet = ui.sheet_create("Settings", 300, 200)
+            ui.sheet_present(sheet)
         }
 
-        aether_ui.spacer()
+        ui.spacer()
     }
-    aether_ui.margin_of(root, 12, 12, 12, 12)
+    ui.margin_of(root, 12, 12, 12, 12)
 
     }
 }

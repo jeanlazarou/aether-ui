@@ -4,7 +4,7 @@
 // entry points: canvas_circle, canvas_rectangle, canvas_line,
 // canvas_path, canvas_text, canvas_raster, canvas_tappable_raster.
 // In the real port, those'll forward to aether-ui's `canvas_*` API
-// in aether_ui.ae (GTK4 / AppKit / Win32). That's Phase 1 — needs
+// in ui.ae (GTK4 / AppKit / Win32). That's Phase 1 — needs
 // a display.
 //
 // For Phase 0 (no display, fast, headless), this module provides a

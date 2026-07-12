@@ -7,7 +7,7 @@
 // relies on (overflow:hidden); the visual end-to-end is driver-verified by
 // example_aevg_clip.
 
-import aether_ui (canvas_create, canvas_clip_rect, canvas_fill_rect, canvas_write_png)
+import ui (canvas_create, canvas_clip_rect, canvas_fill_rect, canvas_write_png)
 import std.string
 
 extern exit(code: int)

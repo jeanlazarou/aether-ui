@@ -10,7 +10,7 @@
 // so this is a strict upgrade on the TS source.
 //
 // Real-backend wiring (Phase 1): a backend-side timer at ~16ms
-// (`aether_ui.timer(16, …)`) would call `tick_animations(ctx,
+// (`ui.timer(16, …)`) would call `tick_animations(ctx,
 // os.now_monotonic_ms())` once per frame. For Phase 0 testing,
 // tests advance the clock manually by calling tick_animations
 // with a synthetic now-ms.

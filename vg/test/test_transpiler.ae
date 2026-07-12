@@ -55,7 +55,7 @@ main() {
                     "circle(50.0, 50.0, 20.0)")
     assert_contains("module: fill as block modifier", out1, "fill(\"#F00\")")
     assert_contains("module: vg DSL imports", out1, "import vg.live (vg)")
-    assert_contains("module: window import", out1, "import aether_ui (window)")
+    assert_contains("module: window import", out1, "import ui (window)")
     // Old plumbing must be GONE.
     assert_not_contains("module: no map.new plumbing", out1, "map.new()")
     assert_not_contains("module: no shape factory call", out1, "shapes.shape_circle")

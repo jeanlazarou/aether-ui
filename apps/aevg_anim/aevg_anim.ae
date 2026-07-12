@@ -7,8 +7,8 @@
 //   DISPLAY=:0 ./build/aevg_anim
 // Driver-screenshot at two times to see it move (AETHER_UI_TEST_PORT=9222).
 
-import aether_ui
-import aether_ui (window, enable_test_server)
+import ui
+import ui (window, enable_test_server)
 import vg.live (vg)
 import vg
 import vg (view_box, circle, rect, fill, animate)
