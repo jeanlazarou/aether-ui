@@ -53,6 +53,16 @@ esac
 #      so a stuck message loop can't stall the script indefinitely.
 # Combined worst-case runtime: ~15s including startup + cleanup.
 
+# On MSYS the shell job PID is NOT the Windows PID of the exe, so a leftover
+# instance from a prior aborted run would hold the port + the exe file lock
+# (a later gcc then fails with "Permission denied"). Kill any stragglers by
+# image name before launching.
+case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+        taskkill //F //IM "$(basename "$APP")" >/dev/null 2>&1 || true
+        ;;
+esac
+
 AETHER_UI_HEADLESS=1 AETHER_UI_TEST_PORT="$PORT" "$APP" > /tmp/driver_app.log 2>&1 &
 APP_PID=$!
 
@@ -61,9 +71,9 @@ cleanup() {
         MINGW*|MSYS*|CYGWIN*)
             # On Git Bash / MSYS, `wait` on a Windows-terminated process can
             # hang because the MSYS PID wrapper doesn't observe the Windows
-            # process exit. taskkill //F is synchronous enough that the
-            # process is gone by the time it returns — skip the wait.
-            taskkill //F //PID "$APP_PID" >/dev/null 2>&1
+            # process exit. The job PID isn't the Windows PID either, so kill
+            # by IMAGE NAME (//IM) — that's what actually reaps the exe.
+            taskkill //F //IM "$(basename "$APP")" >/dev/null 2>&1
             ;;
         *)
             kill "$APP_PID" 2>/dev/null
