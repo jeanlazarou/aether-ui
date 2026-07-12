@@ -1,0 +1,65 @@
+// aevg/test_raster_roundtrip.ae — base64 RGBA round-trip.
+//
+// render_as_raster encodes an RGBA buffer to base64 (via
+// utils.base64_encode_bytes) and dispatches it as the
+// `rawPixels` opt; the GTK adapter's canvas_raster decodes it back
+// (cryptography.base64_decode) and blits via canvas_draw_image.
+//
+// This Phase-0 test verifies the encode→decode round-trip recovers
+// the exact bytes — the headless half of the raster path. The blit
+// itself needs a display (covered by the GTK demo build + run).
+
+import std.bytes
+import std.string
+import std.cryptography
+import vg.grammar.utils
+
+extern exit(code: int)
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+main() {
+    println("=== test_raster_roundtrip ===")
+
+    // Build a tiny 2×2 RGBA buffer with distinct bytes.
+    //   px(0,0) = (10, 20, 30, 255)
+    //   px(1,0) = (40, 50, 60, 128)
+    //   px(0,1) = (70, 80, 90, 200)
+    //   px(1,1) = (100,110,120, 64)
+    n = 16  // 2*2*4
+    buf = bytes.new(n)
+    bytes.set(buf, n - 1, 0)  // extend to length n
+    vals = [10, 20, 30, 255, 40, 50, 60, 128, 70, 80, 90, 200, 100, 110, 120, 64]
+    i = 0
+    while i < n {
+        bytes.set(buf, i, vals[i])
+        i = i + 1
+    }
+
+    // Encode as render_as_raster does.
+    b64 = utils.base64_encode_bytes(buf, n)
+    assert_eq_int("base64 non-empty", string.length(b64) > 0, 1)
+
+    // Decode as the adapter does.
+    decoded, dn, e = cryptography.base64_decode(b64)
+    assert_eq_int("decode ok (no err)", string.length(e), 0)
+    assert_eq_int("decoded length = 16", dn, 16)
+
+    // Verify every byte round-trips. The decoded value is a binary
+    // string; read bytes via string.char_at (byte-level).
+    j = 0
+    while j < n {
+        got = string.char_at(decoded, j)
+        if got != vals[j] {
+            println("  FAIL: byte ${j}: got ${got} want ${vals[j]}")
+            exit(1)
+        }
+        j = j + 1
+    }
+    println("  PASS: all 16 bytes round-trip exactly")
+
+    println("=== test_raster_roundtrip passed ===")
+}

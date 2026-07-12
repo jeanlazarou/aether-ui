@@ -1,0 +1,389 @@
+// aevg/animations.ae — animation manager (Tier C).
+//
+// Port of the animation-manager sub-system from
+// cosyne/src/cvg/grammar-context.ts. Cleanly separable from the
+// rest of the context state — held here as its own module to keep
+// context.ae lean.
+//
+// Time source: os.now_monotonic_ms (v0.192). Monotonic is actually
+// better than Date.now for animation — immune to NTP/clock jumps —
+// so this is a strict upgrade on the TS source.
+//
+// Real-backend wiring (Phase 1): a backend-side timer at ~16ms
+// (`aether_ui.timer(16, …)`) would call `tick_animations(ctx,
+// os.now_monotonic_ms())` once per frame. For Phase 0 testing,
+// tests advance the clock manually by calling tick_animations
+// with a synthetic now-ms.
+//
+// Each animation has a `tick_fn: ptr` — a boxed closure that the
+// manager invokes with the eased t in [0, 1]. The closure carries
+// whatever per-animation state it needs (start/end values, element
+// handle, target property name) — the manager just plumbs `t`.
+//
+// API:
+//   add_animation(ctx, element, tick_fn, duration_ms, delay_ms,
+//                 easing_fn, loop, yoyo, now_ms) -> *AnimationHandle
+//     — registers a new animation, returns its handle. easing_fn is
+//       a ptr to one of the easing.ae easings (or any fn: float→float
+//       in [0,1]→[0,1]). loop & yoyo are int (0/1).
+//   remove_animation(ctx, handle) — stops & removes by id
+//   stop_all_animations(ctx)
+//   is_animating(ctx) -> int
+//   animation_count(ctx) -> int
+//   tick_animations(ctx, now_ms) — call once per frame
+//
+//   handle_id(h) -> int
+//   handle_stopped(h) -> int
+//   handle_completed(h) -> int
+//
+// AnimationHandle is opaque to callers; tests check id/stopped/
+// completed via the accessor functions.
+
+exports (
+    add_animation, add_animation_impl, manager_new,
+    remove_animation, stop_all_animations,
+    is_animating, animation_count, tick_animations,
+    handle_id, handle_stopped, handle_completed,
+    invoke_tick_el
+)
+
+import std.list
+import std.math
+
+extern malloc(size: int) -> ptr
+
+// ─── AnimationHandle struct ──────────────────────────────────────
+//
+// Returned to callers. Provides .stop() semantics + completion
+// inspection. The TS source also has a `.then()` promise — Aether
+// doesn't have promises, so a polling `handle_completed(h)`
+// approach replaces it.
+
+struct AnimationHandle {
+    id: int
+    stopped: int
+    completed: int
+}
+
+mk_handle(id: int) -> *AnimationHandle {
+    h = malloc(16) as *AnimationHandle
+    h.id = id
+    h.stopped = 0
+    h.completed = 0
+    return h
+}
+
+handle_id(p: ptr) -> int        { h = p as *AnimationHandle; return h.id }
+handle_stopped(p: ptr) -> int   { h = p as *AnimationHandle; return h.stopped }
+handle_completed(p: ptr) -> int { h = p as *AnimationHandle; return h.completed }
+
+// ─── ActiveAnimation struct ──────────────────────────────────────
+//
+// Internal: per-animation state. The fields are read/written by
+// tick_animations. tick_fn and easing_fn are both `ptr` because
+// the v0.193+1 fn ↔ ptr coercion fix doesn't reach struct-field
+// assignment (filed as a follow-up to fn_ptr_coercion.md).
+// Storing the ptr is fine; calling-via-fn-param unboxes correctly.
+
+struct ActiveAnimation {
+    handle: ptr            // *AnimationHandle
+    element: ptr           // *AevgElement (opaque)
+    tick_fn: ptr           // boxed closure: fn(float) — receives raw t in [0,1]
+    start_time_ms: long    // when this animation should first tick (start + delay)
+    duration_ms: long
+    loop: int              // 0/1
+    yoyo: int              // 0/1
+}
+
+mk_active(handle: ptr, element: ptr, tick_fn: ptr,
+          start_time_ms: long, duration_ms: long,
+          loop: int, yoyo: int) -> *ActiveAnimation {
+    // 3 ptr + 2 long + 2 int + padding → 56-64 bytes; 80 is safe.
+    a = malloc(80) as *ActiveAnimation
+    a.handle = handle
+    a.element = element
+    a.tick_fn = tick_fn
+    a.start_time_ms = start_time_ms
+    a.duration_ms = duration_ms
+    a.loop = loop
+    a.yoyo = yoyo
+    return a
+}
+
+// ─── AnimationManager attached to context ───────────────────────
+//
+// Lives outside CvgContext to avoid bloating the context struct
+// further. Stored separately; tests get it via animation_manager(ctx)
+// and pass it around. In the eventual full wiring, grammar_context's
+// new_context will create one and store the pointer; for now we
+// use a lazy-init via a per-context map (sigh, no module-level vars).
+//
+// Cleanest approach for this commit: the manager is a top-level
+// object the caller threads through, since grammar_context doesn't
+// know about it yet. Tests build ctx + manager separately. When
+// context.new_context() is extended to wire one in, this
+// will move under the hood — but tests stay valid.
+
+struct AnimationManager {
+    animations: ptr        // std.list of *ActiveAnimation
+    next_id: int
+}
+
+mk_manager() -> *AnimationManager {
+    m = malloc(16) as *AnimationManager
+    m.animations = list.new()
+    m.next_id = 1
+    return m
+}
+
+// We tuck the manager into the context's `tracked_elements` field?
+// No — that's reserved for tracked CvgElements. Instead, add a
+// fresh `register_animation_manager` API to context. But
+// extending the context struct mid-stream would force the malloc
+// size to change again, and isn't strictly necessary — the test
+// can hold the manager directly. For real wiring, the simplest
+// design: register at the context level via map-keyed storage.
+//
+// For Phase 0 simplicity, this module exposes a manager_new()
+// helper and threads it explicitly. The user-facing API takes
+// the manager as a separate parameter alongside ctx.
+
+manager_new() -> ptr { return mk_manager() }
+
+// ─── Add an animation ────────────────────────────────────────────
+//
+// Two call shapes:
+//   1. With a trailing `callback |t: float| { … }` block — the
+//      idiomatic Aether form. tick_fn is the closure body.
+//   2. Bare named function via add_animation_fn (below) — for cases
+//      that don't fit the trailing-block shape.
+
+add_animation(mgr: ptr, element: ptr,
+              duration_ms: long, delay_ms: long,
+              loop: int, yoyo: int,
+              now_ms: long, tick_fn: fn) -> ptr {
+    return add_animation_impl(mgr, element, tick_fn,
+                              duration_ms, delay_ms, loop, yoyo, now_ms)
+}
+
+// Internal: tick_fn arrives as `ptr` (the fn → ptr coercion at the
+// call boundary boxes it). We re-thread through impl rather than
+// duplicating logic.
+add_animation_impl(mgr: ptr, element: ptr, tick_fn: ptr,
+                   duration_ms: long, delay_ms: long,
+                   loop: int, yoyo: int,
+                   now_ms: long) -> ptr {
+    m = mgr as *AnimationManager
+    id = m.next_id
+    m.next_id = id + 1
+    h = mk_handle(id)
+    anim = mk_active(h, element, tick_fn,
+                     now_ms + delay_ms, duration_ms,
+                     loop, yoyo)
+    _ = list.add(m.animations, anim)
+    return h
+}
+
+// ─── Remove / Stop ───────────────────────────────────────────────
+
+remove_animation(mgr: ptr, handle: ptr) {
+    m = mgr as *AnimationManager
+    h = handle as *AnimationHandle
+    h.stopped = 1
+    // Walk + remove by id. std.list doesn't have filter — manual.
+    n = list.size(m.animations)
+    i = n - 1
+    while i >= 0 {
+        item, _ = list.get(m.animations, i)
+        a = item as *ActiveAnimation
+        ah = a.handle as *AnimationHandle
+        if ah.id == h.id {
+            list.remove(m.animations, i)
+        }
+        i = i - 1
+    }
+}
+
+stop_all_animations(mgr: ptr) {
+    m = mgr as *AnimationManager
+    n = list.size(m.animations)
+    i = 0
+    while i < n {
+        item, _ = list.get(m.animations, i)
+        a = item as *ActiveAnimation
+        h = a.handle as *AnimationHandle
+        h.stopped = 1
+        i = i + 1
+    }
+    list.clear(m.animations)
+}
+
+is_animating(mgr: ptr) -> int {
+    m = mgr as *AnimationManager
+    if list.size(m.animations) > 0 { return 1 }
+    return 0
+}
+
+animation_count(mgr: ptr) -> int {
+    m = mgr as *AnimationManager
+    return list.size(m.animations)
+}
+
+// ─── tick_animations: per-frame driver ───────────────────────────
+//
+// For each active animation:
+//   1. Skip if stopped (also collect for removal).
+//   2. Skip if not yet started (now < start_time).
+//   3. Compute raw t = elapsed / duration (clamped to 1).
+//   4. Yoyo: cycleTime in [0, 2*duration); t = forward or reverse.
+//   5. Loop: t = (elapsed % duration) / duration.
+//   6. Apply easing → eased t.
+//   7. Invoke tick_fn(eased_t).
+//   8. If not loop && not yoyo && elapsed >= duration: snap to
+//      easing(1), mark completed, remove.
+//
+// Returns the number of frames invoked (for tests to assert
+// "the tick fn ran N times across this many ticks").
+
+// Helper: invoke a stored ptr as a fn(float) → "". The v0.193+1
+// fn ↔ ptr fix unboxes a ptr value when it's passed into a `fn`-typed
+// parameter at a call site, so this two-step works.
+invoke_tick(p: ptr, t: float) {
+    inner_call_tick(p, t)
+}
+
+inner_call_tick(cb: fn, t: float) {
+    cb(t)
+}
+
+// Element-passing tick: the closure receives (element, t), so it need NOT
+// capture the element. Capturing a block-local element ptr into a tick that
+// fires later (from the live timer, after the vg{} block has returned) reads
+// freed closure state and segfaults — passing the element through dodges it.
+// The engine stores a.element already; this just threads it to the closure.
+invoke_tick_el(p: ptr, el: ptr, t: float) {
+    inner_call_tick_el(p, el, t)
+}
+
+inner_call_tick_el(cb: fn, el: ptr, t: float) {
+    cb(el, t)
+}
+
+// API note: the animation manager passes the RAW t (in [0, 1]) to
+// the tick closure. The closure is responsible for applying its
+// chosen easing function. This sidesteps an Aether codegen bug:
+// invoking a `fn`-typed param that *returns* a float emits an
+// `int(*)(...)` cast in the unbox trampoline, truncating the
+// double result to garbage. Until that's fixed (filed as a follow-
+// up to aether/fn_ptr_coercion.md), the manager doesn't unbox
+// any easing-fn-returning-float closures.
+//
+// Practical upshot: the API is closer to React-spring/motion-one
+// conventions anyway — the tick closure computes the eased value
+// itself:
+//   add_animation(mgr, el, 1000, 0, 0, 0, now) callback |t: float| {
+//       eased = easing.ease_in_out(t)
+//       el_set_x(el, start + (end - start) * eased)
+//   }
+
+tick_animations(mgr: ptr, now_ms: long) -> int {
+    m = mgr as *AnimationManager
+    n = list.size(m.animations)
+    invoked = 0
+
+    // First pass: walk forward, tick each anim, record indices to
+    // remove. (We rebuild the list afterward; in-place removal
+    // while walking is fragile.)
+    to_remove = list.new()
+
+    i = 0
+    while i < n {
+        item, _ = list.get(m.animations, i)
+        a = item as *ActiveAnimation
+        h = a.handle as *AnimationHandle
+
+        if h.stopped == 1 {
+            // Already stopped — collect for cleanup.
+            _ = list.add(to_remove, a)
+        } else {
+            if now_ms >= a.start_time_ms {
+                elapsed = now_ms - a.start_time_ms
+                raw_t = 0.0
+                if a.yoyo == 1 {
+                    cycle_total = a.duration_ms * 2
+                    cycle_time = elapsed - (elapsed / cycle_total) * cycle_total
+                    if cycle_time <= a.duration_ms {
+                        raw_t = cycle_time
+                        raw_t = raw_t / a.duration_ms
+                    } else {
+                        raw_t = cycle_time
+                        raw_t = 2.0 - raw_t / a.duration_ms
+                    }
+                } else {
+                    if a.loop == 1 {
+                        if elapsed >= a.duration_ms {
+                            wrap = elapsed - (elapsed / a.duration_ms) * a.duration_ms
+                            raw_t = wrap
+                            raw_t = raw_t / a.duration_ms
+                        } else {
+                            raw_t = elapsed
+                            raw_t = raw_t / a.duration_ms
+                        }
+                    } else {
+                        if elapsed >= a.duration_ms { raw_t = 1.0 }
+                        else {
+                            raw_t = elapsed
+                            raw_t = raw_t / a.duration_ms
+                        }
+                    }
+                }
+
+                // Pass raw t in [0, 1]; closure applies easing.
+                invoke_tick_el(a.tick_fn, a.element, raw_t)
+                invoked = invoked + 1
+
+                // Completion check (non-looping, non-yoyo).
+                if a.loop == 0 {
+                    if a.yoyo == 0 {
+                        if elapsed >= a.duration_ms {
+                            // Snap to final value: t = 1.0 (raw;
+                            // closure applies easing(1) itself).
+                            invoke_tick_el(a.tick_fn, a.element, 1.0)
+                            h.completed = 1
+                            _ = list.add(to_remove, a)
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    // Second pass: remove every collected entry. Walk indices from
+    // the back to avoid shift-on-remove issues.
+    rn = list.size(to_remove)
+    j = 0
+    while j < rn {
+        rm_item, _ = list.get(to_remove, j)
+        rm_anim = rm_item as *ActiveAnimation
+        rm_h = rm_anim.handle as *AnimationHandle
+        rm_id = rm_h.id
+        // Find and remove by id.
+        cur_n = list.size(m.animations)
+        k = cur_n - 1
+        while k >= 0 {
+            cur_item, _ = list.get(m.animations, k)
+            cur_a = cur_item as *ActiveAnimation
+            cur_h = cur_a.handle as *AnimationHandle
+            if cur_h.id == rm_id {
+                list.remove(m.animations, k)
+                k = 0 - 1  // break
+            } else {
+                k = k - 1
+            }
+        }
+        j = j + 1
+    }
+
+    return invoked
+}

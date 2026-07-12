@@ -1,0 +1,213 @@
+// aevg/test_transpiler.ae — SVG → editable AeVG `vg{}` source emission.
+//
+// The transpiler now emits the elegant DSL-with-Scope form (the same shape a
+// human authors in example_vg.ae), NOT the old map.new/map.put plumbing:
+//
+//   main() {
+//       window("name", 400, 300) {
+//           vg(view_box(0.0, 0.0, 100.0, 100.0), 400, 300) {
+//               circle(50.0, 50.0, 20.0) { fill("#F00") }
+//           }
+//       }
+//   }
+//
+// Tests assert the generated string contains the expected fragments. A full
+// compile-the-output round-trip is exercised by the parity harness
+// (aevg/test/svg-compare-aevg.py --transpile); here we pin the emitted shape.
+
+import std.string
+import vg.svg.transpiler
+
+extern exit(code: int)
+
+assert_contains(label: string, haystack: string, needle: string) {
+    if string.contains(haystack, needle) == 1 {
+        println("  PASS: ${label}")
+    } else {
+        println("  FAIL: ${label}")
+        println("    wanted substring: '${needle}'")
+        exit(1)
+    }
+}
+
+assert_not_contains(label: string, haystack: string, needle: string) {
+    if string.contains(haystack, needle) == 0 {
+        println("  PASS: ${label}")
+    } else {
+        println("  FAIL: ${label}: unexpectedly found '${needle}'")
+        exit(1)
+    }
+}
+
+main() {
+    println("=== test_transpiler ===")
+
+    // ─── Module wrapper: window + vg + a styled circle ────────
+    svg1 = "<svg viewBox='0 0 100 100' width='400' height='300'><circle cx='50' cy='50' r='20' fill='#F00'/></svg>"
+    out1 = transpiler.transpile_svg_to_module(svg1, "my_svg")
+
+    assert_contains("module: main() wrapper", out1, "main() {")
+    assert_contains("module: window with name + px size", out1,
+                    "window(\"my_svg\", 400, 300) {")
+    assert_contains("module: vg + typed view_box", out1,
+                    "vg(view_box(0.0, 0.0, 100.0, 100.0), 400, 300) {")
+    assert_contains("module: circle positional geometry", out1,
+                    "circle(50.0, 50.0, 20.0)")
+    assert_contains("module: fill as block modifier", out1, "fill(\"#F00\")")
+    assert_contains("module: vg DSL imports", out1, "import vg.live (vg)")
+    assert_contains("module: window import", out1, "import aether_ui (window)")
+    // Old plumbing must be GONE.
+    assert_not_contains("module: no map.new plumbing", out1, "map.new()")
+    assert_not_contains("module: no shape factory call", out1, "shapes.shape_circle")
+    assert_not_contains("module: no backend param fn", out1, "(backend: ptr) -> ptr")
+
+    // ─── Default fn/window name when empty ────────────────────
+    out_def = transpiler.transpile_svg_to_module(svg1, "")
+    assert_contains("default name render_svg", out_def, "window(\"render_svg\"")
+
+    // ─── Body-only form: just the vg(...) { … } scope ─────────
+    svg2 = "<svg viewBox='0 0 200 200'><rect x='10' y='10' width='40' height='30' fill='blue'/><circle cx='100' cy='100' r='25'/></svg>"
+    out2 = transpiler.transpile_svg(svg2)
+    assert_contains("body: vg opener", out2, "vg(view_box(0.0, 0.0, 200.0, 200.0)")
+    assert_contains("body: rect positional", out2, "rect(10.0, 10.0, 40.0, 30.0)")
+    assert_contains("body: rect fill", out2, "fill(\"blue\")")
+    assert_contains("body: bare circle, no style block", out2, "circle(100.0, 100.0, 25.0)\n")
+    assert_not_contains("body: no main wrapper", out2, "main() {")
+
+    // ─── stroke + stroke-width → stroke("…", w) ───────────────
+    svg_s = "<svg viewBox='0 0 100 100'><rect x='1' y='2' width='3' height='4' stroke='#003' stroke-width='2'/></svg>"
+    out_s = transpiler.transpile_svg(svg_s)
+    assert_contains("stroke: color + width", out_s, "stroke(\"#003\", 2.0)")
+
+    // ─── stroke with no width defaults to 1.0 ─────────────────
+    svg_s1 = "<svg viewBox='0 0 100 100'><line x1='0' y1='0' x2='9' y2='9' stroke='red'/></svg>"
+    out_s1 = transpiler.transpile_svg(svg_s1)
+    assert_contains("line: positional", out_s1, "line(0.0, 0.0, 9.0, 9.0)")
+    assert_contains("stroke: default width 1.0", out_s1, "stroke(\"red\", 1.0)")
+
+    // ─── unit suffix on stroke-width → numeric prefix only ────
+    // "1px" must become 1.0 (not the invalid literal "1px.0"); this kept the
+    // generated source from compiling on real Inkscape exports.
+    svg_px = "<svg viewBox='0 0 100 100'><rect x='1' y='1' width='2' height='2' stroke='#000' stroke-width='1px'/></svg>"
+    out_px = transpiler.transpile_svg(svg_px)
+    assert_contains("stroke-width unit stripped", out_px, "stroke(\"#000\", 1.0)")
+    assert_not_contains("no invalid px literal", out_px, "1px.0")
+
+    // ─── Path normalization at transpile time ─────────────────
+    svg3 = "<svg viewBox='0 0 100 100'><path d='M 10 10 l 20 0 l 0 20 Z' fill='green'/></svg>"
+    out3 = transpiler.transpile_svg(svg3)
+    assert_contains("path: verb + d string", out3, "path(\"")
+    assert_contains("path: fill", out3, "fill(\"green\")")
+    assert_contains("path: normalized to absolute L 30 10", out3, "L 30 10")
+    assert_not_contains("path: no relative l in d", out3, "l 20 0")
+
+    // ─── Omitted attrs (id, xmlns) don't break geometry ───────
+    svg4 = "<svg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'><circle id='c1' cx='5' cy='5' r='2'/></svg>"
+    out4 = transpiler.transpile_svg(svg4)
+    assert_contains("omit: circle geometry intact", out4, "circle(5.0, 5.0, 2.0)")
+
+    // ─── Text content as positional string arg ────────────────
+    svg5 = "<svg viewBox='0 0 100 100'><text x='10' y='20' fill='#222'>Hello</text></svg>"
+    out5 = transpiler.transpile_svg(svg5)
+    assert_contains("text: positional x,y,content", out5, "text(10.0, 20.0, \"Hello\")")
+    assert_contains("text: fill modifier", out5, "fill(\"#222\")")
+
+    // ─── inline style="fill:…;stroke:…" parsed ────────────────
+    svg_in = "<svg viewBox='0 0 100 100'><circle cx='1' cy='1' r='1' style='fill:teal;stroke:black'/></svg>"
+    out_in = transpiler.transpile_svg(svg_in)
+    assert_contains("inline-style: fill", out_in, "fill(\"teal\")")
+    assert_contains("inline-style: stroke", out_in, "stroke(\"black\"")
+
+    // ─── shape-level transform → transform("…") modifier ──────
+    svg_tf = "<svg viewBox='0 0 100 100'><path d='M 0 0 L 10 0' transform='scale(0.1)'/></svg>"
+    out_tf = transpiler.transpile_svg(svg_tf)
+    assert_contains("shape transform modifier", out_tf, "transform(\"scale(0.1)\")")
+
+    // ─── <g transform> composes onto children (headless harness form) ─
+    // The PNG-harness (explicit-node) form flattens groups, folding the g's
+    // transform onto each descendant — outer transform first per SVG spec.
+    svg_gt = "<svg viewBox='0 0 100 100'><g transform='translate(50,50)'><rect x='0' y='0' width='4' height='4' transform='rotate(30)'/></g></svg>"
+    out_gt = transpiler.transpile_svg_to_png_harness(svg_gt)
+    assert_contains("g transform composed onto child", out_gt,
+                    "vg.transform(c0, \"translate(50,50) rotate(30)\")")
+
+    // ─── <g opacity> composes onto children (multiplies when nested) ──
+    // The flatten has no group layer, so the g's opacity must ride on each
+    // descendant shape (ubuntu.svg's shadow group <g opacity='0.125'>).
+    svg_go = "<svg viewBox='0 0 100 100'><g opacity='0.125'><circle cx='5' cy='5' r='2' fill='red'/></g></svg>"
+    out_go = transpiler.transpile_svg_to_png_harness(svg_go)
+    assert_contains("g opacity onto child", out_go, "vg.opacity(c0, 0.125)")
+
+    // ─── root <svg> presentation attrs inherit to descendants ──
+    // A stroke on the root <svg> cascades to children that carry only
+    // stroke-width (caution.svg: outline + exclamation-bar paths lost their
+    // stroke without this). The flatten seeds inherited paint from the root.
+    svg_rs = "<svg viewBox='0 0 100 100' stroke='#000'><path d='M10,10 L90,90' stroke-width='9'/></svg>"
+    out_rs = transpiler.transpile_svg_to_png_harness(svg_rs)
+    assert_contains("root stroke inherited to child", out_rs, "vg.stroke(c0, \"#000\", 9.0)")
+
+    // ─── harness emits the intrinsic viewport (width/height ≠ viewBox AR) ──
+    // So the viewBox→viewport→canvas two-step letterboxes; without it the
+    // content zooms/crops (compuserver/gump-bench/faux-art).
+    svg_vp = "<svg width='200' height='100' viewBox='0 0 100 100'><rect x='0' y='0' width='100' height='100' fill='red'/></svg>"
+    out_vp = transpiler.transpile_svg_to_png_harness(svg_vp)
+    assert_contains("harness sets intrinsic viewport", out_vp,
+                    "factories.opts_set_viewport(opts, 200")
+
+    // ─── <ellipse> → path() with a two-arc d ──────────────────
+    svg_el = "<svg viewBox='0 0 100 100'><ellipse cx='50' cy='50' rx='40' ry='25' fill='#4488cc'/></svg>"
+    out_el = transpiler.transpile_svg(svg_el)
+    assert_contains("ellipse → path", out_el, "path(\"M ")
+    assert_contains("ellipse: normalized cubic (no raw A)", out_el, " C ")
+    assert_not_contains("ellipse: no ellipse verb", out_el, "ellipse(")
+    assert_contains("ellipse: fill preserved", out_el, "fill(\"#4488cc\")")
+
+    // ─── <polyline>/<polygon> → path() with points as M/L ─────
+    // Both were silently dropped before (shapes-polyline-01-t blank): the
+    // shape lists omitted poly, so they fell through to container-recurse.
+    svg_pl = "<svg viewBox='0 0 100 100'><polyline points='0,0 10,0 10,10' fill='none' stroke='red'/></svg>"
+    out_pl = transpiler.transpile_svg(svg_pl)
+    assert_contains("polyline → path", out_pl, "path(\"M 0 0")
+    assert_not_contains("polyline: open (no Z)", out_pl, "Z\")")
+    svg_pg = "<svg viewBox='0 0 100 100'><polygon points='0,0 10,0 10,10' fill='blue'/></svg>"
+    out_pg = transpiler.transpile_svg(svg_pg)
+    assert_contains("polygon → path", out_pg, "path(\"M 0 0")
+    assert_contains("polygon: closed (Z)", out_pg, "Z\")")
+    // harness (explicit-node) form must emit them too.
+    out_plh = transpiler.transpile_svg_to_png_harness(svg_pl)
+    assert_contains("harness polyline → vg.path", out_plh, "vg.path(node, \"M 0 0")
+
+    // ─── rounded rect (rx/ry) → path() with arc corners ───────
+    // vg.rect has no radius arg, so a rounded rect must become a path or it
+    // renders square (rectangles.svg / rfeed.svg lost their rounded frame).
+    svg_rr = "<svg viewBox='0 0 200 200'><rect x='25' y='25' width='150' height='150' rx='20' ry='20' fill='yellow'/></svg>"
+    out_rr = transpiler.transpile_svg(svg_rr)
+    assert_contains("rounded rect → path", out_rr, "path(\"M ")
+    assert_contains("rounded rect: arc corners", out_rr, " A 20 20 0 0 1 ")
+    assert_not_contains("rounded rect: no rect verb", out_rr, "rect(25")
+    // plain rect (no rx) stays a rect verb.
+    svg_pr = "<svg viewBox='0 0 200 200'><rect x='5' y='5' width='10' height='10'/></svg>"
+    out_pr = transpiler.transpile_svg(svg_pr)
+    assert_contains("plain rect stays rect verb", out_pr, "rect(5.0, 5.0, 10.0, 10.0)")
+    // harness form rounds too.
+    out_rrh = transpiler.transpile_svg_to_png_harness(svg_rr)
+    assert_contains("harness rounded rect → vg.path", out_rrh, "vg.path(node, \"M ")
+
+    // ─── <use href> inlines the target with translate(x y) ────
+    // (headless harness form — where <use> resolution lives.)
+    svg_use = "<svg viewBox='0 0 100 100'><defs><circle id='c' cx='10' cy='10' r='5' fill='red'/></defs><use href='#c' x='20' y='0'/></svg>"
+    out_use = transpiler.transpile_svg_to_png_harness(svg_use)
+    assert_contains("use: target circle inlined", out_use, "vg.circle(node, 10.0, 10.0, 5.0)")
+    assert_contains("use: x/y → translate", out_use, "vg.transform(c0, \"translate(20 0)\")")
+    assert_contains("use: target fill carried", out_use, "vg.fill(c0, \"red\")")
+
+    // ─── <desc> → comment; <g fill> → g() { fill(…) … } ───────
+    svg6 = "<svg viewBox='0 0 100 100'><desc>A scene</desc><g fill='red'><circle cx='1' cy='1' r='1'/></g></svg>"
+    out6 = transpiler.transpile_svg(svg6)
+    assert_contains("desc: emitted as comment", out6, "// A scene")
+    // g with children: opens `g() { fill(...)` then nests children, closes `}`.
+    assert_contains("g: scope opens with cascade fill", out6, "g() { fill(\"red\")")
+    assert_contains("g: child circle nested", out6, "circle(1.0, 1.0, 1.0)")
+
+    println("=== test_transpiler passed ===")
+}

@@ -162,10 +162,10 @@ AEVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox tes
 
 echo "=== Phase 0: AeVG unit tests (pure Aether) ==="
 for t in "${AEVG_TESTS[@]}"; do
-    src="aevg/${t}.ae"
+    src="vg/test/${t}.ae"
     cfile="build/aevg_${t}.c"
     bin="build/aevg_${t}"
-    if ! aetherc "$src" "$cfile" > "/tmp/ci_aevg_${t}.log" 2>&1; then
+    if ! aetherc --lib "$ROOT" "$src" "$cfile" > "/tmp/ci_aevg_${t}.log" 2>&1; then
         echo "  FAIL $t (compile)"
         tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))
@@ -205,10 +205,10 @@ else
 fi
 
 # Phase 1.5: RUN the headless AeVG renderers (build was done by the .all.ae
-# fan-out in Phase 1 — every aevg app is an aevg/apps/<name>/ node now). The
+# fan-out in Phase 1 — every vg app is a vg/apps/<name>/ node now). The
 # value here is RUNTIME coverage the build-only fan-out can't give: each writes
 # a PNG, exercising the raster-blit + draw-region compose path. Linux/GTK only.
-AEVG_BIN() { echo "$ROOT/target/build/aevg/apps/$1/bin/$1"; }
+AEVG_BIN() { echo "$ROOT/target/build/vg/apps/$1/bin/$1"; }
 if [ "$PLATFORM" = "linux" ]; then
     echo "  --- AeVG headless renderers (run → PNG) ---"
     run_png() {  # $1=app $2=desc
@@ -303,7 +303,7 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
         head -c 250000 /dev/urandom > "$GP_FIX/mid.bin"
         head -c 200000 /dev/urandom > "$GP_FIX/sub/inner.bin"
         export AEVG_DIR="$GP_FIX" GP_FIXTURE="$GP_FIX" UI_SPEC="grand_perspective/spec_${gp_spec}"
-        run_server_test "$ROOT/target/build/aevg/apps/grand_perspective/bin/grand_perspective" \
+        run_server_test "$ROOT/target/build/vg/apps/grand_perspective/bin/grand_perspective" \
                         "$SCRIPT_DIR/tests/run_spec.sh" "gp_${gp_spec}" || FAIL=$((FAIL + 1))
         unset AEVG_DIR GP_FIXTURE UI_SPEC
         rm -rf "$GP_FIX"

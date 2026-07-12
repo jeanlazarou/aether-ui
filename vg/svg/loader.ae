@@ -1,0 +1,579 @@
+// aevg/loader.ae — runtime SVG → backend calls (Tier D).
+//
+// Port of cosyne/src/cvg/loader.ts. Glues parser.ae + grammar_shapes
+// + grammar_factories into a single load_svg(backend, svg_string,
+// width, height) entry point.
+//
+// In scope this commit: dispatch to the seven shape factories that
+// already exist (circle, rect, line, path, polyline, polygon, g),
+// plus the unknown-element "walk children" fallback, plus the no-op
+// branches (desc, feGaussianBlur, style — these will route to real
+// handlers when grammar_defs lands).
+//
+// Out of scope:
+//   - <defs>, <linearGradient>, <radialGradient>, <filter>,
+//     <clipPath>, <text>, <use>, <ellipse>, <style> — all need
+//     grammar_defs (or ellipse's path-emit shape). Their nodes are
+//     **silently skipped** (no backend call) for now; their
+//     children are walked.
+//   - Nested <svg> — needs `nestedSvg` from grammar_shapes (not
+//     yet ported). Outermost <svg> is unwrapped by the entry
+//     point; nested ones become "walk children" today.
+//   - computeContentBounds-driven viewBox fallback (uses bbox.ae;
+//     wired here once we exercise it on a real SVG).
+//
+// API:
+//   load_svg(backend, svg_string, canvas_width, canvas_height)
+//     -> *AevgContext
+//   load_svg_default(backend, svg_string) -> *AevgContext
+//     (canvas defaults: 400×400)
+
+exports ( load_svg, load_svg_default, register_defs_into )
+
+import std.string
+import std.map
+import vg.svg.parser
+import vg.grammar.context
+import vg.grammar.factories
+import vg.grammar.shapes
+import vg.grammar.utils
+import vg.grammar.defs
+import vg.grammar.style
+import vg.grammar.rendering
+import vg.geom.bbox
+import vg.grammar.css
+
+extern malloc(size: int) -> ptr
+
+// ─── attr helpers ────────────────────────────────────────────────
+
+attr_has(node_h: ptr, name: string) -> int {
+    return parser.node_has_attr(node_h, name)
+}
+
+attr_get(node_h: ptr, name: string) -> string {
+    return parser.node_attr(node_h, name)
+}
+
+// ─── walk_node: recursive dispatch ───────────────────────────────
+//
+// Walks a parsed SvgNode tree, dispatching each tag to the right
+// grammar_shapes factory. Unknown / unsupported tags walk their
+// children (matches TS source's default branch).
+
+walk_node(ctx: ptr, backend: ptr, node_h: ptr) {
+    tag = parser.node_tag(node_h)
+    attrs = parser.node_attrs(node_h)
+
+    // ─── Group / nested-svg / unknown: descend into children ─
+    is_group = 0
+    if string.equals(tag, "g") == 1 { is_group = 1 }
+    if string.equals(tag, "svg") == 1 { is_group = 1 }
+    if is_group == 1 {
+        // shape_group takes a `fn` body. Capture ctx/backend/node_h
+        // in the inline callback so it can recurse.
+        shapes.shape_group(ctx, attrs) callback {
+            n = parser.node_child_count(node_h)
+            i = 0
+            while i < n {
+                child = parser.node_child_at(node_h, i)
+                walk_node(ctx, backend, child)
+                i = i + 1
+            }
+        }
+        return
+    }
+
+    // ─── Leaf shapes ─────────────────────────────────────────────
+    if string.equals(tag, "circle") == 1 {
+        _ = shapes.shape_circle(ctx, backend, attrs)
+        return
+    }
+    if string.equals(tag, "rect") == 1 {
+        _ = shapes.shape_rectangle(ctx, backend, attrs)
+        return
+    }
+    if string.equals(tag, "line") == 1 {
+        _ = shapes.shape_line(ctx, backend, attrs)
+        return
+    }
+    if string.equals(tag, "path") == 1 {
+        _ = shapes.shape_path(ctx, backend, attrs)
+        return
+    }
+
+    // polyline / polygon → emit a `<path>` with the `points`
+    // converted to "M x y L x y ..." (Z for polygon). Reuses
+    // utils.points_to_path.
+    is_polyline = 0
+    is_polygon = 0
+    if string.equals(tag, "polyline") == 1 { is_polyline = 1 }
+    if string.equals(tag, "polygon")  == 1 { is_polygon = 1 }
+    if is_polyline == 1 {
+        emit_poly(ctx, backend, attrs, 0)
+        return
+    }
+    if is_polygon == 1 {
+        emit_poly(ctx, backend, attrs, 1)
+        return
+    }
+
+    // ─── No-ops (the TS source's silent branches) ────────────────
+    if string.equals(tag, "desc")          == 1 { return }
+    if string.equals(tag, "feGaussianBlur") == 1 { return }
+    if string.equals(tag, "title")         == 1 { return }
+    if string.equals(tag, "metadata")      == 1 { return }
+
+    // ─── Gradients: parse + register in ctx.gradients ────────────
+    if string.equals(tag, "linearGradient") == 1 {
+        _ = defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "radialGradient") == 1 {
+        _ = defs.parse_gradient(ctx, node_h)
+        return
+    }
+
+    // ─── Filter / ClipPath: parse + register ─────────────────────
+    if string.equals(tag, "filter") == 1 {
+        _ = defs.parse_filter(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "clipPath") == 1 {
+        _ = defs.parse_clip_path(ctx, node_h)
+        return
+    }
+
+    // ─── <use> — look up referenced node, push translate, walk ────
+    if string.equals(tag, "use") == 1 {
+        walk_use(ctx, backend, node_h, attrs)
+        return
+    }
+
+    // ─── <defs>: walk children for gradient/filter/clipPath
+    //     registration only. Per W3C SVG spec, drawable shapes
+    //     inside <defs> are NOT rendered directly — they're
+    //     definitions that other elements (e.g. <use>) reference.
+    //     So we walk only the "definition-style" children.
+    if string.equals(tag, "defs") == 1 {
+        walk_defs_children(ctx, backend, node_h)
+        return
+    }
+
+    if string.equals(tag, "style") == 1 {
+        // <style> body is the CSS rule text (often wrapped in CDATA,
+        // unwrapped by parser.ae's tokenizer into node.text).
+        css_text = parser.node_text(node_h)
+        if string.length(css_text) > 0 {
+            css.register_css_style(ctx, css_text)
+        }
+        return
+    }
+    if string.equals(tag, "text") == 1 {
+        _ = shapes.shape_text(ctx, backend, node_h)
+        return
+    }
+    if string.equals(tag, "ellipse") == 1 {
+        emit_ellipse(ctx, backend, attrs)
+        return
+    }
+
+    // ─── Default: unknown element → walk children ────────────────
+    walk_children(ctx, backend, node_h)
+}
+
+walk_children(ctx: ptr, backend: ptr, node_h: ptr) {
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        child = parser.node_child_at(node_h, i)
+        walk_node(ctx, backend, child)
+        i = i + 1
+    }
+}
+
+// <defs> walks only definition-style children (gradients, filters,
+// clipPaths, nested <defs>). Drawable shapes inside <defs> are
+// definitions per the SVG spec and don't render directly; they're
+// available via id for <use>. They're already indexed in
+// nodes_by_id during the first-pass index_nodes walk.
+walk_defs_children(ctx: ptr, backend: ptr, node_h: ptr) {
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        child = parser.node_child_at(node_h, i)
+        ctag = parser.node_tag(child)
+        is_def = 0
+        if string.equals(ctag, "linearGradient") == 1 { is_def = 1 }
+        if string.equals(ctag, "radialGradient") == 1 { is_def = 1 }
+        if string.equals(ctag, "filter") == 1 { is_def = 1 }
+        if string.equals(ctag, "clipPath") == 1 { is_def = 1 }
+        if string.equals(ctag, "defs") == 1 { is_def = 1 }
+        if is_def == 1 { walk_node(ctx, backend, child) }
+        i = i + 1
+    }
+}
+
+// ─── <use href="#id" x=".." y=".."> ──────────────────────────────
+//
+// Look up the referenced node by id (from ctx.nodes_by_id, which
+// index_nodes populates before the walk). If found, push a
+// translate(x, y) onto the transform stack, push the use's style
+// attrs, walk the referenced node, then pop. Matches TS source's
+// behaviour; the implicit translate from x/y is composed with any
+// existing transform attr.
+walk_use(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr) {
+    // Get href (try xlink:href first, then plain href).
+    href, _ = map.get(attrs, "xlink:href")
+    if href == null {
+        href, _ = map.get(attrs, "href")
+    }
+    if href == null { return }
+    // Strip leading '#'.
+    ref_id = href
+    if string.starts_with(href, "#") == 1 {
+        ref_id = string.substring(href, 1, string.length(href))
+    }
+
+    ref_node = context.get_node(ctx, ref_id)
+    if ref_node == null { return }
+
+    // Build the composed transform string: if use has both x/y and
+    // transform=, prepend "translate(x y) ". If only x/y, emit
+    // "translate(x y)". If only transform, use it as-is.
+    ux = 0.0
+    uy = 0.0
+    has_xy = 0
+    if map.has(attrs, "x") == 1 {
+        xv, _ = map.get(attrs, "x")
+        ux = utils.parse_length_to_px(xv)
+        if ux != 0.0 { has_xy = 1 }
+    }
+    if map.has(attrs, "y") == 1 {
+        yv, _ = map.get(attrs, "y")
+        uy = utils.parse_length_to_px(yv)
+        if uy != 0.0 { has_xy = 1 }
+    }
+    existing_xform, _ = map.get(attrs, "transform")
+
+    composed_xform = ""
+    if has_xy == 1 {
+        // Build "translate(ux uy)" string and prepend.
+        composed_xform = string.concat("translate(",
+                            string.concat(string.from_float(ux),
+                                string.concat(" ",
+                                    string.concat(string.from_float(uy), ")"))))
+        if existing_xform != null {
+            composed_xform = string.concat(composed_xform,
+                                string.concat(" ", existing_xform))
+        }
+    } else {
+        if existing_xform != null {
+            composed_xform = existing_xform
+        }
+    }
+
+    // Synthesise a small attrs map for shape_group-style push:
+    // copy style-relevant attrs and replace `transform` with our
+    // composed value. Style + transform stacks get pushed/popped
+    // by the transitive shape_group / shape_* calls inside the
+    // recursive walk_node on ref_node.
+    //
+    // Simplest implementation: emulate the TS pushStyle / pushTransform
+    // / walk / popTransform / popStyle pattern explicitly using
+    // grammar_style + grammar_rendering directly.
+    style.push_style(ctx, attrs, "use", "")
+    if string.length(composed_xform) > 0 {
+        rendering.push_transform_str(ctx, composed_xform)
+    } else {
+        rendering.push_transform_none(ctx)
+    }
+
+    walk_node(ctx, backend, ref_node)
+
+    rendering.pop_transform(ctx)
+    style.pop_style(ctx)
+}
+
+// ─── index_nodes: build the nodes_by_id registry ─────────────────
+//
+// Walks the tree once before rendering, capturing every node that
+// has an `id` attribute into ctx.nodes_by_id. Needed for <use>
+// element resolution. Matches TS source's `proto.indexNodes`.
+
+index_nodes(ctx: ptr, node_h: ptr) {
+    if parser.node_has_attr(node_h, "id") == 1 {
+        id = parser.node_attr(node_h, "id")
+        context.register_node(ctx, id, node_h)
+    }
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        index_nodes(ctx, parser.node_child_at(node_h, i))
+        i = i + 1
+    }
+}
+
+// Convert a polyline/polygon attrs to a path-string attrs map and
+// dispatch through shape_path.
+emit_poly(ctx: ptr, backend: ptr, attrs: ptr, closed: int) {
+    pts, _ = map.get(attrs, "points")
+    if pts == null { return }
+    d = utils.points_to_path(pts, closed)
+    if string.length(d) == 0 { return }
+
+    // Build a fresh attrs map: copy everything from the original
+    // (so fill/stroke/style/transform survive), replace `points`
+    // with `d`. Simplest: clone, then set d.
+    fresh = clone_attrs_replacing_points(attrs, d)
+    _ = shapes.shape_path(ctx, backend, fresh)
+}
+
+// <ellipse cx cy rx ry> (and <ellipse>-as-circle) → a two-arc <path>, so it
+// renders through shape_path. rx/ry default to 0; a "circle via ellipse" is
+// just rx==ry. Style/transform survive via the same attr whitelist as poly.
+emit_ellipse(ctx: ptr, backend: ptr, attrs: ptr) {
+    cx = ellipse_num(attrs, "cx")
+    cy = ellipse_num(attrs, "cy")
+    rx = ellipse_num(attrs, "rx")
+    ry = ellipse_num(attrs, "ry")
+    if rx <= 0.0 { return }
+    if ry <= 0.0 { return }
+    d = utils.ellipse_to_path(cx, cy, rx, ry)
+    fresh = clone_attrs_replacing_points(attrs, d)
+    _ = shapes.shape_path(ctx, backend, fresh)
+}
+
+ellipse_num(attrs: ptr, key: string) -> float {
+    v, _ = map.get(attrs, key)
+    if v == null { return 0.0 }
+    return utils.parse_length_to_px(v)
+}
+
+// Build a copy of `attrs` with the `points` key replaced by `d`.
+// We can't enumerate a std.map's keys generically without iterator
+// surface; for the polyline/polygon case the attrs we care about
+// (fill, stroke, style, transform, class) are a known small set.
+// Whitelist them.
+clone_attrs_replacing_points(attrs: ptr, d: string) -> ptr {
+    out = map.new()
+    copy_if_present(out, attrs, "fill")
+    copy_if_present(out, attrs, "stroke")
+    copy_if_present(out, attrs, "stroke-width")
+    copy_if_present(out, attrs, "stroke-linecap")
+    copy_if_present(out, attrs, "stroke-linejoin")
+    copy_if_present(out, attrs, "stroke-opacity")
+    copy_if_present(out, attrs, "fill-opacity")
+    copy_if_present(out, attrs, "fill-rule")
+    copy_if_present(out, attrs, "opacity")
+    copy_if_present(out, attrs, "style")
+    copy_if_present(out, attrs, "transform")
+    copy_if_present(out, attrs, "class")
+    _ = map.put(out, "d", d)
+    return out
+}
+
+copy_if_present(dst: ptr, src: ptr, key: string) {
+    v, _ = map.get(src, key)
+    if v != null { _ = map.put(dst, key, v) }
+}
+
+// ─── load_svg ────────────────────────────────────────────────────
+//
+// Parse the SVG, derive viewBox + canvas dimensions from the root
+// element's attrs, build a context, then walk each top-level child
+// node into the shape factories. Returns the populated
+// *AevgContext — caller can inspect `backend_call_count(backend)`
+// etc. for tests, or pass it on to a real backend wiring.
+
+load_svg(backend: ptr, svg_string: string, canvas_w: float, canvas_h: float) -> ptr {
+    root = parser.parse_svg(svg_string)
+
+    // Determine viewBox: explicit attr > width/height > computed content
+    // bounds (intrinsic sizing) > canvas default.
+    vb_str = ""
+    if attr_has(root, "viewBox") == 1 {
+        vb_str = attr_get(root, "viewBox")
+    } else {
+        if attr_has(root, "viewbox") == 1 {
+            vb_str = attr_get(root, "viewbox")
+        } else {
+            if attr_has(root, "width") == 1 {
+                if attr_has(root, "height") == 1 {
+                    w = utils.parse_length_to_px(attr_get(root, "width"))
+                    h = utils.parse_length_to_px(attr_get(root, "height"))
+                    if w > 0.0 {
+                        if h > 0.0 {
+                            vb_str = string.concat("0 0 ",
+                                string.concat(float_to_str(w),
+                                    string.concat(" ", float_to_str(h))))
+                        }
+                    }
+                }
+            }
+            // No viewBox and no usable width/height → intrinsic sizing:
+            // walk the content, compute its bounding box, and use that as the
+            // viewBox so the drawing fits the canvas (what librsvg does for a
+            // bare <svg>). Without this, content drawn outside the default
+            // 0..canvas box is clipped/offset (e.g. circles1.svg: cx=6.5cm).
+            if string.length(vb_str) == 0 {
+                vb_str = intrinsic_view_box(root)
+            }
+        }
+    }
+
+    opts = factories.opts_new()
+    factories.opts_set_view_box(opts, vb_str)
+    factories.opts_set_width(opts, canvas_w)
+    factories.opts_set_height(opts, canvas_h)
+    if attr_has(root, "preserveAspectRatio") == 1 {
+        factories.opts_set_preserve_aspect_ratio(opts,
+            attr_get(root, "preserveAspectRatio"))
+    }
+    // The SVG's intrinsic viewport from its root width/height attrs (non-%).
+    // When their aspect differs from the viewBox, this drives the two-step
+    // viewBox→viewport→canvas mapping so the result is letterboxed like librsvg
+    // (Inkscape exports: width/height ≠ viewBox AR). Ignored when viewport ==
+    // canvas aspect (the common case), so no effect on square SVGs.
+    if attr_has(root, "width") == 1 {
+        if attr_has(root, "height") == 1 {
+            wstr = attr_get(root, "width")
+            hstr = attr_get(root, "height")
+            // Skip percentage sizes (e.g. width="100%") — those mean "fill the
+            // container", not an intrinsic aspect (matches TS's !includes('%')).
+            if string.ends_with(wstr, "%") == 0 {
+                if string.ends_with(hstr, "%") == 0 {
+                    svg_w = utils.parse_length_to_px(wstr)
+                    svg_h = utils.parse_length_to_px(hstr)
+                    if svg_w > 0.0 {
+                        if svg_h > 0.0 {
+                            factories.opts_set_viewport(opts, svg_w, svg_h)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ctx = factories.create_aevg_context(opts)
+
+    // Seed the base style frame with the root <svg>'s presentation attributes,
+    // so they inherit to every child (matches TS createCvgContext's rootStyle).
+    // caution.svg sets stroke="#000" on <svg> — without this the outline +
+    // exclamation-bar strokes vanish (they carry only stroke-width, inheriting
+    // the colour from the root).
+    seed_root_style(ctx, root)
+
+    // First pass: index every node with an id into ctx.nodes_by_id.
+    // <use> elements look here for their href target.
+    index_nodes(ctx, root)
+
+    // Second pass: walk the root's children. The root <svg> itself
+    // isn't dispatched as a shape — it's already represented by the
+    // context's mapping.
+    n = parser.node_child_count(root)
+    i = 0
+    while i < n {
+        child = parser.node_child_at(root, i)
+        walk_node(ctx, backend, child)
+        i = i + 1
+    }
+
+    return ctx
+}
+
+load_svg_default(backend: ptr, svg_string: string) -> ptr {
+    return load_svg(backend, svg_string, 400.0, 400.0)
+}
+
+// Register the gradients (+ filters / clipPaths) from `svg_string` into an
+// existing context, WITHOUT drawing any shapes. The transpiled vg{} harness
+// uses this: its shapes carry url(#id) fill refs, but the flattened output has
+// no <defs>, so the gradient registry would be empty and url() fills fall back
+// to black. Parsing the original SVG's defs here populates ctx.gradients so
+// the refs resolve (index_nodes first, for gradient xlink:href inheritance).
+register_defs_into(ctx: ptr, svg_string: string) {
+    root = parser.parse_svg(svg_string)
+    index_nodes(ctx, root)
+    register_defs_walk(ctx, root)
+}
+
+register_defs_walk(ctx: ptr, node_h: ptr) {
+    tag = parser.node_tag(node_h)
+    if string.equals(tag, "linearGradient") == 1 {
+        _ = defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "radialGradient") == 1 {
+        _ = defs.parse_gradient(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "filter") == 1 {
+        _ = defs.parse_filter(ctx, node_h)
+        return
+    }
+    if string.equals(tag, "clipPath") == 1 {
+        _ = defs.parse_clip_path(ctx, node_h)
+        return
+    }
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        register_defs_walk(ctx, parser.node_child_at(node_h, i))
+        i = i + 1
+    }
+}
+
+// Helper: small float → string. The string.from_float fix in v0.193
+// works at typical canvas sizes (no large exponents at 400 or 800,
+// no high-precision tail).
+float_to_str(f: float) -> string {
+    return string.from_float(f)
+}
+
+// Copy the root <svg>'s presentation attributes into the base style frame so
+// they cascade to every child (TS: createCvgContext's rootStyle → styleStack[0]).
+// The base frame is the seeded empty map at the bottom of the style stack.
+seed_root_style(ctx: ptr, root: ptr) {
+    base = style.current_style(ctx)
+    if base == null { return }
+    seed_one(base, root, "fill")
+    seed_one(base, root, "stroke")
+    seed_one(base, root, "stroke-width")
+    seed_one(base, root, "stroke-linecap")
+    seed_one(base, root, "stroke-linejoin")
+    seed_one(base, root, "stroke-opacity")
+    seed_one(base, root, "fill-opacity")
+    seed_one(base, root, "fill-rule")
+    seed_one(base, root, "opacity")
+    seed_one(base, root, "font-size")
+    seed_one(base, root, "font-family")
+}
+
+seed_one(base: ptr, root: ptr, key: string) {
+    if parser.node_has_attr(root, key) == 1 {
+        _ = map.put(base, key, parser.node_attr(root, key))
+    }
+}
+
+// Intrinsic viewBox from the content's bounding box, for a bare <svg> with no
+// viewBox/width/height. Returns "minX minY w h", or "" if the content is empty
+// or degenerate (caller then keeps the default canvas box). A tiny margin is
+// NOT added — librsvg fits tight to the content bbox.
+intrinsic_view_box(root: ptr) -> string {
+    b = bbox.compute_content_bounds(root)
+    if bbox.bounds_is_null(b) == 1 { return "" }
+    minx = bbox.bounds_min_x(b)
+    miny = bbox.bounds_min_y(b)
+    w = bbox.bounds_max_x(b) - minx
+    h = bbox.bounds_max_y(b) - miny
+    if w <= 0.0 { return "" }
+    if h <= 0.0 { return "" }
+    s = string.concat(float_to_str(minx), " ")
+    s = string.concat(s, float_to_str(miny))
+    s = string.concat(s, " ")
+    s = string.concat(s, float_to_str(w))
+    s = string.concat(s, " ")
+    s = string.concat(s, float_to_str(h))
+    return s
+}

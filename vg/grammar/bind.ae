@@ -1,0 +1,315 @@
+// aevg/bind.ae — data-driven element regions (.bindTo).
+//
+// Port of CvgContext.bindTo + refreshBindingRegions from
+// cosyne/src/cvg/grammar-context.ts.
+//
+// Concept: a binding region attaches a (items, render, trackBy, update?)
+// quadruple to the context. On each refresh, the region:
+//   1. Calls items() to get the new data list (ptrs to opaque user items).
+//   2. Computes the new trackBy key for each item.
+//   3. Diffs against the previously-rendered set:
+//        - keys absent now → element destroyed + un-tracked
+//        - keys present now and before → call update(item, el) if given
+//        - keys new now → call render(item, idx), store
+//   4. Updates the "current" map for the next refresh.
+//
+// All four callbacks are taken as `ptr` (closure-boxed via the existing
+// fn↔ptr coercion path, post-fn_ptr_coercion.md). Invocation goes
+// through small `fn`-typed thunks that the closure-call trampoline
+// emits with the correct return-type cast (post-fn_return_float_cast.md
+// layer-1 fix verified 2026-05-28).
+//
+// All callbacks must be provided as `callback { ... }` closures (the
+// AeVG convention); bare-named functions in these slots would hit
+// the still-open layer-2 follow-up (per-bare-fn adapter wrappers,
+// see fn_bare_name_env_shift.md).
+//
+// Multi-element returns from render() (TS allows returning either one
+// element or an array) are not yet supported here — render's closure
+// returns a single *AevgElement ptr. Multi-element rendering is a
+// follow-up; the common case (one item → one shape) covers the
+// initial port.
+
+exports (
+    new_region,
+    region_set_items, region_set_render, region_set_trackby, region_set_update,
+    region_init, refresh_all,
+    region_items_cb, region_render_cb, region_trackby_cb, region_update_cb,
+    region_current_count, region_current_keys, region_current_get_el
+)
+
+import std.list
+import std.map
+import std.string
+import vg.grammar.context
+import vg.grammar.element
+
+extern malloc(size: int) -> ptr
+
+// ─── BindingRegion ───────────────────────────────────────────────
+
+struct BindingRegion {
+    items_cb: ptr        // closure-boxed: () -> *List<ptr>
+    render_cb: ptr       // closure-boxed: (item: ptr, idx: int) -> ptr (el)
+    trackby_cb: ptr      // closure-boxed: (item: ptr) -> string
+    update_cb: ptr       // closure-boxed: (item: ptr, el: ptr); may be null
+    current: ptr         // std.map string → *Entry
+}
+
+// Entry tracked per key: the most recent item ptr + element ptr.
+struct Entry {
+    item: ptr
+    el: ptr
+}
+
+mk_entry(item: ptr, el: ptr) -> ptr {
+    e = malloc(16) as *Entry
+    e.item = item
+    e.el = el
+    return e
+}
+
+entry_item(p: ptr) -> ptr { e = p as *Entry; return e.item }
+entry_el(p: ptr)   -> ptr { e = p as *Entry; return e.el }
+
+// ─── new_region: empty registration ──────────────────────────────
+//
+// Returns a fresh *BindingRegion with all callbacks null. The caller
+// must attach callbacks via region_set_items / region_set_render /
+// region_set_trackby (and optionally region_set_update), each using
+// the trailing-callback syntax. Then call region_init(ctx, region)
+// to do the initial render and register the region on the context.
+//
+// API shape (matches the AeVG events convention — one closure per
+// fluent setter, trailing-callback syntax):
+//
+//   r = bind.new_region()
+//   bind.region_set_items(r)    callback { return my_list }
+//   bind.region_set_render(r)   callback |it, i| { return ... }
+//   bind.region_set_trackby(r)  callback |it| { return ... }
+//   bind.region_set_update(r)   callback |it, el| { ... }
+//   bind.region_init(ctx, r)
+//
+// We can't take all four closures in `new_region` itself because the
+// trailing-callback syntax only supports one closure per call site.
+
+new_region() -> ptr {
+    r = malloc(40) as *BindingRegion
+    r.items_cb = null
+    r.render_cb = null
+    r.trackby_cb = null
+    r.update_cb = null
+    r.current = map.new()
+    return r
+}
+
+region_set_items(rp: ptr, cb: fn) {
+    r = rp as *BindingRegion
+    r.items_cb = cb
+}
+
+region_set_render(rp: ptr, cb: fn) {
+    r = rp as *BindingRegion
+    r.render_cb = cb
+}
+
+region_set_trackby(rp: ptr, cb: fn) {
+    r = rp as *BindingRegion
+    r.trackby_cb = cb
+}
+
+region_set_update(rp: ptr, cb: fn) {
+    r = rp as *BindingRegion
+    r.update_cb = cb
+}
+
+region_init(ctx: ptr, rp: ptr) {
+    r = rp as *BindingRegion
+
+    // Initial render — fill current with everything that items() returns.
+    items = invoke_items(r.items_cb)
+    if items != null {
+        n = list.size(items)
+        i = 0
+        while i < n {
+            item, _ = list.get(items, i)
+            key = invoke_trackby(r.trackby_cb, item)
+            el  = invoke_render(r.render_cb, item, i)
+            e   = mk_entry(item, el)
+            _   = map.put(r.current, key, e)
+            i = i + 1
+        }
+    }
+
+    context.binding_regions_add(ctx, rp)
+}
+
+// ─── refresh_all: diff each region against its current ──────────
+
+refresh_all(ctx: ptr) {
+    nr = context.binding_regions_count(ctx)
+    ri = 0
+    while ri < nr {
+        rp = context.binding_regions_at(ctx, ri)
+        refresh_one(ctx, rp)
+        ri = ri + 1
+    }
+}
+
+refresh_one(ctx: ptr, rp: ptr) {
+    r = rp as *BindingRegion
+
+    items = invoke_items(r.items_cb)
+    if items == null { return }
+    n = list.size(items)
+
+    // Build new key → (item, idx) ordering. We need:
+    //   - the set of new keys (to detect removals)
+    //   - the (item, idx) tuple for each new key (for update / render)
+    new_keys_map = map.new()  // string → ptr (boxed *NewSlot)
+    i = 0
+    while i < n {
+        item, _ = list.get(items, i)
+        key = invoke_trackby(r.trackby_cb, item)
+        slot = mk_slot(item, i)
+        _ = map.put(new_keys_map, key, slot)
+        i = i + 1
+    }
+
+    // Pass 1: removals — keys in current but not in new.
+    // For each removed entry: destroy the element (mark destroyed +
+    // hide) and untrack it from the context's tracked_elements list
+    // so events stop hitting it. Mirrors TS's refreshBindingRegions
+    // removal path.
+    old_keys = map.keys_raw(r.current)
+    nk = string_array_size(old_keys)
+    k = 0
+    while k < nk {
+        key = string_array_get(old_keys, k)
+        if map.has(new_keys_map, key) == 0 {
+            existing, _ = map.get(r.current, key)
+            if existing != null {
+                e = existing as *Entry
+                if e.el != null {
+                    element.element_destroy(e.el)
+                    _ = context.ctx_untrack_element(ctx, e.el)
+                }
+            }
+            _ = map.remove(r.current, key)
+        }
+        k = k + 1
+    }
+
+    // Pass 2: updates + inserts — walk new_keys_map.
+    new_keys = map.keys_raw(new_keys_map)
+    nn = string_array_size(new_keys)
+    k = 0
+    while k < nn {
+        key = string_array_get(new_keys, k)
+        slot_v, _ = map.get(new_keys_map, key)
+        ns = slot_v as *NewSlot
+        item = ns.item
+        idx  = ns.idx
+
+        // map.get returns (value_ptr, err_string). On found, err is ""
+        // and value_ptr is the stored ptr. On miss, value_ptr is null
+        // (and err is also "" — `null` is the way std.map signals miss).
+        existing, _ = map.get(r.current, key)
+        if existing != null {
+            // Update path.
+            e = existing as *Entry
+            e.item = item
+            if r.update_cb != null {
+                invoke_update(r.update_cb, item, e.el)
+            }
+        } else {
+            // Insert path.
+            el = invoke_render(r.render_cb, item, idx)
+            e  = mk_entry(item, el)
+            _  = map.put(r.current, key, e)
+        }
+        k = k + 1
+    }
+}
+
+// ─── Temporary slot struct for the new-keys map ─────────────────
+
+struct NewSlot {
+    item: ptr
+    idx: int
+}
+
+mk_slot(item: ptr, idx: int) -> ptr {
+    s = malloc(16) as *NewSlot
+    s.item = item
+    s.idx = idx
+    return s
+}
+
+// ─── Invocation trampolines ─────────────────────────────────────
+//
+// Each takes the stored ptr (closure-boxed) and invokes it through
+// a fn-typed param. The closure-call trampoline (post layer-1 fix)
+// reads the enclosing function's declared return type and emits the
+// correct C cast — so string and ptr returns now work as expected.
+
+// Two-layer thunk: outer takes `ptr`, forwards to inner with `fn`.
+// The implicit ptr→fn coercion at the inner call site does the
+// closure unbox; the inner's enclosing-return-type then drives the
+// trampoline's cast (post-fn_return_float_cast.md layer-1 fix).
+// Mirrors the events.ae invoke_*/inner_call_* pattern.
+
+invoke_items(cb: ptr) -> ptr {
+    return inner_items(cb)
+}
+inner_items(cb: fn) -> ptr { return cb() }
+
+invoke_trackby(cb: ptr, item: ptr) -> string {
+    return inner_trackby(cb, item)
+}
+inner_trackby(cb: fn, item: ptr) -> string { return cb(item) }
+
+invoke_render(cb: ptr, item: ptr, idx: int) -> ptr {
+    return inner_render(cb, item, idx)
+}
+inner_render(cb: fn, item: ptr, idx: int) -> ptr { return cb(item, idx) }
+
+invoke_update(cb: ptr, item: ptr, el: ptr) {
+    inner_update(cb, item, el)
+}
+inner_update(cb: fn, item: ptr, el: ptr) { cb(item, el) }
+
+// ─── Region accessors (for tests) ───────────────────────────────
+
+region_items_cb(rp: ptr)   -> ptr { r = rp as *BindingRegion; return r.items_cb }
+region_render_cb(rp: ptr)  -> ptr { r = rp as *BindingRegion; return r.render_cb }
+region_trackby_cb(rp: ptr) -> ptr { r = rp as *BindingRegion; return r.trackby_cb }
+region_update_cb(rp: ptr)  -> ptr { r = rp as *BindingRegion; return r.update_cb }
+
+region_current_count(rp: ptr) -> int {
+    r = rp as *BindingRegion
+    return map.size(r.current)
+}
+
+region_current_keys(rp: ptr) -> ptr {
+    r = rp as *BindingRegion
+    return map.keys_raw(r.current)
+}
+
+region_current_get_el(rp: ptr, key: string) -> ptr {
+    r = rp as *BindingRegion
+    v, _ = map.get(r.current, key)
+    if v == null { return null }
+    e = v as *Entry
+    return e.el
+}
+
+// ─── Local helpers for std.map.keys_raw shape ────────────────────
+//
+// `map.keys_raw` returns an opaque ptr to a string array — same
+// C-level shape as `string_array_*`. (Used elsewhere in AeVG; same
+// idiom as css.) Importing std.string brings these into
+// scope; the entries return `ptr` (matching std.string's extern
+// declarations — the runtime fn signature is `const char*` but
+// the Aether-side declaration uses `ptr` for compatibility, and
+// the implicit ptr→string adapter takes care of the slot).

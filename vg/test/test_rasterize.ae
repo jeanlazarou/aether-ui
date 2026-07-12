@@ -1,0 +1,206 @@
+// aevg/test_rasterize.ae — regression test for rasterize.ae.
+//
+// Covers:
+//   - parse_color_to_rgba: hex (3/6/8-char), rgb()/rgba(), named,
+//     fallback to black.
+//   - fill_rect_in_buffer: pixel exactness, clipping.
+//   - fill_circle_in_buffer: distance-based fill.
+//   - fill_path_in_buffer: scanline rasterization on simple paths,
+//     nonzero vs. evenodd.
+//   - apply_clip_mask: alpha multiplication.
+
+import vg.raster.rasterize
+import std.bytes
+import std.math
+
+extern exit(code: int)
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_rgba(label: string, c: ptr, r: int, g: int, b: int, a: int) {
+    if rasterize.rgba_r(c) != r {
+        println("  FAIL: ${label}.r: got ${rasterize.rgba_r(c)} want ${r}")
+        exit(1)
+    }
+    if rasterize.rgba_g(c) != g {
+        println("  FAIL: ${label}.g: got ${rasterize.rgba_g(c)} want ${g}")
+        exit(1)
+    }
+    if rasterize.rgba_b(c) != b {
+        println("  FAIL: ${label}.b: got ${rasterize.rgba_b(c)} want ${b}")
+        exit(1)
+    }
+    if rasterize.rgba_a(c) != a {
+        println("  FAIL: ${label}.a: got ${rasterize.rgba_a(c)} want ${a}")
+        exit(1)
+    }
+    println("  PASS: ${label} (${r},${g},${b},${a})")
+}
+
+// Make an RGBA buffer of w*h transparent black pixels.
+mk_buf(w: int, h: int) -> ptr {
+    n = w * h * 4
+    b = bytes.new(n)
+    bytes.set(b, n - 1, 0)   // extend length
+    return b
+}
+
+get_ch(buf: ptr, w: int, x: int, y: int, ch: int) -> int {
+    return bytes.get(buf, (y * w + x) * 4 + ch)
+}
+
+main() {
+    println("=== test_rasterize ===")
+
+    // ─── parse_color_to_rgba: hex 3-char ────────────────────────
+    c1 = rasterize.parse_color_to_rgba("#f00")
+    assert_rgba("#f00", c1, 255, 0, 0, 255)
+
+    c2 = rasterize.parse_color_to_rgba("#0F0")
+    assert_rgba("#0F0 (case-insensitive)", c2, 0, 255, 0, 255)
+
+    // ─── hex 6-char ─────────────────────────────────────────────
+    c3 = rasterize.parse_color_to_rgba("#80c0ff")
+    assert_rgba("#80c0ff", c3, 128, 192, 255, 255)
+
+    // ─── hex 8-char (with alpha) ────────────────────────────────
+    c4 = rasterize.parse_color_to_rgba("#80c0ff40")
+    assert_rgba("#80c0ff40", c4, 128, 192, 255, 64)
+
+    // ─── rgb() ──────────────────────────────────────────────────
+    c5 = rasterize.parse_color_to_rgba("rgb(10, 20, 30)")
+    assert_rgba("rgb(10,20,30)", c5, 10, 20, 30, 255)
+
+    // ─── rgba() ─────────────────────────────────────────────────
+    c6 = rasterize.parse_color_to_rgba("rgba(255, 128, 0, 0.5)")
+    assert_rgba("rgba(255,128,0,0.5)", c6, 255, 128, 0, 128)
+
+    // ─── named colors ───────────────────────────────────────────
+    c7 = rasterize.parse_color_to_rgba("red")
+    assert_rgba("red", c7, 255, 0, 0, 255)
+
+    c8 = rasterize.parse_color_to_rgba("WHITE")
+    assert_rgba("WHITE (case-insensitive)", c8, 255, 255, 255, 255)
+
+    c9 = rasterize.parse_color_to_rgba("indigo")
+    assert_rgba("indigo", c9, 75, 0, 130, 255)
+
+    c10 = rasterize.parse_color_to_rgba("grey")
+    assert_rgba("grey (alias of gray)", c10, 128, 128, 128, 255)
+
+    // ─── fallback: unknown → black, opaque ──────────────────────
+    c11 = rasterize.parse_color_to_rgba("not-a-real-color-name")
+    assert_rgba("unknown → black", c11, 0, 0, 0, 255)
+
+    // ─── fill_rect_in_buffer ────────────────────────────────────
+    buf1 = mk_buf(10, 10)
+    rasterize.fill_rect_in_buffer(buf1, 10, 10, 2.0, 3.0, 4.0, 5.0,
+                                  100, 150, 200, 255)
+    // Inside the rect (x=4, y=5) should be (100, 150, 200, 255).
+    assert_eq_int("rect inside R",  get_ch(buf1, 10, 4, 5, 0), 100)
+    assert_eq_int("rect inside G",  get_ch(buf1, 10, 4, 5, 1), 150)
+    assert_eq_int("rect inside B",  get_ch(buf1, 10, 4, 5, 2), 200)
+    assert_eq_int("rect inside A",  get_ch(buf1, 10, 4, 5, 3), 255)
+    // Outside the rect (x=0, y=0) should be unwritten (0).
+    assert_eq_int("rect outside",   get_ch(buf1, 10, 0, 0, 0), 0)
+    // Just past right edge: x=6 is past the rect's x1=6 (x+w=2+4).
+    assert_eq_int("rect past-right", get_ch(buf1, 10, 6, 5, 0), 0)
+    bytes.free(buf1)
+
+    // Rect that extends past buf right/bottom — should clip.
+    buf2 = mk_buf(5, 5)
+    rasterize.fill_rect_in_buffer(buf2, 5, 5, 2.0, 2.0, 100.0, 100.0,
+                                  42, 0, 0, 255)
+    // (4,4) is inside (clipped to x1=5).
+    assert_eq_int("clip rect (4,4)", get_ch(buf2, 5, 4, 4, 0), 42)
+    bytes.free(buf2)
+
+    // ─── fill_circle_in_buffer ──────────────────────────────────
+    // 10x10 buffer, circle at (5,5) radius 2. Centre pixel must
+    // fill; (5+3, 5) is past the radius and stays zero.
+    buf3 = mk_buf(10, 10)
+    rasterize.fill_circle_in_buffer(buf3, 10, 10, 5.0, 5.0, 2.0,
+                                    255, 0, 0, 255)
+    // Centre cell at (5,5) — its pixel-centre is (5.5, 5.5);
+    // dx=0.5, dy=0.5, d2=0.5 ≤ 4. Filled.
+    assert_eq_int("circle centre R", get_ch(buf3, 10, 5, 5, 0), 255)
+    // (5, 5+3=8): pixel centre (5.5, 8.5), dx=0.5 dy=3.5, d2≈12.5 > 4. Empty.
+    assert_eq_int("circle outside R", get_ch(buf3, 10, 5, 8, 0), 0)
+    bytes.free(buf3)
+
+    // ─── fill_path_in_buffer: simple rectangle path ─────────────
+    // Path: M 2 2 L 6 2 L 6 6 L 2 6 Z, no offset, fill nonzero, blue.
+    buf4 = mk_buf(8, 8)
+    rasterize.fill_path_in_buffer(buf4, 8, 8,
+                                  "M 2 2 L 6 2 L 6 6 L 2 6 Z",
+                                  0.0, 0.0,
+                                  0, 0, 255, 255,
+                                  rasterize.FILL_NONZERO())
+    // Centre of the rect should be blue.
+    assert_eq_int("path-rect inside R", get_ch(buf4, 8, 4, 4, 0), 0)
+    assert_eq_int("path-rect inside G", get_ch(buf4, 8, 4, 4, 1), 0)
+    assert_eq_int("path-rect inside B", get_ch(buf4, 8, 4, 4, 2), 255)
+    assert_eq_int("path-rect inside A", get_ch(buf4, 8, 4, 4, 3), 255)
+    // Corner (0, 0) outside.
+    assert_eq_int("path-rect outside", get_ch(buf4, 8, 0, 0, 2), 0)
+    bytes.free(buf4)
+
+    // ─── fill_path_in_buffer: evenodd vs nonzero ────────────────
+    // A square with a hole (concentric squares, opposite winding).
+    // Outer M 0 0 L 10 0 L 10 10 L 0 10 Z  (clockwise)
+    // Inner M 3 3 L 3 7 L 7 7 L 7 3 Z      (counterclockwise — hole)
+    // Evenodd fills the annulus; centre cell (5,5) should be empty.
+    buf5 = mk_buf(10, 10)
+    rasterize.fill_path_in_buffer(buf5, 10, 10,
+                                  "M 0 0 L 10 0 L 10 10 L 0 10 Z M 3 3 L 3 7 L 7 7 L 7 3 Z",
+                                  0.0, 0.0,
+                                  0, 255, 0, 255,
+                                  rasterize.FILL_EVENODD())
+    assert_eq_int("evenodd annulus inside (1,1) G", get_ch(buf5, 10, 1, 1, 1), 255)
+    assert_eq_int("evenodd annulus hole (5,5) G",   get_ch(buf5, 10, 5, 5, 1), 0)
+    bytes.free(buf5)
+
+    // ─── fill_path_in_buffer: cubic Bézier path ─────────────────
+    // Path with a C command — exercises flatten_cubic.
+    // Loop: M 5 1 C 9 1 9 9 5 9 C 1 9 1 1 5 1 Z is a closed lens shape
+    // around (5,5). The centre pixel should be filled.
+    buf_cubic = mk_buf(10, 10)
+    rasterize.fill_path_in_buffer(buf_cubic, 10, 10,
+                                  "M 5 1 C 9 1 9 9 5 9 C 1 9 1 1 5 1 Z",
+                                  0.0, 0.0,
+                                  0, 0, 0, 255,
+                                  rasterize.FILL_NONZERO())
+    assert_eq_int("cubic path centre A", get_ch(buf_cubic, 10, 5, 5, 3), 255)
+    // Corner (0,0) should be empty.
+    assert_eq_int("cubic path corner A", get_ch(buf_cubic, 10, 0, 0, 3), 0)
+    bytes.free(buf_cubic)
+
+    // ─── apply_clip_mask ────────────────────────────────────────
+    // target alpha 255 everywhere; mask alpha 128 at every pixel.
+    // After: target alpha = 255 * 128 / 255 = 128.
+    target = mk_buf(2, 2)
+    mask   = mk_buf(2, 2)
+    i = 0
+    while i < 4 {
+        bytes.set(target, i * 4 + 3, 255)
+        bytes.set(mask,   i * 4 + 3, 128)
+        i = i + 1
+    }
+    rasterize.apply_clip_mask(target, mask, 4)
+    // Expected: 128 (lrint(255 * 128 / 255) = lrint(128.0) = 128)
+    assert_eq_int("clip mask pixel 0 alpha", bytes.get(target, 3), 128)
+    assert_eq_int("clip mask pixel 1 alpha", bytes.get(target, 7), 128)
+    assert_eq_int("clip mask pixel 2 alpha", bytes.get(target, 11), 128)
+    assert_eq_int("clip mask pixel 3 alpha", bytes.get(target, 15), 128)
+    bytes.free(target)
+    bytes.free(mask)
+
+    println("=== test_rasterize passed ===")
+}

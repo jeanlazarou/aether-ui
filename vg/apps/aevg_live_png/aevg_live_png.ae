@@ -1,0 +1,75 @@
+// example_aevg_live_png.ae — headless one-frame composite of live regions.
+//
+// Proves the in-scene composite: a RASTER live region (filled with a generated
+// pattern) UNDER a DRAW live region (a shape drawn over it), composited into one
+// canvas and written to a PNG — no window, no timer. The live demo
+// (example_aevg_live) does the same each frame on a window; this is the
+// verifiable single frame.
+//
+//   ./build.sh aevg/example_aevg_live_png.ae build/aevg_live_png && ./build/aevg_live_png
+
+import aether_ui
+import aether_ui (canvas_create, canvas_write_png, canvas_clear)
+import vg.live (vg, video_region, canvas_region, vg_flush_live)
+import vg
+import vg (view_box)
+import vg.grammar.factories
+import vg.grammar.factories (opts_new, opts_set_view_box, opts_set_width, opts_set_height, create_aevg_context)
+import vg.backend.gtk
+import vg.region
+import std.os (os_getenv)
+import std.string
+
+main() {
+    out = os_getenv("AEVG_OUT")
+    if string.length(out) == 0 { out = "/tmp/live.png" }
+
+    cid = canvas_create(200, 200)
+    scene = mk_scene(cid)
+    root = vg.vg_root(scene)
+
+    // RASTER region: a 50×50 area at viewBox (10,10). Generate a solid magenta
+    // frame and push it (a stand-in for a decoder/CPU frame source).
+    vr = video_region(root, 10.0, 10.0, 50.0, 50.0, 50, 50)
+    push_solid(vr, 50, 50, 255, 0, 255, 255)
+
+    // DRAW region: a blue square drawn over the raster at viewBox (40,40,30,30)
+    // — its bottom-right overlaps the raster's bottom-right corner, so the PNG
+    // shows magenta with a blue square biting into it (correct z-compose).
+    canvas_region(root, 0.0, 0.0, 100.0, 100.0) callback |rn: ptr, t: float| {
+        n = vg.rect(rn, 40.0, 40.0, 30.0, 30.0)
+        vg.fill(n, "#0000ff")
+    }
+
+    canvas_clear(cid)
+    vg_flush_live(scene, cid, 0.0)
+    ok = canvas_write_png(cid, out, 200, 200)
+    if ok == 1 { println("wrote ${out}") } else { println("PNG write FAILED") }
+}
+
+// Generate a solid-colour RGBA frame and push it to the region (stand-in for a
+// decoder / CPU frame source: build a buffer, finish to a string, push).
+push_solid(region: ptr, w: int, h: int, r: int, g: int, b: int, a: int) {
+    buf = region.new_frame_buffer(w, h)
+    n = w * h
+    i = 0
+    while i < n {
+        region.buf_set_px(buf, i, r, g, b, a)
+        i = i + 1
+    }
+    frame = region.frame_finish(buf, w, h)
+    region.region_push(region, frame, w * h * 4)
+}
+
+mk_scene(cid: int) -> ptr {
+    backend = gtk.gtk_backend_new(cid)
+    opts = opts_new()
+    opts_set_view_box(opts, view_box(0.0, 0.0, 100.0, 100.0))
+    opts_set_width(opts, 200.0)
+    opts_set_height(opts, 200.0)
+    ctx = create_aevg_context(opts)
+    s = vg.scene_new(ctx, backend)
+    vg.scene_set_canvas(s, cid)
+    vg.scene_set_deferred(s, 1)
+    return s
+}

@@ -1,0 +1,144 @@
+// aevg/test_grammar_animations.ae — regression test for animations.ae.
+//
+// Tests use a synthetic clock (passing `now_ms` explicitly to
+// tick_animations) rather than the real os.now_monotonic_ms — that
+// way the test is fast, deterministic, and doesn't sleep. Real
+// usage in the eventual backend wiring would pass the actual
+// monotonic clock value once per frame.
+//
+// Tick functions are inline `callback |el: ptr, t: float| { ... }` closures
+// that capture a per-scenario *Recorder ptr. This exercises the
+// v0.193+1 fn ↔ ptr coercion fix — captured-state closures survive
+// storage in the manager's `tick_fn: ptr` field and invocation
+// later via a `fn`-typed call-site parameter.
+//
+// API note: the manager passes RAW t in [0, 1]. The closure
+// applies easing itself (e.g. via `easing.ease_in(t)`). This is
+// a deliberate workaround for an Aether codegen bug — invoking
+// a fn-typed param that returns float through closure-unbox emits
+// an `int(*)` cast that mangles the return. Filed as follow-up to
+// aether/fn_ptr_coercion.md.
+
+import vg.grammar.animations
+import vg.geom.easing
+import std.math
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_near(label: string, got: float, want: float) {
+    if math.abs_float(got - want) < 0.001 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+struct Recorder {
+    last_t: float
+    call_count: int
+}
+
+mk_recorder() -> *Recorder {
+    r = malloc(16) as *Recorder
+    r.last_t = 0.0 - 1.0
+    r.call_count = 0
+    return r
+}
+
+main() {
+    println("=== test_grammar_animations ===")
+    el_sentinel = malloc(8)
+
+    // ─── Scenario A: linear (no easing applied) ──────────────────
+    mgr_a = animations.manager_new()
+    rec_a = mk_recorder()
+    h_a = animations.add_animation(
+        mgr_a, el_sentinel,
+        1000, 0, 0, 0, 0
+    ) callback |el: ptr, t: float| {
+        // Linear: store t as-is.
+        rec_a.last_t = t
+        rec_a.call_count = rec_a.call_count + 1
+    }
+    assert_eq_int("A added 1 animation",
+                   animations.animation_count(mgr_a), 1)
+
+    animations.tick_animations(mgr_a, 0)
+    assert_eq_int("A tick at 0ms: count = 1", rec_a.call_count, 1)
+    assert_near("A t at 0ms",                  rec_a.last_t, 0.0)
+
+    animations.tick_animations(mgr_a, 500)
+    assert_near("A t at 500ms",                rec_a.last_t, 0.5)
+
+    animations.tick_animations(mgr_a, 1000)
+    assert_near("A t at 1000ms",               rec_a.last_t, 1.0)
+    assert_eq_int("A completed",               animations.handle_completed(h_a), 1)
+    assert_eq_int("A removed",                 animations.animation_count(mgr_a), 0)
+
+    // ─── Scenario B: closure applies ease_in inline ──────────────
+    // ease_in is t² — at raw t=0.5, eased = 0.25.
+    mgr_b = animations.manager_new()
+    rec_b = mk_recorder()
+    _h_b = animations.add_animation(
+        mgr_b, el_sentinel,
+        1000, 0, 0, 0, 0
+    ) callback |el: ptr, t: float| {
+        // Apply ease_in inside the closure.
+        rec_b.last_t = easing.ease_in(t)
+        rec_b.call_count = rec_b.call_count + 1
+    }
+    animations.tick_animations(mgr_b, 500)
+    assert_near("B ease_in(0.5) = 0.25", rec_b.last_t, 0.25)
+    animations.tick_animations(mgr_b, 800)
+    assert_near("B ease_in(0.8) = 0.64", rec_b.last_t, 0.64)
+
+    // ─── Scenario C: delay ───────────────────────────────────────
+    mgr_c = animations.manager_new()
+    rec_c = mk_recorder()
+    _h_c = animations.add_animation(
+        mgr_c, el_sentinel,
+        1000, 200, 0, 0, 0
+    ) callback |el: ptr, t: float| {
+        rec_c.last_t = t
+        rec_c.call_count = rec_c.call_count + 1
+    }
+    animations.tick_animations(mgr_c, 0)
+    assert_eq_int("C before delay: 0 calls",     rec_c.call_count, 0)
+    animations.tick_animations(mgr_c, 100)
+    assert_eq_int("C still before delay: 0",     rec_c.call_count, 0)
+    animations.tick_animations(mgr_c, 200)
+    assert_eq_int("C at delay: 1 call",          rec_c.call_count, 1)
+    assert_near("C at delay: t = 0",              rec_c.last_t, 0.0)
+    animations.tick_animations(mgr_c, 700)
+    assert_near("C halfway after delay: t = 0.5", rec_c.last_t, 0.5)
+
+    // ─── Scenario D: remove + stop_all ───────────────────────────
+    mgr_d = animations.manager_new()
+    rec_d = mk_recorder()
+    h_d1 = animations.add_animation(
+        mgr_d, el_sentinel,
+        1000, 0, 0, 0, 0
+    ) callback |el: ptr, t: float| {
+        rec_d.last_t = t
+        rec_d.call_count = rec_d.call_count + 1
+    }
+    _h_d2 = animations.add_animation(
+        mgr_d, el_sentinel,
+        1000, 0, 0, 0, 0
+    ) callback |el: ptr, t: float| {
+        rec_d.last_t = t
+        rec_d.call_count = rec_d.call_count + 1
+    }
+    assert_eq_int("D 2 animations added", animations.animation_count(mgr_d), 2)
+    animations.remove_animation(mgr_d, h_d1)
+    assert_eq_int("D after remove: 1 anim", animations.animation_count(mgr_d), 1)
+    assert_eq_int("D h_d1 stopped",          animations.handle_stopped(h_d1), 1)
+    animations.stop_all_animations(mgr_d)
+    assert_eq_int("D after stop_all: 0 anims", animations.animation_count(mgr_d), 0)
+    assert_eq_int("D is_animating = 0",        animations.is_animating(mgr_d), 0)
+
+    println("=== test_grammar_animations passed ===")
+}

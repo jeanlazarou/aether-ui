@@ -1,0 +1,178 @@
+// aevg/test_loader.ae — regression test for loader.ae.
+//
+// End-to-end: feed an SVG string in, walk the tree through the
+// shape factories, inspect the backend's recorded calls.
+//
+// This is the integration test the whole port has been building
+// toward — a real <svg> string in, a sequence of recorded backend
+// calls out, with positions and styles preserved per SVG spec.
+
+import vg.svg.loader
+import vg.backend.record
+import vg.grammar.context
+import std.string
+import std.math
+
+extern exit(code: int)
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_opt_near(label: string, b: ptr, i: int, key: string, want: float) {
+    s = record.backend_opt_get(b, i, key)
+    got, e = string.to_double(s)
+    if e != "" { println("  FAIL: ${label}: parse '${s}' → ${e}"); exit(1) }
+    if math.abs_float(got - want) < 0.01 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_opt_str(label: string, b: ptr, i: int, key: string, want: string) {
+    got = record.backend_opt_get(b, i, key)
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+main() {
+    println("=== test_loader ===")
+
+    // ─── Minimal SVG: single circle ──────────────────────────────
+    bk1 = record.backend_new()
+    svg1 = "<svg viewBox='0 0 100 100' width='100' height='100'><circle cx='50' cy='50' r='25' fill='red'/></svg>"
+    _ctx1 = loader.load_svg(bk1, svg1, 100.0, 100.0)
+    assert_eq_int("minimal: 1 backend call", record.backend_call_count(bk1), 1)
+    assert_eq_str("minimal: kind=circle",    record.backend_kind(bk1, 0), "circle")
+    assert_opt_near("minimal: circle.x",     bk1, 0, "x",  25.0)
+    assert_opt_near("minimal: circle.x2",    bk1, 0, "x2", 75.0)
+    assert_opt_str("minimal: fillColor",      bk1, 0, "fillColor", "red")
+
+    // ─── Mix: rect + circle + line ───────────────────────────────
+    bk2 = record.backend_new()
+    svg2 = "<svg viewBox='0 0 100 100' width='100' height='100'><rect x='10' y='10' width='30' height='30' fill='blue'/><circle cx='60' cy='60' r='20' fill='green'/><line x1='0' y1='0' x2='100' y2='100' stroke='black'/></svg>"
+    _ctx2 = loader.load_svg(bk2, svg2, 100.0, 100.0)
+    assert_eq_int("mix: 3 calls",       record.backend_call_count(bk2), 3)
+    assert_eq_str("mix: call 0 = rect",   record.backend_kind(bk2, 0), "rectangle")
+    assert_eq_str("mix: call 1 = circle", record.backend_kind(bk2, 1), "circle")
+    assert_eq_str("mix: call 2 = line",   record.backend_kind(bk2, 2), "line")
+    assert_opt_str("mix: rect fill",  bk2, 0, "fillColor",   "blue")
+    assert_opt_str("mix: circle fill", bk2, 1, "fillColor",   "green")
+    assert_opt_str("mix: line stroke", bk2, 2, "strokeColor", "black")
+
+    // ─── Grouped: <g transform> with two children ────────────────
+    // The translate(10 20) should shift both children's coords.
+    bk3 = record.backend_new()
+    svg3 = "<svg viewBox='0 0 100 100' width='100' height='100'><g transform='translate(10 20)'><rect x='0' y='0' width='20' height='20' fill='red'/><circle cx='30' cy='30' r='5' fill='blue'/></g></svg>"
+    _ctx3 = loader.load_svg(bk3, svg3, 100.0, 100.0)
+    assert_eq_int("group: 2 calls", record.backend_call_count(bk3), 2)
+    // Rect: x=0, y=0 + translate(10, 20) → bbox (10, 20)..(30, 40)
+    assert_opt_near("group rect x",  bk3, 0, "x",  10.0)
+    assert_opt_near("group rect y",  bk3, 0, "y",  20.0)
+    assert_opt_near("group rect x2", bk3, 0, "x2", 30.0)
+    assert_opt_near("group rect y2", bk3, 0, "y2", 40.0)
+    // Circle: cx=30, cy=30, r=5 + translate(10, 20) → center (40, 50)
+    assert_opt_near("group circle x",  bk3, 1, "x",  35.0)
+    assert_opt_near("group circle x2", bk3, 1, "x2", 45.0)
+    assert_opt_near("group circle y",  bk3, 1, "y",  45.0)
+    assert_opt_near("group circle y2", bk3, 1, "y2", 55.0)
+
+    // ─── Polyline → path emission ────────────────────────────────
+    bk4 = record.backend_new()
+    svg4 = "<svg viewBox='0 0 100 100' width='100' height='100'><polyline points='0,0 50,50 100,0' stroke='blue'/></svg>"
+    _ctx4 = loader.load_svg(bk4, svg4, 100.0, 100.0)
+    assert_eq_int("polyline: 1 call",     record.backend_call_count(bk4), 1)
+    assert_eq_str("polyline: kind=path",  record.backend_kind(bk4, 0), "path")
+    assert_opt_str("polyline: d",          bk4, 0, "d", "M 0 0 L 50 50 L 100 0")
+
+    // ─── Polygon: closes with Z ──────────────────────────────────
+    bk5 = record.backend_new()
+    svg5 = "<svg viewBox='0 0 100 100' width='100' height='100'><polygon points='0 0 100 0 50 86.6' fill='lime'/></svg>"
+    _ctx5 = loader.load_svg(bk5, svg5, 100.0, 100.0)
+    assert_eq_str("polygon: d closes with Z",
+                   record.backend_opt_get(bk5, 0, "d"),
+                   "M 0 0 L 100 0 L 50 86.6 Z")
+
+    // ─── Path: passes the d-string through unchanged ─────────────
+    bk6 = record.backend_new()
+    svg6 = "<svg viewBox='0 0 100 100' width='100' height='100'><path d='M 10 10 L 90 10 L 50 90 Z' fill='yellow'/></svg>"
+    _ctx6 = loader.load_svg(bk6, svg6, 100.0, 100.0)
+    assert_eq_str("path: d preserved",
+                   record.backend_opt_get(bk6, 0, "d"),
+                   "M 10 10 L 90 10 L 50 90 Z")
+
+    // ─── Mixed: text + ellipse (now a path) + rect all render. ───
+    //     (ellipse renders as a two-arc <path> via utils.)
+    bk7 = record.backend_new()
+    svg7 = "<svg viewBox='0 0 100 100' width='100' height='100'><defs><linearGradient id='g1'/></defs><text x='10' y='20'>hi</text><ellipse cx='50' cy='50' rx='20' ry='10'/><rect x='0' y='0' width='10' height='10' fill='black'/></svg>"
+    _ctx7 = loader.load_svg(bk7, svg7, 100.0, 100.0)
+    assert_eq_int("mixed: 3 calls (text + ellipse-as-path + rect)",
+                   record.backend_call_count(bk7), 3)
+    assert_eq_str("mixed: call 0 = text",
+                   record.backend_kind(bk7, 0), "text")
+    assert_eq_str("mixed: call 1 = ellipse (path)",
+                   record.backend_kind(bk7, 1), "path")
+    assert_eq_str("mixed: call 2 = rect",
+                   record.backend_kind(bk7, 2), "rectangle")
+
+    // ─── Nested group → deep transform composition ───────────────
+    bk8 = record.backend_new()
+    svg8 = "<svg viewBox='0 0 100 100' width='100' height='100'><g transform='translate(5 5)'><g transform='scale(2)'><rect x='0' y='0' width='10' height='10' fill='red'/></g></g></svg>"
+    _ctx8 = loader.load_svg(bk8, svg8, 100.0, 100.0)
+    // translate(5,5) ∘ scale(2): rect (0,0)..(10,10) → scale → (0,0)..(20,20) → translate → (5,5)..(25,25)
+    assert_opt_near("nested g: rect x",  bk8, 0, "x",  5.0)
+    assert_opt_near("nested g: rect y",  bk8, 0, "y",  5.0)
+    assert_opt_near("nested g: rect x2", bk8, 0, "x2", 25.0)
+    assert_opt_near("nested g: rect y2", bk8, 0, "y2", 25.0)
+
+    // ─── <use href="#id"> — clones a referenced shape ─────────────
+    // <defs><circle id="dot" cx="0" cy="0" r="5"/></defs>
+    // <use href="#dot" x="20" y="30"/>
+    // → circle dispatch at (20, 30) bbox (15,25)..(25,35)
+    bk9 = record.backend_new()
+    svg9 = "<svg viewBox='0 0 100 100' width='100' height='100'><defs><circle id='dot' cx='0' cy='0' r='5'/></defs><use href='#dot' x='20' y='30'/></svg>"
+    _ctx9 = loader.load_svg(bk9, svg9, 100.0, 100.0)
+    assert_eq_int("use: 1 backend call", record.backend_call_count(bk9), 1)
+    assert_eq_str("use: kind=circle",     record.backend_kind(bk9, 0), "circle")
+    assert_opt_near("use: cx-r = 15",     bk9, 0, "x",  15.0)
+    assert_opt_near("use: cx+r = 25",     bk9, 0, "x2", 25.0)
+    assert_opt_near("use: cy-r = 25",     bk9, 0, "y",  25.0)
+    assert_opt_near("use: cy+r = 35",     bk9, 0, "y2", 35.0)
+
+    // ─── Multiple <use> reusing the same template ────────────────
+    bk10 = record.backend_new()
+    svg10 = "<svg viewBox='0 0 100 100' width='100' height='100'><defs><circle id='c' cx='0' cy='0' r='2'/></defs><use href='#c' x='10' y='10'/><use href='#c' x='90' y='90'/></svg>"
+    _ctx10 = loader.load_svg(bk10, svg10, 100.0, 100.0)
+    assert_eq_int("use x2: 2 backend calls", record.backend_call_count(bk10), 2)
+    // First use: center (10, 10), r=2 → bbox (8,8)..(12,12)
+    assert_opt_near("use[0] x",  bk10, 0, "x",  8.0)
+    assert_opt_near("use[0] x2", bk10, 0, "x2", 12.0)
+    // Second: center (90, 90)
+    assert_opt_near("use[1] x",  bk10, 1, "x",  88.0)
+    assert_opt_near("use[1] x2", bk10, 1, "x2", 92.0)
+
+    // ─── xlink:href is also accepted ─────────────────────────────
+    bk11 = record.backend_new()
+    svg11 = "<svg viewBox='0 0 100 100' width='100' height='100'><defs><rect id='r' x='0' y='0' width='4' height='4' fill='red'/></defs><use xlink:href='#r' x='50' y='60'/></svg>"
+    _ctx11 = loader.load_svg(bk11, svg11, 100.0, 100.0)
+    assert_eq_int("xlink:href use: 1 call", record.backend_call_count(bk11), 1)
+    // rect at (0,0,4,4) translated by (50, 60) → bbox (50,60)..(54,64)
+    assert_opt_near("xlink:href rect x",  bk11, 0, "x",  50.0)
+    assert_opt_near("xlink:href rect x2", bk11, 0, "x2", 54.0)
+    assert_opt_near("xlink:href rect y",  bk11, 0, "y",  60.0)
+    assert_opt_near("xlink:href rect y2", bk11, 0, "y2", 64.0)
+
+    // ─── <use> with missing referent → silent no-op (no crash) ───
+    bk12 = record.backend_new()
+    svg12 = "<svg viewBox='0 0 100 100' width='100' height='100'><use href='#nope' x='10' y='10'/><rect x='0' y='0' width='5' height='5'/></svg>"
+    _ctx12 = loader.load_svg(bk12, svg12, 100.0, 100.0)
+    // The use silently no-ops; the rect still renders.
+    assert_eq_int("missing ref: 1 call (rect)", record.backend_call_count(bk12), 1)
+    assert_eq_str("missing ref: kind=rect",     record.backend_kind(bk12, 0), "rectangle")
+
+    println("=== test_loader passed ===")
+}

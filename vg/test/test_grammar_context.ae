@@ -1,0 +1,171 @@
+// aevg/test_grammar_context.ae — regression test for context.ae.
+//
+// Covers the core Tier-C context surface: ViewBoxMapping construction,
+// the five registries (gradient/filter/clipPath/node/cssRule), and the
+// three stacks (style/transform/when). Animation, event tracking,
+// bindings — separate commits.
+
+import vg.grammar.context
+import vg.geom.transform
+import std.string
+import std.math
+
+extern exit(code: int)
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_near(label: string, got: float, want: float) {
+    if math.abs_float(got - want) < 0.0001 {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_not_null(label: string, p: ptr) {
+    if p == null {
+        println("  FAIL: ${label}: ptr is null")
+        exit(1)
+    } else {
+        println("  PASS: ${label} (non-null)")
+    }
+}
+
+assert_null(label: string, p: ptr) {
+    if p == null {
+        println("  PASS: ${label} (null)")
+    } else {
+        println("  FAIL: ${label}: ptr is non-null")
+        exit(1)
+    }
+}
+
+main() {
+    println("=== test_grammar_context ===")
+
+    // ─── ViewBoxMapping construction + accessors ─────────────────
+    id_xform = transform.affine_identity()
+    m = context.mapping_new(
+        0.0 - 10.0, 0.0 - 5.0, 100.0, 50.0,    // vb_min_x, vb_min_y, vb_w, vb_h
+        400.0, 200.0,                          // canvas_w, canvas_h
+        4.0,                                   // scale
+        20.0, 10.0,                            // offset_x, offset_y
+        id_xform                               // transform handle
+    )
+    assert_near("mapping vb min_x", context.mapping_vb_min_x(m), 0.0 - 10.0)
+    assert_near("mapping vb min_y", context.mapping_vb_min_y(m), 0.0 - 5.0)
+    assert_near("mapping vb width", context.mapping_vb_width(m), 100.0)
+    assert_near("mapping canvas w", context.mapping_canvas_width(m), 400.0)
+    assert_near("mapping canvas h", context.mapping_canvas_height(m), 200.0)
+    assert_near("mapping scale",    context.mapping_scale(m), 4.0)
+    assert_near("mapping offset_x", context.mapping_offset_x(m), 20.0)
+    assert_near("mapping offset_y", context.mapping_offset_y(m), 10.0)
+    assert_not_null("mapping transform handle", context.mapping_transform(m))
+
+    // ─── new_context: starts with identity on transform stack ────
+    ctx = context.new_context(m)
+    assert_not_null("ctx non-null", ctx)
+    assert_eq_int("ctx initial transform-stack depth", context.transform_depth(ctx), 1)
+    // Style stack is seeded with one empty base frame (matches TS [{}]).
+    assert_eq_int("ctx initial style-stack depth",     context.style_depth(ctx), 1)
+    assert_eq_int("ctx initial when-stack depth",      context.when_depth(ctx), 0)
+    assert_not_null("ctx mapping accessor", context.ctx_mapping(ctx))
+
+    // ─── Gradient registry ───────────────────────────────────────
+    // Store a sentinel handle (any non-null ptr works — the registry
+    // doesn't care about the value's shape).
+    grad_a = transform.affine_translate(1.0, 2.0)   // sentinel ptr
+    grad_b = transform.affine_translate(3.0, 4.0)
+    context.register_gradient(ctx, "grad1", grad_a)
+    context.register_gradient(ctx, "grad2", grad_b)
+    assert_eq_int("has grad1",    context.has_gradient(ctx, "grad1"), 1)
+    assert_eq_int("has grad2",    context.has_gradient(ctx, "grad2"), 1)
+    assert_eq_int("no grad-x",    context.has_gradient(ctx, "x"), 0)
+    assert_not_null("get grad1", context.get_gradient(ctx, "grad1"))
+    assert_null("get missing", context.get_gradient(ctx, "missing"))
+
+    // Round-trip the same ptr.
+    fetched = context.get_gradient(ctx, "grad1")
+    // Check via the transform.affine_e accessor that the underlying
+    // *Affine is still grad_a.
+    assert_near("grad1 round-trip .e", transform.affine_e(fetched), 1.0)
+
+    // ─── Filter registry ─────────────────────────────────────────
+    flt_a = transform.affine_translate(5.0, 0.0)
+    context.register_filter(ctx, "blur1", flt_a)
+    assert_eq_int("has filter blur1", context.has_filter(ctx, "blur1"), 1)
+    assert_not_null("get filter blur1", context.get_filter(ctx, "blur1"))
+
+    // ─── ClipPath registry ───────────────────────────────────────
+    cp_a = transform.affine_translate(7.0, 0.0)
+    context.register_clip_path(ctx, "clip1", cp_a)
+    assert_eq_int("has cp clip1", context.has_clip_path(ctx, "clip1"), 1)
+
+    // ─── Node-by-id ──────────────────────────────────────────────
+    node_a = transform.affine_translate(11.0, 0.0)
+    context.register_node(ctx, "node1", node_a)
+    assert_eq_int("has node1", context.has_node(ctx, "node1"), 1)
+    assert_not_null("get node1", context.get_node(ctx, "node1"))
+
+    // ─── CSS rules ───────────────────────────────────────────────
+    rule_a = transform.affine_translate(13.0, 0.0)
+    context.register_css_rule(ctx, ".my-class", rule_a)
+    assert_eq_int("has css .my-class", context.has_css_rule(ctx, ".my-class"), 1)
+    assert_not_null("get css .my-class", context.get_css_rule(ctx, ".my-class"))
+
+    // ─── Style stack ─────────────────────────────────────────────
+    style_a = transform.affine_translate(100.0, 0.0)
+    style_b = transform.affine_translate(200.0, 0.0)
+    // (Depths are +1 vs the raw push count because of the seeded base frame.)
+    context.style_push(ctx, style_a)
+    assert_eq_int("style stack depth 2", context.style_depth(ctx), 2)
+    context.style_push(ctx, style_b)
+    assert_eq_int("style stack depth 3", context.style_depth(ctx), 3)
+    top = context.style_top(ctx)
+    assert_near("style top .e (b)", transform.affine_e(top), 200.0)
+    context.style_pop(ctx)
+    assert_eq_int("style depth after pop", context.style_depth(ctx), 2)
+    top2 = context.style_top(ctx)
+    assert_near("style top after pop .e (a)", transform.affine_e(top2), 100.0)
+
+    // Raw style_pop empties fully (the bottom-preserve guard lives in the
+    // higher-level pop_style, not here). Pop past empty → no-op, no crash.
+    context.style_pop(ctx)
+    context.style_pop(ctx)
+    context.style_pop(ctx)
+    assert_eq_int("style depth after over-pop", context.style_depth(ctx), 0)
+    assert_null("style_top on empty", context.style_top(ctx))
+
+    // ─── Transform stack (already has identity from new_context) ──
+    xa = transform.affine_translate(50.0, 0.0)
+    context.transform_push(ctx, xa)
+    assert_eq_int("transform depth = 2", context.transform_depth(ctx), 2)
+    top_t = context.transform_top(ctx)
+    assert_near("transform top .e", transform.affine_e(top_t), 50.0)
+    context.transform_pop(ctx)
+    top_t2 = context.transform_top(ctx)
+    // Back to identity (transform_translate(0,0) ≡ identity)
+    assert_eq_int("transform .a == 1 after pop", transform.affine_is_identity_p(top_t2), 1)
+
+    // ─── When stack (closures stored as fn) ──────────────────────
+    // Pass predicates as callback {} (AeVG convention — never bare
+    // named fns in a fn-slot).
+    context.when_push(ctx) callback { return 1 }
+    context.when_push(ctx) callback { return 0 }
+    assert_eq_int("when depth = 2", context.when_depth(ctx), 2)
+    context.when_pop(ctx)
+    assert_eq_int("when depth = 1 after pop", context.when_depth(ctx), 1)
+    // Reading top — the value is a ptr; we can't easily invoke it back
+    // through the ptr without an extra cast layer. Just check non-null.
+    assert_not_null("when top ptr non-null", context.when_top(ctx))
+
+    println("=== test_grammar_context passed ===")
+}

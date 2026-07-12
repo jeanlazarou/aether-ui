@@ -1,0 +1,267 @@
+// aevg/path_builder.ae — fluent path construction (Tier C).
+//
+// Port of the PathBuilder class from grammar-defs.ts. Lets callers
+// construct an SVG path imperatively rather than as a literal `d`
+// string:
+//
+//   pb = path_builder.new(ctx, backend)
+//   path_builder.move_to(pb, 50.0, 30.0)
+//   path_builder.cubic_to(pb, 59.0, 8.0, 92.0, 6.0, 98.0, 30.0)
+//   path_builder.close(pb)
+//   path_builder.fill(pb, "red")
+//
+// (TS has the same shape via fluent `return this` chains; without
+// classes in Aether, callers pass `pb` to each step explicitly.)
+//
+// Renders by accumulating d-string parts and calling
+// shapes.shape_path with a synthesised attrs map when
+// fill() or stroke() is invoked. Arc/quadraticTo route through
+// normalizer.normalize_commands then serialise back (TS source
+// does the same trick — normalize to M/L/C, drop the leading M,
+// append the rest).
+//
+// API:
+//   new(ctx, backend) -> *PathBuilder
+//   move_to(pb, x, y)
+//   line_to(pb, x, y)
+//   cubic_to(pb, cp1x, cp1y, cp2x, cp2y, x, y)
+//   quadratic_to(pb, cpx, cpy, x, y)   — promoted to cubic
+//   arc(pb, rx, ry, xrot, large_arc, sweep, x, y)  — flattened
+//   close(pb)
+//   fill(pb, color)    — sets fill and dispatches
+//   stroke(pb, color, width)
+//   d(pb) -> string    — peek the accumulated path string
+//   reset(pb)          — clear the buffer (for reuse)
+
+exports (
+    pb_new, pb_move_to, pb_line_to, pb_cubic_to,
+    pb_quadratic_to, pb_arc, pb_close,
+    pb_fill, pb_stroke, pb_d, pb_reset
+)
+
+import std.string
+import std.map
+import std.list
+import std.floatarr
+import vg.svg.normalizer
+import vg.grammar.shapes
+
+extern malloc(size: int) -> ptr
+extern lrint(x: float) -> long
+
+// ─── PathBuilder struct ──────────────────────────────────────────
+//
+// Holds:
+//   ctx, backend — the AevgContext + backend handles to forward to
+//                  shapes.shape_path when fill/stroke fires
+//   parts        — accumulated d-string parts (one big string, with
+//                  spaces between commands)
+//   cx, cy       — current pen position (for relative steps and
+//                  for the arc/quadraticTo M-prefix trick)
+
+struct PathBuilder {
+    ctx: ptr
+    backend: ptr
+    parts: string
+    cx: float
+    cy: float
+}
+
+pb_new(ctx: ptr, backend: ptr) -> ptr {
+    pb = malloc(48) as *PathBuilder
+    pb.ctx = ctx
+    pb.backend = backend
+    pb.parts = ""
+    pb.cx = 0.0
+    pb.cy = 0.0
+    return pb
+}
+
+// ─── append: glue with a separator ────────────────────────────────
+
+append_part(pb: *PathBuilder, part: string) {
+    if string.length(pb.parts) == 0 {
+        // Copy + retain so the struct field outlives this scope's
+        // auto-release. The string-heap-field-across-return idiom
+        // from cvg/README.md applies here: pb.parts is read later
+        // by other functions (pb_d, pb_fill, ...), but `part` is a
+        // function-local heap string whose lifetime ends at scope.
+        copied = string.copy(part)
+        string_retain(copied)
+        pb.parts = copied
+    } else {
+        combined = string.concat(pb.parts, string.concat(" ", part))
+        string_retain(combined)
+        pb.parts = combined
+    }
+}
+
+// Format a float as a string. `string.from_float` is correct
+// post-v0.193's ABI fix.
+ftos(f: float) -> string { return string.from_float(f) }
+
+// ─── Drawing commands ────────────────────────────────────────────
+
+pb_move_to(p: ptr, x: float, y: float) {
+    pb = p as *PathBuilder
+    s = string.concat("M ", string.concat(ftos(x), string.concat(" ", ftos(y))))
+    append_part(pb, s)
+    pb.cx = x
+    pb.cy = y
+}
+
+pb_line_to(p: ptr, x: float, y: float) {
+    pb = p as *PathBuilder
+    s = string.concat("L ", string.concat(ftos(x), string.concat(" ", ftos(y))))
+    append_part(pb, s)
+    pb.cx = x
+    pb.cy = y
+}
+
+pb_cubic_to(p: ptr, cp1x: float, cp1y: float,
+            cp2x: float, cp2y: float, x: float, y: float) {
+    pb = p as *PathBuilder
+    s = string.concat("C ",
+            string.concat(ftos(cp1x), string.concat(" ",
+                string.concat(ftos(cp1y), string.concat(" ",
+                    string.concat(ftos(cp2x), string.concat(" ",
+                        string.concat(ftos(cp2y), string.concat(" ",
+                            string.concat(ftos(x), string.concat(" ",
+                                ftos(y))))))))))))
+    append_part(pb, s)
+    pb.cx = x
+    pb.cy = y
+}
+
+// Quadratic Bezier: assemble "M cx cy Q cpx cpy x y", normalize
+// (promotes Q → C and any arcs to cubic), drop the leading M, and
+// append the remainder. Same trick TS source uses.
+pb_quadratic_to(p: ptr, cpx: float, cpy: float, x: float, y: float) {
+    pb = p as *PathBuilder
+    temp = string.concat("M ",
+            string.concat(ftos(pb.cx), string.concat(" ",
+                string.concat(ftos(pb.cy), string.concat(" Q ",
+                    string.concat(ftos(cpx), string.concat(" ",
+                        string.concat(ftos(cpy), string.concat(" ",
+                            string.concat(ftos(x), string.concat(" ",
+                                ftos(y))))))))))))
+    appended = normalize_and_strip_m(temp)
+    if string.length(appended) > 0 { append_part(pb, appended) }
+    pb.cx = x
+    pb.cy = y
+}
+
+// Arc: same approach. The arc gets flattened into cubics.
+pb_arc(p: ptr, rx: float, ry: float, x_rotation: float,
+       large_arc: int, sweep: int, x: float, y: float) {
+    pb = p as *PathBuilder
+    temp = string.concat("M ",
+            string.concat(ftos(pb.cx), string.concat(" ",
+                string.concat(ftos(pb.cy), string.concat(" A ",
+                    string.concat(ftos(rx), string.concat(" ",
+                        string.concat(ftos(ry), string.concat(" ",
+                            string.concat(ftos(x_rotation), string.concat(" ",
+                                string.concat(int_to_str(large_arc), string.concat(" ",
+                                    string.concat(int_to_str(sweep), string.concat(" ",
+                                        string.concat(ftos(x), string.concat(" ",
+                                            ftos(y))))))))))))))))))
+    appended = normalize_and_strip_m(temp)
+    if string.length(appended) > 0 { append_part(pb, appended) }
+    pb.cx = x
+    pb.cy = y
+}
+
+int_to_str(i: int) -> string { return string.from_int(i) }
+
+pb_close(p: ptr) {
+    pb = p as *PathBuilder
+    append_part(pb, "Z")
+}
+
+// ─── Accessors / reset ──────────────────────────────────────────
+
+pb_d(p: ptr) -> string {
+    pb = p as *PathBuilder
+    return pb.parts
+}
+
+pb_reset(p: ptr) {
+    pb = p as *PathBuilder
+    pb.parts = ""
+    pb.cx = 0.0
+    pb.cy = 0.0
+}
+
+// ─── normalize_and_strip_m ───────────────────────────────────────
+//
+// The TS source synthesises "M cx cy Q ... " or "M cx cy A ... ",
+// normalises (Q→C, A→C cubics), drops the leading "M cx cy", and
+// keeps the rest. We do the same — but go through normalizer.ae's
+// commands-list then serialise back to a d-string without the
+// leading M.
+
+normalize_and_strip_m(path: string) -> string {
+    cmds = normalizer.normalize_commands(normalizer.parse_path(path))
+    n = list.size(cmds)
+    if n <= 1 { return "" }   // Just the M, nothing to append.
+
+    out = ""
+    // Skip index 0 (the M).
+    i = 1
+    while i < n {
+        item, _ = list.get(cmds, i)
+        type_code = normalizer.cmd_type(item)
+        args = normalizer.cmd_args(item)
+        argn = floatarr.size(args)
+        part = cmd_to_str(type_code, args, argn)
+        if string.length(part) > 0 {
+            if string.length(out) == 0 {
+                out = part
+            } else {
+                out = string.concat(out, string.concat(" ", part))
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Serialise one NormalizedCommand back to a d-string fragment.
+// Normalized commands are M/L/C/Z only (M=77, L=76, C=67, Z=90).
+cmd_to_str(type_code: int, args: ptr, argn: int) -> string {
+    if type_code == 90 { return "Z" }
+    // M, L, C — print the letter then the args.
+    letter = ""
+    if type_code == 77 { letter = "M" }
+    if type_code == 76 { letter = "L" }
+    if type_code == 67 { letter = "C" }
+    if string.length(letter) == 0 { return "" }
+
+    out = letter
+    j = 0
+    while j < argn {
+        v = floatarr.get_unchecked(args, j)
+        out = string.concat(out, string.concat(" ", ftos(v)))
+        j = j + 1
+    }
+    return out
+}
+
+// ─── fill / stroke: dispatch through shape_path ─────────────────
+
+pb_fill(p: ptr, color: string) -> ptr {
+    pb = p as *PathBuilder
+    attrs = map.new()
+    _ = map.put(attrs, "d", pb.parts)
+    _ = map.put(attrs, "fill", color)
+    return shapes.shape_path(pb.ctx, pb.backend, attrs)
+}
+
+pb_stroke(p: ptr, color: string, width: float) -> ptr {
+    pb = p as *PathBuilder
+    attrs = map.new()
+    _ = map.put(attrs, "d", pb.parts)
+    _ = map.put(attrs, "stroke", color)
+    _ = map.put(attrs, "stroke-width", ftos(width))
+    return shapes.shape_path(pb.ctx, pb.backend, attrs)
+}

@@ -1,0 +1,227 @@
+// aevg/style.ae — style cascade (Tier C).
+//
+// Follow-up to rendering.ae's coordinate-mapping subset.
+// Lands the style-stack push/pop + resolve, which is the other
+// big dependency grammar_shapes has (every shape factory calls
+// resolveStyle(attrs) to get the final-resolved style for the
+// underlying widget).
+//
+// Design choice: in the TS source, SvgStyle is an interface with
+// ~15 optional fields. Aether has no nullable struct fields by
+// design — so we represent SvgStyle as a `std.map string→string`,
+// with "absent key" meaning "not set in this layer." The cascade
+// just walks each layer (attrs → inline style → css class → parent)
+// and the first one with the key wins. Numeric values are stored
+// as their string form and converted on read via the existing
+// utils.parse_length_to_px / parse_font_size helpers.
+//
+// Same approach the TS source uses internally: `attrs.x ?? style.x ??
+// css.x ?? inherited.x` reads as "first non-undefined".
+//
+// In scope this commit:
+//   - push_style(ctx, attrs_map, tag, class_name): runs the cascade,
+//     pushes a fresh merged style-map onto the context's style stack
+//   - pop_style(ctx): pops, preserving the bottom (matches TS)
+//   - current_style(ctx) -> ptr: peeks top of stack
+//   - resolve_style(ctx, attrs_map, tag, class_name) -> ptr: same
+//     cascade as push_style but emits a fresh map without pushing
+//   - style_get(style_ptr, key) -> string: convenience reader
+//
+// Out of scope this commit (deferred):
+//   - CSS class rule parsing (registerCssStyle taking a CSS-syntax
+//     string and producing selector→props maps). For now,
+//     get_css_props returns an empty map — cascade still works,
+//     `<rect class="foo">` just won't pick up `.foo { fill: red }`
+//     rules until that lands.
+//   - The `parseLengthToPx` and `parseFontSize` numeric conversions
+//     are still in utils.ae; this module just plumbs the
+//     strings. Callers do their own parsing when they need numbers.
+
+exports (
+    push_style, pop_style, current_style, resolve_style,
+    style_get, style_has
+)
+
+import std.string
+import std.map
+import vg.grammar.context
+import vg.grammar.utils
+
+// ─── CSS property names (the cascade walks these keys) ───────────
+//
+// Each property's resolved value is checked in the order:
+//   1. attrs_map["fill"]   (element attribute, highest priority)
+//   2. parsed inline style ("style=fill:red;")
+//   3. CSS class rule (lowest, not yet wired — empty map)
+//   4. parent style (inherited from style_stack top)
+//
+// The TS source enumerates each property by name. We do the same
+// because the property set is fixed (SvgStyle's 15 fields) and a
+// loop with a string-keyed property list would still need to
+// enumerate the same 15.
+
+cascade_one(out: ptr, key: string, attrs: ptr, inline_style: ptr, css: ptr, parent: ptr) {
+    // Try each source in priority order; first non-empty wins. The winner is
+    // COPIED into `out` (string.copy → the owned-put route), so `out` is
+    // self-contained: it survives its source maps, and map_free(out) releases
+    // its values. Without the copy, `out` held bare pointers into the source
+    // maps, which forced them to leak (freeing them would dangle `out`) —
+    // megabytes/second under a 60fps draw region.
+    av, _ = map.get(attrs, key)
+    if av != null {
+        c1 = string.copy(av)
+        e1 = map.put(out, key, c1)
+        if string.length(e1) > 0 { } // ignore
+        return
+    }
+    sv, _ = map.get(inline_style, key)
+    if sv != null {
+        c2 = string.copy(sv)
+        e2 = map.put(out, key, c2)
+        if string.length(e2) > 0 { }
+        return
+    }
+    cv, _ = map.get(css, key)
+    if cv != null {
+        c3 = string.copy(cv)
+        e3 = map.put(out, key, c3)
+        if string.length(e3) > 0 { }
+        return
+    }
+    if parent != null {
+        pv, _ = map.get(parent, key)
+        if pv != null {
+            c4 = string.copy(pv)
+            e4 = map.put(out, key, c4)
+            if string.length(e4) > 0 { }
+        }
+    }
+}
+
+// ─── get_css_props ───────────────────────────────────────────────
+//
+// Delegates to css.get_css_props, which reads from
+// ctx.css_rules (populated by css.register_css_style when
+// the loader encounters a <style> element). Lookup order: tag
+// selector first, then each space-separated class in class_name —
+// later lookups overwrite earlier ones.
+
+import vg.grammar.css
+
+get_css_props(ctx: ptr, tag: string, class_name: string) -> ptr {
+    return css.get_css_props(ctx, tag, class_name)
+}
+
+// ─── push_style + pop_style + current_style ──────────────────────
+
+// Inputs:
+//   ctx        — *AevgContext handle
+//   attrs      — std.map of the element's attributes (e.g. {fill:red,
+//                stroke:blue, style:"opacity:0.5"})
+//   tag        — element tag name, e.g. "rect" (used for CSS lookup)
+//   class_name — value of the class attribute, or "" if absent
+push_style(ctx: ptr, attrs: ptr, tag: string, class_name: string) {
+    parent = context.style_top(ctx)
+    merged = map.new()
+
+    // The `style` attribute is a sub-mini-language: parse it into a
+    // separate map and use it as the second-priority source.
+    inline_style_str, _ = map.get(attrs, "style")
+    inline_style = map.new()
+    if inline_style_str != null {
+        inline_style = utils.parse_style_attr(inline_style_str)
+    }
+
+    css = get_css_props(ctx, tag, class_name)
+
+    // The TS source enumerates ~15 properties. Same list here.
+    cascade_one(merged, "fill",           attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke",         attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-width",   attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-linecap", attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-linejoin",attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-opacity", attrs, inline_style, css, parent)
+    cascade_one(merged, "fill-opacity",   attrs, inline_style, css, parent)
+    cascade_one(merged, "fill-rule",      attrs, inline_style, css, parent)
+    cascade_one(merged, "opacity",        attrs, inline_style, css, parent)
+    cascade_one(merged, "font-size",      attrs, inline_style, css, parent)
+    cascade_one(merged, "font-family",    attrs, inline_style, css, parent)
+    cascade_one(merged, "font-weight",    attrs, inline_style, css, parent)
+    cascade_one(merged, "font-style",     attrs, inline_style, css, parent)
+    cascade_one(merged, "text-anchor",    attrs, inline_style, css, parent)
+    cascade_one(merged, "filter",         attrs, inline_style, css, parent)
+    cascade_one(merged, "clip-path",      attrs, inline_style, css, parent)
+
+    context.style_push(ctx, merged)
+}
+
+pop_style(ctx: ptr) {
+    // Preserve the bottom (matches TS: only pop if length > 1).
+    if context.style_depth(ctx) > 1 {
+        context.style_pop(ctx)
+    }
+}
+
+current_style(ctx: ptr) -> ptr {
+    return context.style_top(ctx)
+}
+
+// ─── resolve_style — same cascade but no push ────────────────────
+//
+// Used by shape methods that need to compute the final style for
+// one element without affecting the stack (e.g. leaf shapes, which
+// don't have descendants to inherit from them).
+
+resolve_style(ctx: ptr, attrs: ptr, tag: string, class_name: string) -> ptr {
+    parent = context.style_top(ctx)
+    merged = map.new()
+
+    inline_style_str, _ = map.get(attrs, "style")
+    inline_style = map.new()
+    if inline_style_str != null {
+        inline_style = utils.parse_style_attr(inline_style_str)
+    }
+
+    css = get_css_props(ctx, tag, class_name)
+
+    cascade_one(merged, "fill",           attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke",         attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-width",   attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-linecap", attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-linejoin",attrs, inline_style, css, parent)
+    cascade_one(merged, "stroke-opacity", attrs, inline_style, css, parent)
+    cascade_one(merged, "fill-opacity",   attrs, inline_style, css, parent)
+    cascade_one(merged, "fill-rule",      attrs, inline_style, css, parent)
+    cascade_one(merged, "opacity",        attrs, inline_style, css, parent)
+    cascade_one(merged, "font-size",      attrs, inline_style, css, parent)
+    cascade_one(merged, "font-family",    attrs, inline_style, css, parent)
+    cascade_one(merged, "font-weight",    attrs, inline_style, css, parent)
+    cascade_one(merged, "font-style",     attrs, inline_style, css, parent)
+    cascade_one(merged, "text-anchor",    attrs, inline_style, css, parent)
+    cascade_one(merged, "filter",         attrs, inline_style, css, parent)
+    cascade_one(merged, "clip-path",      attrs, inline_style, css, parent)
+
+    // `merged` copied every winner (cascade_one), so the intermediates are
+    // dead now. resolve_style runs once per shape DISPATCH — a 60fps draw
+    // region resolves thousands of times a second, and these two maps were
+    // leaked on every one of them.
+    map.free(inline_style)
+    map.free(css)
+
+    return merged
+}
+
+// ─── style_get / style_has ───────────────────────────────────────
+//
+// Convenience accessors. style_get returns "" for absent keys;
+// callers needing the absent-vs-empty distinction use style_has.
+
+style_get(style: ptr, key: string) -> string {
+    v, _ = map.get(style, key)
+    if v == null { return "" }
+    return v
+}
+
+style_has(style: ptr, key: string) -> int {
+    return map.has(style, key)
+}

@@ -1,0 +1,146 @@
+// aevg/test_path_builder.ae — regression test for path_builder.ae.
+//
+// Builds paths via the fluent API and verifies both the accumulated
+// d-string AND the end-to-end dispatch through shape_path → backend.
+
+import vg.geom.path_builder
+import vg.backend.record
+import vg.grammar.context
+import vg.geom.transform
+import std.string
+import std.math
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_opt_str(label: string, b: ptr, i: int, key: string, want: string) {
+    got = record.backend_opt_get(b, i, key)
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+mk_test_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = context.mapping_new(
+        0.0, 0.0, 100.0, 100.0,
+        100.0, 100.0,
+        1.0, 0.0, 0.0,
+        id
+    )
+    return context.new_context(m)
+}
+
+main() {
+    println("=== test_path_builder ===")
+
+    // ─── Empty path ──────────────────────────────────────────────
+    ctx0 = mk_test_ctx()
+    bk0 = record.backend_new()
+    pb0 = path_builder.pb_new(ctx0, bk0)
+    assert_eq_str("empty path d", path_builder.pb_d(pb0), "")
+
+    // ─── M + L + Z: triangle outline ─────────────────────────────
+    ctx1 = mk_test_ctx()
+    bk1 = record.backend_new()
+    pb1 = path_builder.pb_new(ctx1, bk1)
+    path_builder.pb_move_to(pb1, 10.0, 10.0)
+    path_builder.pb_line_to(pb1, 30.0, 10.0)
+    path_builder.pb_line_to(pb1, 20.0, 30.0)
+    path_builder.pb_close(pb1)
+    assert_eq_str("triangle d",
+                   path_builder.pb_d(pb1),
+                   "M 10 10 L 30 10 L 20 30 Z")
+
+    // ─── cubic_to ────────────────────────────────────────────────
+    ctx2 = mk_test_ctx()
+    bk2 = record.backend_new()
+    pb2 = path_builder.pb_new(ctx2, bk2)
+    path_builder.pb_move_to(pb2, 0.0, 0.0)
+    path_builder.pb_cubic_to(pb2, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0)
+    assert_eq_str("cubic d",
+                   path_builder.pb_d(pb2),
+                   "M 0 0 C 10 0 10 10 0 10")
+
+    // ─── quadratic_to → promoted to cubic via normalizer ─────────
+    // Q at (0,0) → (10,0) ctrl (5,10):
+    //   cp1 = (0,0) + 2/3 * ((5,10) - (0,0)) = (3.33, 6.67)
+    //   cp2 = (10,0) + 2/3 * ((5,10) - (10,0)) = (6.67, 6.67)
+    //   end = (10, 0)
+    ctx3 = mk_test_ctx()
+    bk3 = record.backend_new()
+    pb3 = path_builder.pb_new(ctx3, bk3)
+    path_builder.pb_move_to(pb3, 0.0, 0.0)
+    path_builder.pb_quadratic_to(pb3, 5.0, 10.0, 10.0, 0.0)
+    // The d-string will have a "C" segment; string-compare against
+    // the expected serialisation. Use string.from_float's default
+    // (6 sig figs) — 2/3 = 0.666667, 10/3 = 3.33333.
+    expected_q = "M 0 0 C 3.33333 6.66667 6.66667 6.66667 10 0"
+    assert_eq_str("quadratic d (promoted to C)", path_builder.pb_d(pb3), expected_q)
+
+    // ─── arc → flattened to cubics ───────────────────────────────
+    // Quarter-circle arc from (10, 0) to (0, 10) — a single C
+    // segment should fall out of normalizer's arc-to-cubic.
+    ctx4 = mk_test_ctx()
+    bk4 = record.backend_new()
+    pb4 = path_builder.pb_new(ctx4, bk4)
+    path_builder.pb_move_to(pb4, 10.0, 0.0)
+    path_builder.pb_arc(pb4, 10.0, 10.0, 0.0, 0, 1, 0.0, 10.0)
+    // We don't pin exact bezier control-point values (normalizer's
+    // SVG F.6 produces them); just confirm there's a C segment.
+    arc_d = path_builder.pb_d(pb4)
+    if string.contains(arc_d, "C ") == 1 {
+        println("  PASS: arc emitted at least one C segment")
+    } else {
+        println("  FAIL: arc didn't produce a C segment, got '${arc_d}'")
+        exit(1)
+    }
+
+    // ─── fill → dispatch through shape_path ──────────────────────
+    ctx5 = mk_test_ctx()
+    bk5 = record.backend_new()
+    pb5 = path_builder.pb_new(ctx5, bk5)
+    path_builder.pb_move_to(pb5, 10.0, 10.0)
+    path_builder.pb_line_to(pb5, 30.0, 10.0)
+    path_builder.pb_line_to(pb5, 20.0, 30.0)
+    path_builder.pb_close(pb5)
+    _el = path_builder.pb_fill(pb5, "red")
+    assert_eq_int("fill: 1 backend call", record.backend_call_count(bk5), 1)
+    assert_eq_str("fill: kind=path",       record.backend_kind(bk5, 0), "path")
+    assert_opt_str("fill: d preserved",     bk5, 0, "d", "M 10 10 L 30 10 L 20 30 Z")
+    assert_opt_str("fill: fillColor=red",   bk5, 0, "fillColor", "red")
+
+    // ─── stroke → dispatch with stroke + width ───────────────────
+    ctx6 = mk_test_ctx()
+    bk6 = record.backend_new()
+    pb6 = path_builder.pb_new(ctx6, bk6)
+    path_builder.pb_move_to(pb6, 0.0, 0.0)
+    path_builder.pb_line_to(pb6, 100.0, 100.0)
+    _el2 = path_builder.pb_stroke(pb6, "blue", 2.5)
+    assert_eq_int("stroke: 1 backend call", record.backend_call_count(bk6), 1)
+    assert_eq_str("stroke: kind=path",       record.backend_kind(bk6, 0), "path")
+    assert_opt_str("stroke: strokeColor",     bk6, 0, "strokeColor", "blue")
+    // stroke-width is mapped through map_stroke_width (identity
+    // viewBox + identity transform → 2.5).
+    assert_opt_str("stroke: d preserved",     bk6, 0, "d", "M 0 0 L 100 100")
+
+    // ─── reset clears accumulator ────────────────────────────────
+    pb7 = path_builder.pb_new(ctx0, bk0)
+    path_builder.pb_move_to(pb7, 1.0, 2.0)
+    path_builder.pb_line_to(pb7, 3.0, 4.0)
+    path_builder.pb_reset(pb7)
+    assert_eq_str("after reset: empty d", path_builder.pb_d(pb7), "")
+    // Re-use after reset.
+    path_builder.pb_move_to(pb7, 5.0, 6.0)
+    assert_eq_str("after reset + new move", path_builder.pb_d(pb7), "M 5 6")
+
+    println("=== test_path_builder passed ===")
+}

@@ -1,0 +1,98 @@
+// example_aevg_video.ae — play a raw-RGBA clip in a live region.
+//
+// A real frame source: read a file of concatenated RGBA8888 frames
+// (w*h*4 bytes each — the form `ffmpeg -f rawvideo -pix_fmt rgba` emits) once
+// into memory, then a per-frame video_source slices the current frame and
+// pushes it, advancing + looping each tick. This is the decode/pipe pattern:
+// swap the file read for a decoder and the rest is identical.
+//
+//   AEVG_CLIP=/path/clip.rgba AEVG_CLIP_W=64 AEVG_CLIP_H=64 \
+//     DISPLAY=:0 ./build/aevg_video
+//
+// Headless one-frame proof: example_aevg_video_png (writes a frame to PNG).
+
+import aether_ui
+import aether_ui (window, enable_test_server)
+import vg.live (vg, video_region, video_source)
+import vg
+import vg (view_box, rect, fill)
+import vg.region
+import std.fs
+import std.fs (read_binary)
+import std.string
+import std.os
+import std.os (os_getenv)
+
+extern lrint(x: float) -> long
+
+// A loaded clip: all frames as one binary string + frame geometry + count.
+struct Clip { data: string len: int fw: int fh: int frames: int fps: float }
+extern malloc(size: int) -> ptr
+extern string_retain(s: string)
+
+mk_clip(path: string, fw: int, fh: int, fps: float) -> *Clip {
+    data, len, err = read_binary(path)
+    c = malloc(48) as *Clip
+    if string.length(err) > 0 {
+        println("clip read failed: ${err}")
+        c.data = ""; c.len = 0; c.fw = fw; c.fh = fh; c.frames = 0; c.fps = fps
+        return c
+    }
+    string_retain(data)
+    c.data = data
+    c.len = len
+    c.fw = fw
+    c.fh = fh
+    c.fps = fps
+    fb = fw * fh * 4
+    c.frames = len / fb
+    return c
+}
+
+// The frame index at time t (seconds), looping.
+clip_frame_at(c: *Clip, t: float) -> int {
+    if c.frames <= 0 { return 0 }
+    fnum = lrint(t * c.fps)
+    return fnum % c.frames
+}
+
+// Push clip frame `idx` into the region.
+push_clip_frame(region: ptr, c: *Clip, idx: int) {
+    if c.frames <= 0 { return }
+    fb = c.fw * c.fh * 4
+    start = idx * fb
+    frame = string.substring_n(c.data, c.len, start, start + fb)
+    region.region_push(region, frame, fb)
+}
+
+main() {
+    path = os_getenv("AEVG_CLIP")
+    if string.length(path) == 0 { path = "/tmp/clip.rgba" }
+    fw = env_int("AEVG_CLIP_W", 64)
+    fh = env_int("AEVG_CLIP_H", 64)
+    clip = mk_clip(path, fw, fh, 12.0)
+    println("clip: ${clip.frames} frames ${fw}x${fh}")
+
+    window("AeVG — video region", 420, 420) {
+        vg(view_box(0, 0, 100, 100), 360, 360) {
+            bg = rect(0, 0, 100, 100) { fill("#101018") }
+            // The video region: the clip plays here, scaled to fill (10,10,80,80).
+            vr = video_region(_root_of(bg), 10.0, 10.0, 80.0, 80.0, fw, fh)
+            video_source(vr) callback |region: ptr, t: float| {
+                push_clip_frame(region, clip, clip_frame_at(clip, t))
+            }
+        }
+        test_port = os_getenv("AEVG_TEST_PORT_UNUSED")
+        if test_port != null { enable_test_server(9222) }
+    }
+}
+
+_root_of(node: ptr) -> ptr { return vg.vg_root(vg.node_scene(node)) }
+
+env_int(name: string, dflt: int) -> int {
+    v = os_getenv(name)
+    if string.length(v) == 0 { return dflt }
+    n, ok = string.to_int(v)
+    if ok == 1 { return n }
+    return dflt
+}

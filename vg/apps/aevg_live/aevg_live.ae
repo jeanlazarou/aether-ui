@@ -1,0 +1,164 @@
+// example_aevg_live.ae — the TaOS bar, in-scene: a tumbling wireframe cube
+// drawn over a live animated raster, composited glitch-free in one AeVG canvas.
+//
+// A CPU 3D cube (8 verts, rotated by t around X+Y, perspective-projected, 12
+// edges as vg.line) is a DRAW live region; a colour-cycling plasma is a RASTER
+// live region underneath. Both redraw every frame into one backbuffer that GTK
+// presents atomically — the revealed raster pixels around the spinning cube's
+// edges are always the current frame, no tearing. (Chris Hinsley's 1993 TaOS
+// tumbling-cube-over-tumbling-cube, reproduced at the scene layer AeVG owns.)
+//
+//   DISPLAY=:0 ./build/aevg_live
+//
+// Headless one-frame proof: example_aevg_live_png. This is the windowed,
+// continuously-animating version.
+
+import aether_ui
+import aether_ui (window, enable_test_server)
+import vg.live (vg, video_region, video_source, canvas_region)
+import vg
+import vg (view_box, rect, fill)
+import vg.region
+import std.math
+import std.os
+import std.os (os_getenv)
+
+CX() -> float { return 50.0 }   // cube centre (viewBox space)
+CY() -> float { return 50.0 }
+SC() -> float { return 22.0 }   // projected scale
+DIST() -> float { return 3.0 }  // perspective camera distance (in cube units)
+
+main() {
+    window("AeVG — tumbling cube over live raster", 420, 420) {
+        vg(view_box(0, 0, 100, 100), 360, 360) {
+            // Static dark backdrop so the raster + cube read clearly.
+            bg = rect(0, 0, 100, 100) { fill("#101018") }
+
+            // RASTER under the cube: a plasma on the viewBox rect (20,20,60,60),
+            // fed by a 64×64 frame buffer (scaled to fill). An ANIMATED source —
+            // the live loop calls it each frame to push a t-cycled plasma, so
+            // the backdrop moves under the spinning cube.
+            pr = video_region(_root_of(bg), 20.0, 20.0, 60.0, 60.0, 64, 64)
+            video_source(pr) callback |region: ptr, t: float| {
+                push_plasma(region, 64, 64, t)
+            }
+
+            // DRAW region: the tumbling wireframe cube, recomputed from t every
+            // frame and composited over the raster — glitch-free via the one
+            // atomic backbuffer present.
+            canvas_region(_root_of(bg), 0.0, 0.0, 100.0, 100.0)
+                callback |rn: ptr, t: float| {
+                    draw_cube(rn, t)
+                }
+        }
+        test_port = os_getenv("AETHER_UI_TEST_PORT")
+        if test_port != null { enable_test_server(9222) }
+    }
+}
+
+// The vg root node from any shape node (shape nodes carry the scene).
+_root_of(node: ptr) -> ptr { return vg.vg_root(vg.node_scene(node)) }
+
+// ─── tumbling cube ───────────────────────────────────────────────
+//
+// 8 unit-cube verts at ±1, rotated by t around Y then X, perspective-projected
+// to viewBox space, 12 edges drawn as white lines. All from t — capture-free.
+
+draw_cube(rn: ptr, t: float) {
+    ay = t * 0.9
+    ax = t * 0.6
+    // Draw the 12 edges. Vertex index bits: x=bit0, y=bit1, z=bit2 (0→-1,1→+1).
+    edge(rn, ax, ay, 0, 1)
+    edge(rn, ax, ay, 1, 3)
+    edge(rn, ax, ay, 3, 2)
+    edge(rn, ax, ay, 2, 0)
+    edge(rn, ax, ay, 4, 5)
+    edge(rn, ax, ay, 5, 7)
+    edge(rn, ax, ay, 7, 6)
+    edge(rn, ax, ay, 6, 4)
+    edge(rn, ax, ay, 0, 4)
+    edge(rn, ax, ay, 1, 5)
+    edge(rn, ax, ay, 2, 6)
+    edge(rn, ax, ay, 3, 7)
+}
+
+// Draw one edge between cube vertices a and b (by index), at rotation (ax, ay).
+edge(rn: ptr, ax: float, ay: float, a: int, b: int) {
+    pax = proj_x(a, ax, ay)
+    pay = proj_y(a, ax, ay)
+    pbx = proj_x(b, ax, ay)
+    pby = proj_y(b, ax, ay)
+    n = vg.line(rn, pax, pay, pbx, pby)
+    vg.stroke(n, "#ffffff", 1.0)
+}
+
+vx(i: int) -> float { if (i % 2) == 0 { return 0.0 - 1.0 } return 1.0 }
+vy(i: int) -> float { if ((i / 2) % 2) == 0 { return 0.0 - 1.0 } return 1.0 }
+vz(i: int) -> float { if ((i / 4) % 2) == 0 { return 0.0 - 1.0 } return 1.0 }
+
+// Rotate vert i around Y then X, perspective-project → viewBox X.
+proj_x(i: int, ax: float, ay: float) -> float {
+    x = vx(i)
+    y = vy(i)
+    z = vz(i)
+    // rotate around Y
+    x1 = x * math.cos(ay) + z * math.sin(ay)
+    z1 = z * math.cos(ay) - x * math.sin(ay)
+    // rotate around X
+    z2 = z1 * math.cos(ax) - y * math.sin(ax)
+    // perspective
+    f = SC() / (DIST() - z2)
+    return CX() + x1 * f
+}
+
+proj_y(i: int, ax: float, ay: float) -> float {
+    x = vx(i)
+    y = vy(i)
+    z = vz(i)
+    z1 = z * math.cos(ay) - x * math.sin(ay)
+    y1 = y * math.cos(ax) + z1 * math.sin(ax)
+    z2 = z1 * math.cos(ax) - y * math.sin(ax)
+    f = SC() / (DIST() - z2)
+    return CY() + y1 * f
+}
+
+// ─── plasma raster source ────────────────────────────────────────
+//
+// A colour-cycling pattern: each pixel's colour is a function of (px, py, t).
+push_plasma(region: ptr, w: int, h: int, t: float) {
+    buf = region.new_frame_buffer(w, h)
+    py = 0
+    while py < h {
+        px = 0
+        while px < w {
+            idx = py * w + px
+            r = chan(px, py, t, 0.0)
+            g = chan(px, py, t, 2.0)
+            b = chan(px, py, t, 4.0)
+            region.buf_set_px(buf, idx, r, g, b, 255)
+            px = px + 1
+        }
+        py = py + 1
+    }
+    frame = region.frame_finish(buf, w, h)
+    region.region_push(region, frame, w * h * 4)
+}
+
+// One colour channel of the plasma at (px,py,t) with phase offset.
+chan(px: int, py: int, t: float, phase: float) -> int {
+    fx = px / 8.0
+    fy = py / 8.0
+    v = math.sin(fx + t) + math.sin(fy + t * 1.3 + phase)
+    // v in [-2,2] → [0,255]
+    s = (v + 2.0) / 4.0 * 255.0
+    return clampb(s)
+}
+
+clampb(f: float) -> int {
+    if f < 0.0 { return 0 }
+    if f > 255.0 { return 255 }
+    return f_to_i(f)
+}
+
+extern lrint(x: float) -> long
+f_to_i(f: float) -> int { return lrint(f) }

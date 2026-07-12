@@ -1,0 +1,180 @@
+// aevg/record.ae — recording backend stub for Tier C testing.
+//
+// CVG's shape factories (grammar_shapes) need a backend with seven
+// entry points: canvas_circle, canvas_rectangle, canvas_line,
+// canvas_path, canvas_text, canvas_raster, canvas_tappable_raster.
+// In the real port, those'll forward to aether-ui's `canvas_*` API
+// in aether_ui.ae (GTK4 / AppKit / Win32). That's Phase 1 — needs
+// a display.
+//
+// For Phase 0 (no display, fast, headless), this module provides a
+// stub that records every call's kind + opts. Tests inspect the
+// recording to verify the shape factories computed the right opts
+// and dispatched to the right backend method.
+//
+// API:
+//   backend_new()                       -> *Backend handle
+//   backend_call_count(b) -> int        — how many calls so far
+//   backend_kind(b, i) -> string        — "circle" | "rectangle" | …
+//   backend_opt_get(b, i, key) -> string — read one opt from call `i`
+//   backend_clear(b)                    — reset recording (testing)
+//
+//   canvas_circle(b, opts)              — record + return new ptr
+//   canvas_rectangle(b, opts)
+//   canvas_line(b, opts)
+//   canvas_path(b, opts)
+//   canvas_text(b, opts)
+//   canvas_raster(b, opts)
+//   canvas_tappable_raster(b, opts)
+//
+// `opts` is `std.map string→string` — coords/colors/widths stored as
+// their string form (the shape factory does the float-to-string at
+// the call boundary; round-trips via utils.parse_length_to_px
+// when callers need numbers).
+//
+// Each canvas_* returns a fresh ptr that uniquely identifies the
+// call's recorded entry — AevgElement.underlying gets this handle.
+// Real backends would return a widget handle; tests don't care, they
+// only inspect through backend_kind/opt_get.
+
+exports (
+    backend_new, backend_call_count, backend_kind,
+    backend_opt_get, backend_opt_has, backend_clear,
+    canvas_circle, canvas_rectangle, canvas_line,
+    canvas_path, canvas_text, canvas_raster, canvas_tappable_raster
+)
+
+import std.list
+import std.map
+import std.string
+import vg.backend.dispatch
+
+extern malloc(size: int) -> ptr
+
+// ─── Backend struct ──────────────────────────────────────────────
+//
+// Single field: a *std.list of *RecordedCall, each one a small
+// {kind, opts} struct. Tests walk the list by index.
+//
+// backend_new() returns a *dispatch.Dispatch wrapping a
+// *Backend recording handle. The factory dispatches through the
+// table; the inspection functions (backend_kind etc.) unwrap the
+// dispatch ptr back to the recording handle via backend_self.
+
+struct Backend {
+    calls: ptr   // std.list of *RecordedCall
+}
+
+struct RecordedCall {
+    kind: string         // "circle", "rectangle", etc.
+    opts: ptr            // std.map string→string of the call's opts
+}
+
+mk_call(kind: string, opts: ptr) -> *RecordedCall {
+    c = malloc(24) as *RecordedCall
+    c.kind = kind
+    c.opts = opts
+    return c
+}
+
+backend_new() -> ptr {
+    b = malloc(16) as *Backend
+    b.calls = list.new()
+    // Wrap the recording handle in a dispatch table. The single
+    // closure switches on the op selector and forwards to this
+    // module's canvas_* recorders. `be` is the *Backend above.
+    return dispatch.backend_make(b) callback |be: ptr, op: int, opts: ptr| {
+        if op == 0 { return canvas_circle(be, opts) }
+        if op == 1 { return canvas_rectangle(be, opts) }
+        if op == 2 { return canvas_line(be, opts) }
+        if op == 3 { return canvas_path(be, opts) }
+        if op == 4 { return canvas_text(be, opts) }
+        if op == 5 { return canvas_raster(be, opts) }
+        return canvas_tappable_raster(be, opts)
+    }
+}
+
+// Inspection functions take the dispatch ptr returned by
+// backend_new() and unwrap to the recording handle.
+rec_handle(p: ptr) -> ptr {
+    return dispatch.backend_self(p)
+}
+
+backend_call_count(p: ptr) -> int {
+    b = rec_handle(p) as *Backend
+    return list.size(b.calls)
+}
+
+backend_kind(p: ptr, i: int) -> string {
+    b = rec_handle(p) as *Backend
+    item, _ = list.get(b.calls, i)
+    if item == null { return "" }
+    c = item as *RecordedCall
+    return c.kind
+}
+
+backend_opt_get(p: ptr, i: int, key: string) -> string {
+    b = rec_handle(p) as *Backend
+    item, _ = list.get(b.calls, i)
+    if item == null { return "" }
+    c = item as *RecordedCall
+    v, _ = map.get(c.opts, key)
+    if v == null { return "" }
+    return v
+}
+
+backend_opt_has(p: ptr, i: int, key: string) -> int {
+    b = rec_handle(p) as *Backend
+    item, _ = list.get(b.calls, i)
+    if item == null { return 0 }
+    c = item as *RecordedCall
+    return map.has(c.opts, key)
+}
+
+backend_clear(p: ptr) {
+    b = rec_handle(p) as *Backend
+    list.clear(b.calls)
+}
+
+// ─── Recording entry points ──────────────────────────────────────
+//
+// Each canvas_* takes (backend, opts) and returns a fresh ptr
+// representing the underlying widget. The returned ptr is the
+// *RecordedCall handle — tests can identify which call produced a
+// given underlying by pointer-equality.
+
+record_one(p: ptr, kind: string, opts: ptr) -> ptr {
+    b = p as *Backend
+    // SNAPSHOT the opts. The dispatch contract is consume-by-value: the GTK
+    // adapter parses values during the call, and the shape factories free
+    // `opts` immediately after dispatch (the per-dispatch leak fix). Holding
+    // the caller's pointer here would read freed memory — copy the entries
+    // into an owned map instead (string.copy → the owned-put route).
+    snap = map.new()
+    ks = map.keys_raw(opts)
+    if ks != null {
+        n = string_array_size(ks)
+        i = 0
+        while i < n {
+            k = string_array_get(ks, i)
+            v, _ = map.get(opts, k)
+            if v != null {
+                cv = string.copy(v)
+                _ = map.put(snap, k, cv)
+            }
+            i = i + 1
+        }
+        map.keys_free(ks)
+    }
+    c = mk_call(kind, snap)
+    _ = list.add(b.calls, c)
+    return c
+}
+
+canvas_circle(p: ptr, opts: ptr) -> ptr          { return record_one(p, "circle", opts) }
+canvas_rectangle(p: ptr, opts: ptr) -> ptr       { return record_one(p, "rectangle", opts) }
+canvas_line(p: ptr, opts: ptr) -> ptr            { return record_one(p, "line", opts) }
+canvas_path(p: ptr, opts: ptr) -> ptr            { return record_one(p, "path", opts) }
+canvas_text(p: ptr, opts: ptr) -> ptr            { return record_one(p, "text", opts) }
+canvas_raster(p: ptr, opts: ptr) -> ptr          { return record_one(p, "raster", opts) }
+canvas_tappable_raster(p: ptr, opts: ptr) -> ptr { return record_one(p, "tappable_raster", opts) }

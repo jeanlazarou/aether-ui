@@ -1,0 +1,201 @@
+// aevg/test_grammar_element.ae — regression test for element.ae.
+//
+// Covers: construction with default flags, all setter/getter round-
+// trips for name/tooltip/cursor, visibility & destroyed flags,
+// bounds + hit-test pure-math, and the closure storage shape for
+// event handlers and reactive bindings.
+
+import vg.grammar.element
+import std.string
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 {
+        println("  PASS: ${label} ('${got}')")
+    } else {
+        println("  FAIL: ${label}: got '${got}' want '${want}'")
+        exit(1)
+    }
+}
+
+assert_not_null(label: string, p: ptr) {
+    if p == null {
+        println("  FAIL: ${label}: null")
+        exit(1)
+    } else {
+        println("  PASS: ${label} (non-null)")
+    }
+}
+
+assert_null(label: string, p: ptr) {
+    if p == null {
+        println("  PASS: ${label} (null)")
+    } else {
+        println("  FAIL: ${label}: non-null")
+        exit(1)
+    }
+}
+
+// Sample handlers and bindings — bare function names that callers
+// (the test below) pass to ptr-typed setters. The named-fn → ptr
+// coercion fires at the call site.
+my_click_handler() -> int { return 1 }
+my_hover_handler() -> int { return 2 }
+my_drag_handler() -> int { return 3 }
+my_fill_binding() -> string { return "#ff0000" }
+my_opacity_binding() -> float { return 0.5 }
+my_when_predicate() -> int { return 1 }
+
+main() {
+    println("=== test_grammar_element ===")
+
+    // ─── Construction defaults ───────────────────────────────────
+    // Underlying handle is opaque; we use a small non-null sentinel.
+    sentinel = malloc(8)
+    el = element.element_new(sentinel)
+
+    assert_not_null("element_new returns non-null", el)
+    assert_eq_int("default visible = 1", element.element_is_visible(el), 1)
+    assert_eq_int("default destroyed = 0", element.element_is_destroyed(el), 0)
+    assert_eq_int("default has_bounds = 0", element.element_has_bounds(el), 0)
+    assert_eq_str("default name = ''", element.element_name(el), "")
+    assert_eq_str("default tooltip = ''", element.element_tooltip(el), "")
+    assert_eq_str("default cursor = ''", element.element_cursor(el), "")
+    assert_null("default click_handler = null", element.element_click_handler(el))
+    assert_null("default fill_binding = null", element.element_fill_binding(el))
+    assert_null("default when_predicate = null", element.element_when_predicate(el))
+    assert_null("default context = null", element.element_context(el))
+
+    // Underlying handle round-trip.
+    if element.element_underlying(el) == sentinel {
+        println("  PASS: underlying handle round-trips")
+    } else {
+        println("  FAIL: underlying handle mismatch")
+        exit(1)
+    }
+
+    // ─── Identity / tooltip / cursor ────────────────────────────
+    element.element_set_name(el, "main-circle")
+    assert_eq_str("name set", element.element_name(el), "main-circle")
+
+    element.element_set_tooltip(el, "click me")
+    assert_eq_str("tooltip set", element.element_tooltip(el), "click me")
+
+    element.element_set_cursor(el, "pointer")
+    assert_eq_str("cursor set", element.element_cursor(el), "pointer")
+
+    // ─── Visibility / destroyed flags ────────────────────────────
+    element.element_set_visible(el, 0)
+    assert_eq_int("visible = 0", element.element_is_visible(el), 0)
+    element.element_set_visible(el, 1)
+    assert_eq_int("visible = 1 again", element.element_is_visible(el), 1)
+
+    element.element_set_destroyed(el, 1)
+    assert_eq_int("destroyed = 1", element.element_is_destroyed(el), 1)
+    element.element_set_destroyed(el, 0)
+
+    // ─── Event handlers (callback {} closures — AeVG convention) ──
+    element.element_on_click(el) callback { return 1 }
+    assert_not_null("click handler stored", element.element_click_handler(el))
+
+    element.element_on_hover(el) callback { return 2 }
+    assert_not_null("hover handler stored", element.element_hover_handler(el))
+
+    element.element_on_drag(el) callback { return 3 }
+    assert_not_null("drag handler stored", element.element_drag_handler(el))
+
+    element.element_on_drag_end(el) callback { return 3 }
+    assert_not_null("drag-end handler stored", element.element_drag_end_handler(el))
+
+    element.element_on_scroll(el) callback { return 3 }
+    assert_not_null("scroll handler stored", element.element_scroll_handler(el))
+
+    element.element_on_double_click(el) callback { return 3 }
+    assert_not_null("dblclick handler stored", element.element_double_click_handler(el))
+
+    element.element_on_right_click(el) callback { return 3 }
+    assert_not_null("rclick handler stored", element.element_right_click_handler(el))
+
+    // ─── Reactive bindings ──────────────────────────────────────
+    // Bindings are passed as callback {} closures (AeVG convention —
+    // never bare named fns in a fn-slot; v0.197's bare-fn adapter has
+    // a cross-module gap, and callback {} is what the renderer uses
+    // everywhere anyway).
+    element.element_bind_fill(el) callback { return "#ff0000" }
+    assert_not_null("fill binding stored", element.element_fill_binding(el))
+
+    element.element_bind_stroke(el) callback { return "#ff0000" }
+    assert_not_null("stroke binding stored", element.element_stroke_binding(el))
+
+    element.element_bind_opacity(el) callback { return 0.5 }
+    assert_not_null("opacity binding stored", element.element_opacity_binding(el))
+
+    element.element_bind_text(el) callback { return "hello" }
+    assert_not_null("text binding stored", element.element_text_binding(el))
+
+    element.element_bind_pos(el) callback { return null }
+    assert_not_null("pos binding stored", element.element_pos_binding(el))
+
+    // ─── when() predicate ───────────────────────────────────────
+    element.element_set_when(el) callback { return 1 }
+    assert_not_null("when predicate stored", element.element_when_predicate(el))
+
+    // ─── Bounds + hit-test ──────────────────────────────────────
+    element.element_set_bounds(el, 10.0, 20.0, 30.0, 40.0)
+    assert_eq_int("has_bounds after set", element.element_has_bounds(el), 1)
+    if element.element_bounds_x(el) == 10.0 {
+        println("  PASS: bounds_x")
+    } else {
+        println("  FAIL: bounds_x")
+        exit(1)
+    }
+    if element.element_bounds_y(el) == 20.0 {
+        println("  PASS: bounds_y")
+    } else {
+        println("  FAIL: bounds_y")
+        exit(1)
+    }
+
+    // Hit-test: point inside bounds.
+    assert_eq_int("hit-test inside (15, 25)", element.element_hit_test(el, 15.0, 25.0), 1)
+    // Point at edges.
+    assert_eq_int("hit-test top-left corner", element.element_hit_test(el, 10.0, 20.0), 1)
+    assert_eq_int("hit-test bot-right corner", element.element_hit_test(el, 40.0, 60.0), 1)
+    // Point outside.
+    assert_eq_int("hit-test outside (5, 5)", element.element_hit_test(el, 5.0, 5.0), 0)
+    assert_eq_int("hit-test outside (100, 100)", element.element_hit_test(el, 100.0, 100.0), 0)
+    assert_eq_int("hit-test just-past x", element.element_hit_test(el, 41.0, 30.0), 0)
+
+    // Hit-test: invisible → always 0
+    element.element_set_visible(el, 0)
+    assert_eq_int("hit-test invisible", element.element_hit_test(el, 15.0, 25.0), 0)
+    element.element_set_visible(el, 1)
+
+    // Hit-test: destroyed → always 0
+    element.element_set_destroyed(el, 1)
+    assert_eq_int("hit-test destroyed", element.element_hit_test(el, 15.0, 25.0), 0)
+    element.element_set_destroyed(el, 0)
+
+    // ─── Context back-pointer ───────────────────────────────────
+    fake_ctx = malloc(8)
+    element.element_set_context(el, fake_ctx)
+    if element.element_context(el) == fake_ctx {
+        println("  PASS: context back-pointer round-trips")
+    } else {
+        println("  FAIL: context back-pointer mismatch")
+        exit(1)
+    }
+
+    println("=== test_grammar_element passed ===")
+}

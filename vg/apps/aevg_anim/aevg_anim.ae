@@ -1,0 +1,44 @@
+// example_aevg_anim.ae — continuous animation on a live window.
+//
+// A ~60fps timer (started by vg()) drives the scene's animations: a circle
+// pulses its opacity (yoyo loop) and a rect sweeps left↔right. The animate
+// modifier registers a per-frame tick closure that mutates the element; the
+// loop ticks + re-renders while anything is animating. Run on a display:
+//   DISPLAY=:0 ./build/aevg_anim
+// Driver-screenshot at two times to see it move (AETHER_UI_TEST_PORT=9222).
+
+import aether_ui
+import aether_ui (window, enable_test_server)
+import vg.live (vg)
+import vg
+import vg (view_box, circle, rect, fill, animate)
+import std.os
+import std.os (os_getenv)
+
+main() {
+    window("AeVG — animation", 420, 360) {
+        vg(view_box(0, 0, 100, 100), 300, 300) {
+            // Pulsing circle: opacity yoyos 0→1→0 over 2s, forever. The tick
+            // gets the element (el) — no block-local capture (which would
+            // dangle once this block returns and the timer fires later).
+            pc = circle(30, 50, 18) {
+                fill("#cc4444")
+            }
+            animate(pc, 2000, 1, 1) callback |el: ptr, t: float| {
+                vg.element_set_opacity(el, t)
+            }
+
+            // Second circle pulses out of phase for contrast.
+            sc = circle(70, 50, 18) {
+                fill("#3366cc")
+            }
+            animate(sc, 2000, 1, 1) callback |el: ptr, t: float| {
+                vg.element_set_opacity(el, 1.0 - t)
+            }
+        }
+        test_port = os_getenv("AETHER_UI_TEST_PORT")
+        if test_port != null {
+            enable_test_server(9222)
+        }
+    }
+}

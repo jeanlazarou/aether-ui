@@ -1,0 +1,120 @@
+// aevg/test_vg_when.ae — conditional rendering via when() on the vg DSL.
+//
+// Headless port of svg-when.test.ts: a shape's when() predicate gates its
+// visibility on scene_refresh; a hidden shape is not drawn and not hit-tested
+// (a click falls through to the shape beneath). Mirrors CVG's
+// `when: () => bool`.
+
+import vg
+import vg.backend.record   // backend_new (recording stub for the scene)
+import vg.grammar.context
+import vg.grammar.element
+import vg.grammar.events
+import vg.geom.transform
+import std.string
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return context.new_context(m)
+}
+
+// A mutable flag a when() closure reads — flip it, refresh, and the element's
+// visibility follows.
+struct Flag { on: int }
+mk_flag(v: int) -> *Flag { f = malloc(8) as *Flag; f.on = v; return f }
+
+main() {
+    println("=== test_vg_when ===")
+
+    ctx = mk_ctx()
+    bk = record.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    es = events.event_state_new()
+    vg.scene_set_event_state(scene, es)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    show = mk_flag(0)   // start hidden
+
+    // A conditional circle: visible iff show.on == 1.
+    cnode = vg.circle(root, 50.0, 50.0, 20.0)
+    cel = vg.node_element(cnode)
+    vg.fill(cnode, "#ff0000")
+    vg.visible_when(cnode) callback {
+        return show.on
+    }
+
+    // Refresh evaluates when() → hidden. Visibility is the authoritative
+    // signal; the draw path keys off element_is_visible (a hidden element is
+    // skipped in flush_one_tracked). The recording backend accumulates draws
+    // across flushes, so a cumulative count isn't a clean per-state probe —
+    // visibility + the hit-test fall-through below are what matter.
+    vg.scene_refresh(scene)
+    assert_eq_int("when(0): hidden", element.element_is_visible(cel), 0)
+
+    // Flip the flag → show → refresh → visible.
+    show.on = 1
+    vg.scene_refresh(scene)
+    assert_eq_int("when(1): visible", element.element_is_visible(cel), 1)
+
+    // Hide again.
+    show.on = 0
+    vg.scene_refresh(scene)
+    assert_eq_int("when(0) again: hidden", element.element_is_visible(cel), 0)
+
+    // ─── Click falls through a hidden shape to the one beneath ───
+    ctx2 = mk_ctx()
+    bk2 = record.backend_new()
+    scene2 = vg.scene_new(ctx2, bk2)
+    es2 = events.event_state_new()
+    vg.scene_set_event_state(scene2, es2)
+    vg.scene_set_deferred(scene2, 1)
+    root2 = vg.vg_root(scene2)
+
+    // Bottom shape: always visible, recolors on click.
+    bnode = vg.circle(root2, 50.0, 50.0, 25.0)
+    bel = vg.node_element(bnode)
+    vg.fill(bnode, "#0000ff")
+    vg.on_click_recolor(bnode, "#00ff00")
+
+    // Top shape: same spot, on top, but hidden via when(false). It also has a
+    // click handler — if it weren't hidden it would intercept the click.
+    topflag = mk_flag(0)
+    tnode = vg.circle(root2, 50.0, 50.0, 25.0)
+    tel = vg.node_element(tnode)
+    vg.fill(tnode, "#ffff00")
+    vg.on_click_recolor(tnode, "#ff00ff")
+    vg.visible_when(tnode) callback {
+        return topflag.on
+    }
+
+    vg.scene_refresh(scene2)   // applies when(): top hidden
+
+    // Click the shared centre. Top is hidden → its hit_test returns 0 → the
+    // click falls through to the bottom shape, which recolors.
+    events.dispatch_click(es2, ctx2, 50.0, 50.0)
+    assert_eq_str("hidden top: bottom got the click", element.element_last_fill(bel), "#00ff00")
+    assert_eq_str("hidden top: top unchanged",        element.element_last_fill(tel), "#ffff00")
+
+    // Show the top, refresh, click again → now top intercepts.
+    topflag.on = 1
+    vg.scene_refresh(scene2)
+    events.dispatch_click(es2, ctx2, 50.0, 50.0)
+    assert_eq_str("shown top: top got the click", element.element_last_fill(tel), "#ff00ff")
+
+    println("=== test_vg_when passed ===")
+}

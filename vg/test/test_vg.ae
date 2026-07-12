@@ -1,0 +1,163 @@
+// aevg/test_vg.ae — the vg drawing DSL's shape verbs + in-block modifiers.
+//
+// Headless: drives the vg shape verbs against a scene wired to the RECORDING
+// backend (no GTK / display), so it runs in Phase 0. The verbs take their
+// _ctx (a VgNode) explicitly here — _ctx auto-injection only happens inside a
+// trailing block; called directly, we pass the node. This exercises the same
+// code the `vg { … }` block runs, minus the live GTK canvas the `vg` scene
+// verb (live.ae) creates.
+
+import std.string
+import vg
+import vg.grammar.context
+import vg.grammar.element
+import vg.backend.record
+import vg.geom.transform
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label} ('${got}')") }
+    else { println("  FAIL: ${label}: got '${got}' want '${want}'"); exit(1) }
+}
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+assert_near(label: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 0.5 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return context.new_context(m)
+}
+
+// A context that maps the 0..100 viewBox onto a 200×200 canvas — scale 2.0.
+// Used to verify that re-mapping a deferred scene + re-flushing rescales it
+// (the resize path, headless).
+mk_ctx_2x() -> ptr {
+    sx = transform.affine_scale(2.0, 2.0)
+    m = context.mapping_new(0.0, 0.0, 100.0, 100.0, 200.0, 200.0, 2.0, 0.0, 0.0, sx)
+    return context.new_context(m)
+}
+
+parse_opt(bk: ptr, i: int, key: string) -> float {
+    s = record.backend_opt_get(bk, i, key)
+    v, _ = string.to_double(s)
+    return v
+}
+
+main() {
+    println("=== test_vg ===")
+
+    ctx = mk_ctx()
+    bk = record.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    root = vg.vg_root(scene)
+
+    vb = vg.view_box(0.0, 0.0, 100.0, 100.0)
+    assert_eq_str("view_box string", vb, "0 0 100 100")
+
+    cnode = vg.circle(root, 50.0, 50.0, 20.0)
+    assert_eq_str("circle dispatched", record.backend_kind(bk, 0), "circle")
+    assert_near("circle bbox x (identity viewBox)", parse_opt(bk, 0, "x"), 30.0)
+    vg.fill(cnode, "#F00")
+    assert_eq_str("fill cached on element",
+                  element.element_last_fill(vg.node_element(cnode)), "#F00")
+
+    rnode = vg.rect(root, 10.0, 10.0, 40.0, 30.0)
+    assert_eq_str("rect dispatched", record.backend_kind(bk, 1), "rectangle")
+    vg.stroke(rnode, "#000", 2.0)
+    rel = vg.node_element(rnode)
+    assert_eq_str("rect stroke cached", element.element_last_stroke_color(rel), "#000")
+    assert_near("rect stroke width", element.element_last_stroke_width(rel), 2.0)
+
+    _ln = vg.line(root, 0.0, 0.0, 100.0, 100.0)
+    assert_eq_str("line dispatched", record.backend_kind(bk, 2), "line")
+
+    pnode = vg.path(root, "M 0 0 L 100 0 L 100 100 Z")
+    assert_eq_str("path dispatched", record.backend_kind(bk, 3), "path")
+    vg.fill(pnode, "green")
+    assert_eq_str("path fill cached",
+                  element.element_last_fill(vg.node_element(pnode)), "green")
+
+    _tn = vg.text(root, 10.0, 20.0, "Hi")
+    assert_eq_str("text dispatched", record.backend_kind(bk, 4), "text")
+
+    onode = vg.circle(root, 5.0, 5.0, 5.0)
+    vg.opacity(onode, 0.5)
+    assert_near("opacity cached",
+                element.element_last_opacity(vg.node_element(onode)), 0.5)
+
+    gnode = vg.g(root)
+    _gc = vg.circle(gnode, 1.0, 1.0, 1.0)
+    assert_eq_str("circle under g dispatched", record.backend_kind(bk, 6), "circle")
+
+    // ── deferred mode (the live path's colour fix) ──────────────────
+    // In a deferred scene, a shape RECORDS instead of dispatching; its
+    // trailing fill() runs after; vg_flush then dispatches with the final
+    // colour folded in. This is what fixes "everything renders black": the
+    // backend call must carry the fill, and the fill is only known post-block.
+    dctx = mk_ctx()
+    dbk = record.backend_new()
+    dscene = vg.scene_new(dctx, dbk)
+    vg.scene_set_deferred(dscene, 1)
+    droot = vg.vg_root(dscene)
+
+    dcircle = vg.circle(droot, 50.0, 50.0, 20.0)
+    vg.fill(dcircle, "#abc123")
+    // NOT dispatched yet — recording, no backend call.
+    assert_eq_int("deferred: no dispatch before flush",
+                  record.backend_call_count(dbk), 0)
+
+    vg.vg_flush(dscene)
+    assert_eq_int("deferred: dispatched after flush",
+                  record.backend_call_count(dbk), 1)
+    assert_eq_str("deferred: circle dispatched on flush",
+                  record.backend_kind(dbk, 0), "circle")
+    // The fill set AFTER the shape reached the backend call — the bug's fix.
+    assert_eq_str("deferred: final fill folded into dispatch",
+                  record.backend_opt_get(dbk, 0, "fillColor"), "#abc123")
+    // At 1× (identity), the circle's bbox x = cx - r = 50 - 20 = 30.
+    assert_near("deferred 1x: circle bbox x", parse_opt(dbk, 0, "x"), 30.0)
+
+    // ── re-map + re-flush (the resize path, headless) ───────────────
+    // Swap in a 2× context, clear the recording, re-flush. vg_flush must be
+    // re-runnable, and the SAME recorded shape must re-map at the new scale:
+    // bbox x = (50 - 20) * 2 = 60. This is exactly what the live resize hook
+    // does (rebuild ctx for the new size → scene_set_ctx → clear → vg_flush).
+    vg.scene_set_ctx(dscene, mk_ctx_2x())
+    record.backend_clear(dbk)
+    vg.vg_flush(dscene)
+    assert_eq_int("resize: re-flush re-dispatched",
+                  record.backend_call_count(dbk), 1)
+    assert_near("resize: circle bbox x doubled at 2x", parse_opt(dbk, 0, "x"), 60.0)
+    // Style survives the re-map (fill still folded in on re-flush).
+    assert_eq_str("resize: fill preserved across re-flush",
+                  record.backend_opt_get(dbk, 0, "fillColor"), "#abc123")
+
+    // ── transform modifier (deferred) ───────────────────────────────
+    // transform("translate(10 0)") on a circle shifts its dispatch by +10 in
+    // x. Recorded, folded into attrs at flush as the "transform" key, applied
+    // by maybe_push_transform. Fresh identity scene: bbox x = (50+10)-20 = 40.
+    tctx = mk_ctx()
+    tbk = record.backend_new()
+    tscene = vg.scene_new(tctx, tbk)
+    vg.scene_set_deferred(tscene, 1)
+    troot = vg.vg_root(tscene)
+    tc = vg.circle(troot, 50.0, 50.0, 20.0)
+    vg.transform(tc, "translate(10 0)")
+    assert_eq_str("transform cached on element",
+                  element.element_last_transform(vg.node_element(tc)), "translate(10 0)")
+    vg.vg_flush(tscene)
+    assert_near("transform: circle shifted +10 in x", parse_opt(tbk, 0, "x"), 40.0)
+
+    println("=== test_vg passed ===")
+}

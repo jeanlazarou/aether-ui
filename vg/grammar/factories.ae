@@ -1,0 +1,280 @@
+// aevg/factories.ae — public entry point (Tier C).
+//
+// Port of cosyne/src/cvg/grammar-factories.ts. The TS file has two
+// pieces of value: createAevgContext (the meat — builds the viewBox
+// mapping and constructs a AevgContext) and a thin aevg() wrapper that
+// adds backend clip/stack machinery. The CvgBuilder class is TS-only
+// ergonomic sugar; callers in Aether just call shape_circle/etc.
+// directly (no `this.circle(...)` delegation possible without
+// classes).
+//
+// In scope:
+//   create_aevg_context(opts) -> *AevgContext
+//     — builds the two-step viewBox→viewport→canvas affine mapping
+//       per SVG spec (preserveAspectRatio + uniform-scale-to-fit),
+//       then constructs the context. The kernel of the TS file.
+//
+//   aevg(backend, opts, body)
+//     — convenience: create context, set its backend (via setter on
+//       AevgOptions; we pass through directly here), call body with
+//       the context, return it. Mirrors the TS standalone factory
+//       minus the app.clip / app.canvasStack widget plumbing
+//       (which lives in Phase 1 — real backend wiring).
+//
+// AevgOptions is a small struct rather than std.map because the field
+// set is fixed and the order of resolution matters (width before
+// height before viewBox).
+//
+// Out of scope:
+//   - CvgBuilder class shape (use the free functions instead)
+//   - app.clip / app.canvasStack widget creation (Phase 1)
+//   - rootAttrs → initial style cascade (lands when grammar_style
+//     gets full root-attr support; today the context starts with
+//     an empty style stack)
+
+exports (
+    AevgOptions, opts_new, opts_set_view_box, opts_set_width,
+    opts_set_height, opts_set_preserve_aspect_ratio, opts_set_viewport,
+    create_aevg_context, aevg
+)
+
+import std.string
+import vg.grammar.context
+import vg.grammar.utils
+import vg.svg.parser
+import vg.geom.transform
+
+extern malloc(size: int) -> ptr
+
+// ─── AevgOptions struct ───────────────────────────────────────────
+//
+// Mutable bag — callers build incrementally via setters before
+// passing to create_aevg_context. Strings default to ""; numerics
+// default to 0 (interpreted as "use canvas default" downstream).
+
+struct AevgOptions {
+    view_box: string
+    width: float            // canvas width (px)
+    height: float           // canvas height (px)
+    preserve_aspect_ratio: string
+    vp_w: float             // SVG intrinsic viewport width (root width attr); 0 = use canvas
+    vp_h: float             // SVG intrinsic viewport height (root height attr); 0 = use canvas
+}
+
+opts_new() -> ptr {
+    o = malloc(64) as *AevgOptions
+    o.view_box = ""
+    o.width = 0.0
+    o.height = 0.0
+    o.preserve_aspect_ratio = ""
+    o.vp_w = 0.0
+    o.vp_h = 0.0
+    return o
+}
+
+// Set the SVG's intrinsic viewport (its root width/height attrs). When these
+// differ in aspect from the viewBox, the viewBox→viewport→canvas two-step
+// produces the correct letterboxed result (e.g. Inkscape exports with
+// width/height ≠ viewBox aspect). 0 leaves viewport == canvas.
+opts_set_viewport(p: ptr, w: float, h: float) {
+    o = p as *AevgOptions
+    o.vp_w = w
+    o.vp_h = h
+}
+
+opts_set_view_box(p: ptr, vb: string) {
+    o = p as *AevgOptions
+    o.view_box = vb
+}
+
+opts_set_width(p: ptr, w: float) {
+    o = p as *AevgOptions
+    o.width = w
+}
+
+opts_set_height(p: ptr, h: float) {
+    o = p as *AevgOptions
+    o.height = h
+}
+
+opts_set_preserve_aspect_ratio(p: ptr, par: string) {
+    o = p as *AevgOptions
+    o.preserve_aspect_ratio = par
+}
+
+// ─── viewBox parsing helper ─────────────────────────────────────
+//
+// Parse "min_x min_y width height" → 4 floats. Returns 0 args on
+// failure; caller defaults to (0,0,W,H) on no-or-bad viewBox.
+
+struct ViewBox4 {
+    min_x: float
+    min_y: float
+    width: float
+    height: float
+}
+
+vb4_min_x(p: ptr) -> float { v = p as *ViewBox4; return v.min_x }
+vb4_min_y(p: ptr) -> float { v = p as *ViewBox4; return v.min_y }
+vb4_width(p: ptr) -> float { v = p as *ViewBox4; return v.width }
+vb4_height(p: ptr) -> float { v = p as *ViewBox4; return v.height }
+
+mk_vb4(mnx: float, mny: float, w: float, h: float) -> *ViewBox4 {
+    v = malloc(32) as *ViewBox4
+    v.min_x = mnx
+    v.min_y = mny
+    v.width = w
+    v.height = h
+    return v
+}
+
+// Parse a "0 0 100 50" viewBox string. Returns null on parse fail.
+import std.regex
+parse_view_box(s: string) -> *ViewBox4 {
+    if string.length(s) == 0 { return null }
+    re, e = regex.compile("[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?")
+    if e != "" { return null }
+    fa, fe = regex.find_all(re, s)
+    if fe != "" {
+        regex.free(re)
+        return null
+    }
+    n = regex.find_all_count(fa)
+    if n != 4 {
+        regex.find_all_free(fa)
+        regex.free(re)
+        return null
+    }
+    s0 = regex.find_all_start(fa, 0); e0 = regex.find_all_end(fa, 0)
+    s1 = regex.find_all_start(fa, 1); e1 = regex.find_all_end(fa, 1)
+    s2 = regex.find_all_start(fa, 2); e2 = regex.find_all_end(fa, 2)
+    s3 = regex.find_all_start(fa, 3); e3 = regex.find_all_end(fa, 3)
+    v0, _ = string.to_double(string.substring(s, s0, e0))
+    v1, _ = string.to_double(string.substring(s, s1, e1))
+    v2, _ = string.to_double(string.substring(s, s2, e2))
+    v3, _ = string.to_double(string.substring(s, s3, e3))
+    regex.find_all_free(fa)
+    regex.free(re)
+    if v2 <= 0.0 { return null }
+    if v3 <= 0.0 { return null }
+    return mk_vb4(v0, v1, v2, v3)
+}
+
+// ─── create_aevg_context ──────────────────────────────────────────
+//
+// Mirrors the TS source: two-step viewBox → viewport → canvas
+// transform via preserveAspectRatio (xMidYMid meet by default).
+//
+// canvas_pt = T_C ∘ scale(scaleC) ∘ T_VB ∘ scale(scaleVB) ∘ translate(-vb.min)
+//
+// Where scaleC normalizes viewport to canvas, scaleVB does viewBox
+// to viewport per PAR, and the T_* translates handle alignment
+// (Min/Mid/Max).
+//
+// In our simplified model (no rootAttrs.width/height yet), viewport
+// equals canvas; scaleC=1, T_C=identity; everything reduces to
+// scaleVB + alignment T_VB. The two-step is kept for future
+// rootAttrs support.
+
+create_aevg_context(opts: ptr) -> ptr {
+    o = opts as *AevgOptions
+
+    // Canvas dims with sensible defaults.
+    cw = o.width
+    if cw <= 0.0 { cw = 400.0 }
+    ch = o.height
+    if ch <= 0.0 { ch = 400.0 }
+
+    // Parse the viewBox; fall back to (0, 0, cw, ch).
+    vb_min_x = 0.0; vb_min_y = 0.0; vb_w = cw; vb_h = ch
+    if string.length(o.view_box) > 0 {
+        vb = parse_view_box(o.view_box)
+        if vb != null {
+            vb_min_x = vb4_min_x(vb)
+            vb_min_y = vb4_min_y(vb)
+            vb_w = vb4_width(vb)
+            vb_h = vb4_height(vb)
+        }
+    }
+
+    // Parse preserveAspectRatio.
+    par_str = o.preserve_aspect_ratio
+    if string.length(par_str) == 0 { par_str = "xMidYMid meet" }
+    par = utils.parse_preserve_aspect_ratio(par_str)
+    align_x = utils.aspect_align_x(par)
+    align_y = utils.aspect_align_y(par)
+    mos = utils.aspect_meet_or_slice(par)
+
+    // The SVG's intrinsic viewport = its root width/height attrs (if set, and
+    // not %); else the canvas. When the viewport aspect differs from the
+    // viewBox aspect, the two-step mapping below letterboxes correctly —
+    // matching librsvg on Inkscape exports where width/height ≠ viewBox AR.
+    vp_w = cw
+    vp_h = ch
+    if o.vp_w > 0.0 { if o.vp_h > 0.0 { vp_w = o.vp_w   vp_h = o.vp_h } }
+
+    // Step 1: viewBox → viewport (preserveAspectRatio).
+    scale_x_vb = vp_w / vb_w
+    scale_y_vb = vp_h / vb_h
+    scale_vb = scale_x_vb
+    if string.equals(mos, "slice") == 1 {
+        if scale_y_vb > scale_vb { scale_vb = scale_y_vb }
+    } else {
+        if scale_y_vb < scale_vb { scale_vb = scale_y_vb }
+    }
+    tx_vb = 0.0
+    ty_vb = 0.0
+    if string.equals(align_x, "Mid") == 1 { tx_vb = (vp_w - vb_w * scale_vb) / 2.0 }
+    if string.equals(align_x, "Max") == 1 { tx_vb = vp_w - vb_w * scale_vb }
+    if string.equals(align_y, "Mid") == 1 { ty_vb = (vp_h - vb_h * scale_vb) / 2.0 }
+    if string.equals(align_y, "Max") == 1 { ty_vb = vp_h - vb_h * scale_vb }
+
+    // Step 2: viewport → canvas — uniform fit (min scale), centered. Identity
+    // when vp == canvas; when the SVG's width/height set a non-canvas viewport,
+    // this fits that intrinsic box into the canvas (preserving its aspect).
+    scale_x_c = cw / vp_w
+    scale_y_c = ch / vp_h
+    scale_c = scale_x_c
+    if scale_y_c < scale_c { scale_c = scale_y_c }
+    tx_c = (cw - vp_w * scale_c) / 2.0
+    ty_c = (ch - vp_h * scale_c) / 2.0
+
+    // Combined affine: translate(offset) ∘ scale(scale) ∘ translate(-vb.min)
+    scale = scale_c * scale_vb
+    offset_x = tx_c + scale_c * tx_vb
+    offset_y = ty_c + scale_c * ty_vb
+
+    xform = transform.affine_mul(
+        transform.affine_translate(offset_x, offset_y),
+        transform.affine_mul(
+            transform.affine_scale(scale, scale),
+            transform.affine_translate(0.0 - vb_min_x, 0.0 - vb_min_y)
+        )
+    )
+
+    mapping = context.mapping_new(
+        vb_min_x, vb_min_y, vb_w, vb_h,
+        cw, ch,
+        scale, offset_x, offset_y,
+        xform
+    )
+
+    return context.new_context(mapping)
+}
+
+// ─── aevg(backend, opts, body) — entry-point convenience ──────────
+//
+// Creates a context, runs the user-supplied body callback that
+// emits shape factory calls, returns the context. Real backend
+// integration (Phase 1) will replace this with the version that
+// wraps the body in app.clip/app.canvasStack.
+//
+// The body is `fn`-typed; the v0.193+1 fn ↔ ptr coercion (already
+// landed) makes the call shape work cleanly even when body is a
+// `callback { … }` capturing ctx/backend by reference.
+
+aevg(backend: ptr, opts: ptr, body: fn) -> ptr {
+    ctx = create_aevg_context(opts)
+    body()
+    return ctx
+}

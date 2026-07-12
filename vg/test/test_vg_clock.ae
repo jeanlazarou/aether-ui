@@ -1,0 +1,104 @@
+// aevg/test_vg_clock.ae — declarative clock via bind_pos + poll (scene_refresh).
+//
+// Headless port of svg-clock.test.ts: clock hands are lines whose x2/y2 are
+// driven by a bind_pos reading the current "time"; calling scene_refresh
+// (poll) repositions them. Set time to noon → hour hand points up; set to 3:00
+// → hour hand points right. This is the same machinery svg-clock uses (it's a
+// poll()-driven test, not a continuous animation) — exercises bind_pos on a
+// line through the vg DSL end to end.
+
+import vg
+import vg.backend.record
+import vg.grammar.context
+import vg.grammar.element
+import vg.grammar.events
+import vg.geom.transform
+import std.string
+import std.map
+import std.math
+
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+assert_near(label: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 1.0 { println("  PASS: ${label} (${got})") }
+    else { println("  FAIL: ${label}: got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return context.new_context(m)
+}
+
+// The clock's current hour (0..12), mutable — the "poll" source.
+struct Clock { hour: float }
+mk_clock(h: float) -> *Clock { c = malloc(8) as *Clock; c.hour = h; return c }
+
+// Hour-hand endpoint for `hour`: center (50,50), length 30, 12-o'clock is up
+// (angle measured clockwise from +Y up). x2 = 50 + 30*sin(θ), y2 = 50 - 30*cos(θ)
+// where θ = hour/12 * 2π.
+hand_x2(hour: float) -> float {
+    theta = hour / 12.0 * (2.0 * math.pi())
+    return 50.0 + 30.0 * math.sin(theta)
+}
+hand_y2(hour: float) -> float {
+    theta = hour / 12.0 * (2.0 * math.pi())
+    return 50.0 - 30.0 * math.cos(theta)
+}
+
+main() {
+    println("=== test_vg_clock ===")
+
+    ctx = mk_ctx()
+    bk = record.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    es = events.event_state_new()
+    vg.scene_set_event_state(scene, es)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    clock = mk_clock(0.0)   // noon (12 == 0)
+
+    // Hour hand: a line from center to the hour endpoint, repositioned on poll.
+    hand = vg.line(root, 50.0, 50.0, hand_x2(0.0), hand_y2(0.0))
+    hel = vg.node_element(hand)
+    vg.stroke(hand, "#000000", 2.0)
+    vg.bind_pos(hand) callback {
+        m = map.new()
+        ig0 = map.put(m, "x2", numstr(hand_x2(clock.hour)))
+        ig1 = map.put(m, "y2", numstr(hand_y2(clock.hour)))
+        return m
+    }
+
+    vg.vg_flush(scene)
+
+    // Noon: hand points straight up → x2=50 (centered), y2=20 (top).
+    vg.scene_refresh(scene)
+    assert_near("noon: x2 centered", element.element_geo2(hel), 50.0)
+    assert_near("noon: y2 up",       element.element_geo3(hel), 20.0)
+
+    // 3 o'clock: hand points right → x2=80 (right), y2=50 (centered).
+    clock.hour = 3.0
+    vg.scene_refresh(scene)
+    assert_near("3:00: x2 right",    element.element_geo2(hel), 80.0)
+    assert_near("3:00: y2 centered", element.element_geo3(hel), 50.0)
+
+    // 6 o'clock: straight down → x2=50, y2=80.
+    clock.hour = 6.0
+    vg.scene_refresh(scene)
+    assert_near("6:00: x2 centered", element.element_geo2(hel), 50.0)
+    assert_near("6:00: y2 down",     element.element_geo3(hel), 80.0)
+
+    // 9 o'clock: left → x2=20, y2=50.
+    clock.hour = 9.0
+    vg.scene_refresh(scene)
+    assert_near("9:00: x2 left",     element.element_geo2(hel), 20.0)
+    assert_near("9:00: y2 centered", element.element_geo3(hel), 50.0)
+
+    println("=== test_vg_clock passed ===")
+}
+
+numstr(v: float) -> string { return string.from_float(v) }

@@ -1,0 +1,1113 @@
+// aevg/shapes.ae — shape factories (Tier C).
+//
+// Port of the *happy path* of cosyne/src/cvg/grammar-shapes.ts's
+// shape methods. Each factory:
+//   1. Pushes the optional `transform=` attribute onto the context.
+//   2. Resolves the merged style via style.resolve_style.
+//   3. Computes screen-space coords via map_point / parse_len_x/y.
+//   4. Resolves fill/stroke colors with opacity bake-in.
+//   5. Computes mapped stroke-width with sub-pixel opacity factor.
+//   6. Dispatches to the backend's canvas_* with computed opts.
+//   7. Wraps the underlying handle in a *AevgElement, sets bounds.
+//   8. Pops the optional transform.
+//
+// Five factories this commit: circle, rectangle, line, path, group (g).
+// `g` is special — it's just a transform/style/when stack push, run
+// the builder closure, then pop. No backend call.
+//
+// Out of scope, deferred to later commits:
+//   - Projective-transform branches (every shape has an alternate
+//     path-emitting branch when the current transform is projective;
+//     rare in real SVG, big code surface)
+//   - Filter / clipPath rasterization branches (need full filter
+//     machinery from grammar_defs)
+//   - Gradient fill (gradient lookup needs grammar_defs)
+//   - Rounded rect (the rounded-corner branch in proto.rect)
+//   - text(), ellipse(), polyline(), polygon() — all delegate to
+//     path() in the TS source, will land alongside path-string
+//     emission utilities once needed
+//   - setShapeInfo / wireEventHandlers / trackElement / resize
+//     callbacks — separate concerns
+//
+// Attrs convention: each factory takes attrs as a std.map
+// string→string (the shape parser/builder is expected to populate
+// it; raw SVG attribute parsing already produces this shape in
+// parser.ae).
+
+exports (
+    shape_circle, shape_rectangle, shape_line, shape_path,
+    shape_group, shape_text
+)
+
+import std.string
+import std.map
+import vg.grammar.context
+import vg.grammar.rendering
+import vg.grammar.style
+import vg.grammar.utils
+import vg.grammar.element
+import vg.geom.transform
+import vg.backend.dispatch
+import vg.svg.normalizer
+import std.strbuilder
+import vg.raster.render_as_raster
+import vg.raster.rasterize
+import vg.svg.parser
+import std.regex
+import vg.grammar.defs
+import std.math
+
+extern malloc(size: int) -> ptr
+
+// ─── attr helpers ────────────────────────────────────────────────
+//
+// Each factory reads a few specific attrs. Hide the map.get → null
+// → default fallback in a small helper.
+
+attr_str_or(attrs: ptr, key: string, default_val: string) -> string {
+    v, _ = map.get(attrs, key)
+    if v == null { return default_val }
+    return v
+}
+
+attr_has(attrs: ptr, key: string) -> int {
+    return map.has(attrs, key)
+}
+
+// Float-to-string for opts (round-trips via parse_length_to_px on
+// the read side). Uses Aether's string.from_float — precision is
+// 6 sig figs per std.string convention, fine for opts inspection.
+
+import std.string
+ftos(f: float) -> string { return string.from_float(f) }
+
+int_to_str(i: int) -> string { return string.from_int(i) }
+
+// Build an opts map for backend calls. Each call only needs a
+// handful of keys, so we build directly inline.
+opt_set_f(opts: ptr, k: string, v: float) {
+    _ = map.put(opts, k, ftos(v))
+}
+
+opt_set_s(opts: ptr, k: string, v: string) {
+    if string.length(v) > 0 {
+        _ = map.put(opts, k, v)
+    }
+}
+
+// Emit stroke-linecap / stroke-linejoin opts from the resolved style, so the
+// backend can set the cairo cap/join (SVG defaults butt/miter; we previously
+// hardcoded round, fattening arrowheads/corners — mars.svg). Only emits when
+// the style actually specifies them (the backend defaults to butt/miter).
+emit_stroke_caps(opts: ptr, style: ptr) {
+    lc = style.style_get(style, "stroke-linecap")
+    if string.length(lc) > 0 { _ = map.put(opts, "strokeLinecap", lc) }
+    lj = style.style_get(style, "stroke-linejoin")
+    if string.length(lj) > 0 { _ = map.put(opts, "strokeLinejoin", lj) }
+}
+
+// ─── Transform-push helper (push only if attrs has transform) ────
+
+maybe_push_transform(ctx: ptr, attrs: ptr) -> int {
+    t, _ = map.get(attrs, "transform")
+    if t == null { return 0 }
+    rendering.push_transform_str(ctx, t)
+    return 1
+}
+
+maybe_pop_transform(ctx: ptr, did_push: int) {
+    if did_push == 1 { rendering.pop_transform(ctx) }
+}
+
+// ─── filter / clipPath detection ─────────────────────────────────
+//
+// A shape with `filter=url(#id)` or `clip-path=url(#id)` in its
+// resolved style is rendered via the raster pipeline
+// (render_as_raster) instead of a direct backend dispatch — matches
+// the TS `if (style.filterId || style.clipPathId)` branch. Returns
+// the extracted id ("" if absent).
+
+style_filter_id(style: ptr) -> string {
+    v = style.style_get(style, "filter")
+    if string.length(v) == 0 { return "" }
+    return utils.extract_url_id(v)
+}
+
+style_clip_id(style: ptr) -> string {
+    v = style.style_get(style, "clip-path")
+    if string.length(v) == 0 { return "" }
+    return utils.extract_url_id(v)
+}
+
+// 1 if the style requests filter or clipPath rasterization.
+needs_raster(filter_id: string, clip_id: string) -> int {
+    if string.length(filter_id) > 0 { return 1 }
+    if string.length(clip_id) > 0 { return 1 }
+    return 0
+}
+
+// ─── gradient fill detection + descriptor emission ───────────────
+//
+// If the style's `fill` is `url(#id)` referencing a registered
+// gradient, emit a gradient descriptor into `opts` for the backend
+// to render, and return 1. Otherwise return 0 (caller uses the solid
+// fill path). Mirrors TS resolveGradientFill + buildFillGradient.
+//
+// Geometry is resolved to canvas/pixel space here (the adapter has
+// no ctx). objectBoundingBox units (the SVG default) map the 0..1
+// gradient coords onto the shape's canvas-space bbox (bx,by,bw,bh);
+// userSpaceOnUse maps the raw coords through the viewBox transform.
+//
+// Opts emitted:
+//   gradType  = "linear" | "radial"
+//   gradX1/Y1/X2/Y2          (linear, canvas space)
+//   gradCX/CY/R/FX/FY        (radial, canvas space)
+//   gradStops = "off,r,g,b,a off,r,g,b,a ..." (rgba 0..255 / off 0..1)
+
+// Extract a gradient id from a style value (fill or stroke).
+style_grad_id_of(style: ptr, source_key: string) -> string {
+    v = style.style_get(style, source_key)
+    if string.length(v) == 0 { return "" }
+    return utils.extract_url_id(v)
+}
+
+// Convenience: fill-gradient id (back-compat shorthand).
+style_gradient_id(style: ptr) -> string {
+    return style_grad_id_of(style, "fill")
+}
+
+// Emit gradient opts if `source_key` (fill / stroke) references a
+// registered gradient. Opt keys are `${prefix}Type`/`${prefix}X1`/…/
+// `${prefix}Stops` (prefix "grad" for fill, "strokeGrad" for stroke).
+// bx,by,bw,bh = the shape's canvas-space bounding box. Returns 1 if a
+// gradient descriptor was emitted.
+emit_gradient_for(ctx: ptr, style: ptr, opts: ptr, source_key: string, prefix: string,
+                  bx: float, by: float, bw: float, bh: float) -> int {
+    gid = style_grad_id_of(style, source_key)
+    if string.length(gid) == 0 { return 0 }
+    if context.has_gradient(ctx, gid) == 0 { return 0 }
+    gdef = context.get_gradient(ctx, gid)
+    if gdef == null { return 0 }
+
+    gtype = defs.gradient_type(gdef)
+    units = defs.gradient_units(gdef)
+    user_space = 0
+    if string.equals(units, "userSpaceOnUse") == 1 { user_space = 1 }
+
+    // spreadMethod → ${prefix}Spread opt (the adapter maps it to a cairo
+    // extend mode). Default "pad" when unset.
+    spread = defs.gradient_spread_method(gdef)
+    if string.length(spread) == 0 { spread = "pad" }
+    opt_set_s(opts, string.concat(prefix, "Spread"), spread)
+
+    if gtype == defs.GRADIENT_RADIAL() {
+        opt_set_s(opts, string.concat(prefix, "Type"), "radial")
+        gcx = defs.gradient_cx(gdef)
+        gcy = defs.gradient_cy(gdef)
+        gr  = defs.gradient_r(gdef)
+        gfx = defs.gradient_fx(gdef)
+        gfy = defs.gradient_fy(gdef)
+        if user_space == 1 {
+            pc = rendering.map_point(ctx, gcx, gcy)
+            pf = rendering.map_point(ctx, gfx, gfy)
+            avg = transform.affine_average_scale_p(rendering.current_transform(ctx))
+            opt_set_f(opts, string.concat(prefix, "CX"), transform.pt_x(pc))
+            opt_set_f(opts, string.concat(prefix, "CY"), transform.pt_y(pc))
+            opt_set_f(opts, string.concat(prefix, "R"),  rendering.map_length(ctx, gr) * avg)
+            opt_set_f(opts, string.concat(prefix, "FX"), transform.pt_x(pf))
+            opt_set_f(opts, string.concat(prefix, "FY"), transform.pt_y(pf))
+        } else {
+            // objectBoundingBox: 0..1 over the shape bbox.
+            opt_set_f(opts, string.concat(prefix, "CX"), bx + gcx * bw)
+            opt_set_f(opts, string.concat(prefix, "CY"), by + gcy * bh)
+            // radius scales by the bbox (use the larger extent, as
+            // most renderers do for a circle-in-bbox approximation).
+            rext = bw
+            if bh > rext { rext = bh }
+            opt_set_f(opts, string.concat(prefix, "R"),  gr * rext)
+            opt_set_f(opts, string.concat(prefix, "FX"), bx + gfx * bw)
+            opt_set_f(opts, string.concat(prefix, "FY"), by + gfy * bh)
+        }
+    } else {
+        opt_set_s(opts, string.concat(prefix, "Type"), "linear")
+        gx1 = defs.gradient_x1(gdef)
+        gy1 = defs.gradient_y1(gdef)
+        gx2 = defs.gradient_x2(gdef)
+        gy2 = defs.gradient_y2(gdef)
+        if user_space == 1 {
+            p1 = rendering.map_point(ctx, gx1, gy1)
+            p2 = rendering.map_point(ctx, gx2, gy2)
+            opt_set_f(opts, string.concat(prefix, "X1"), transform.pt_x(p1))
+            opt_set_f(opts, string.concat(prefix, "Y1"), transform.pt_y(p1))
+            opt_set_f(opts, string.concat(prefix, "X2"), transform.pt_x(p2))
+            opt_set_f(opts, string.concat(prefix, "Y2"), transform.pt_y(p2))
+        } else {
+            opt_set_f(opts, string.concat(prefix, "X1"), bx + gx1 * bw)
+            opt_set_f(opts, string.concat(prefix, "Y1"), by + gy1 * bh)
+            opt_set_f(opts, string.concat(prefix, "X2"), bx + gx2 * bw)
+            opt_set_f(opts, string.concat(prefix, "Y2"), by + gy2 * bh)
+        }
+    }
+
+    // Stops → "off,r,g,b,a ..." with rgba parsed to 0..255 ints.
+    sb = strbuilder.new(64)
+    nst = defs.gradient_stop_count(gdef)
+    si = 0
+    while si < nst {
+        stop, _ = list.get(defs.gradient_stops(gdef), si)
+        off = defs.stop_offset(stop)
+        col = defs.stop_color(stop)
+        rgba = rasterize.parse_color_to_rgba(col)
+        if si > 0 { _ = strbuilder.append(sb, " ") }
+        _ = strbuilder.append(sb, string.from_float(off))
+        _ = strbuilder.append(sb, ",")
+        _ = strbuilder.append(sb, string.from_int(rasterize.rgba_r(rgba)))
+        _ = strbuilder.append(sb, ",")
+        _ = strbuilder.append(sb, string.from_int(rasterize.rgba_g(rgba)))
+        _ = strbuilder.append(sb, ",")
+        _ = strbuilder.append(sb, string.from_int(rasterize.rgba_b(rgba)))
+        _ = strbuilder.append(sb, ",")
+        _ = strbuilder.append(sb, string.from_int(rasterize.rgba_a(rgba)))
+        si = si + 1
+    }
+    _ = map.put(opts, string.concat(prefix, "Stops"), strbuilder.finish(sb))
+    return 1
+}
+
+// Fill-gradient shorthand (the common case).
+emit_gradient_opts(ctx: ptr, style: ptr, opts: ptr,
+                   bx: float, by: float, bw: float, bh: float) -> int {
+    return emit_gradient_for(ctx, style, opts, "fill", "grad", bx, by, bw, bh)
+}
+
+// ─── shape_circle ────────────────────────────────────────────────
+
+shape_circle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
+    did_push = maybe_push_transform(ctx, attrs)
+    style = style.resolve_style(ctx, attrs, "circle",
+                                        attr_str_or(attrs, "class", ""))
+
+    cx_raw = rendering.parse_len_x(ctx, attr_str_or(attrs, "cx", "0"))
+    cy_raw = rendering.parse_len_y(ctx, attr_str_or(attrs, "cy", "0"))
+    r_raw  = rendering.parse_len_x(ctx, attr_str_or(attrs, "r",  "0"))
+
+    // Filter / clipPath → render via the raster pipeline.
+    fid = style_filter_id(style)
+    cid = style_clip_id(style)
+    if needs_raster(fid, cid) == 1 {
+        fill_c = utils.resolve_fill_color(style)
+        if string.length(fill_c) == 0 { fill_c = "black" }
+        // Element bounds in SVG space: the circle's bbox.
+        bx = cx_raw - r_raw
+        by = cy_raw - r_raw
+        bw = r_raw * 2.0
+        bh = r_raw * 2.0
+        // The filler paints the circle into the pixel buffer. Pixel
+        // radius = map_length(r_raw) * averageScale; centre is at
+        // (off + pxR, off + pxR) since the bbox is 2r square.
+        el_raster = render_as_raster.render_as_raster(ctx, backend,
+            bx, by, bw, bh, fill_c, style, fid, cid) callback |buf: ptr, w: int, h: int, off_x: float, off_y: float, r: int, g: int, b: int, a: int| {
+            avg = transform.affine_average_scale_p(rendering.current_transform(ctx))
+            px_r = rendering.map_length(ctx, r_raw) * avg
+            rasterize.fill_circle_in_buffer(buf, w, h,
+                off_x + px_r, off_y + px_r, px_r, r, g, b, a)
+        }
+        maybe_pop_transform(ctx, did_push)
+        el_w = element.element_new(el_raster)
+        element.element_set_shape_circle(el_w, cx_raw, cy_raw, r_raw)
+        map.free(style)
+        return el_w
+    }
+
+    // Gradient fill → delegate to shape_path (only it emits gradient opts; the
+    // direct-circle dispatch below emits a solid fillColor). A circle is an
+    // ellipse with rx==ry, so reuse ellipse_to_path. Mirrors rect_via_path.
+    if string.length(style_grad_id_of(style, "fill")) > 0 {
+        elv = circle_via_path(ctx, backend, attrs, style, cx_raw, cy_raw, r_raw, did_push)
+        map.free(style)
+        return elv
+    }
+
+    p = rendering.map_point(ctx, cx_raw, cy_raw)
+    cx = transform.pt_x(p)
+    cy = transform.pt_y(p)
+    avg_scale = transform.affine_average_scale_p(rendering.current_transform(ctx))
+    r = rendering.map_length(ctx, r_raw) * avg_scale
+
+    fill_color = utils.resolve_fill_color(style)
+    stroke_color = utils.resolve_stroke_color(style)
+    sw = 0.0
+    if string.length(stroke_color) > 0 {
+        sw_raw = utils.style_num_default(style, "stroke-width", 1.0)
+        smap = rendering.map_stroke_width(ctx, sw_raw)
+        sw = rendering.stroke_width(smap)
+        op = rendering.stroke_opacity_factor(smap)
+        if op < 1.0 {
+            stroke_color = utils.apply_opacity_to_color(stroke_color, op)
+        }
+    }
+    half_sw = sw / 2.0
+
+    opts = map.new()
+    opt_set_f(opts, "x",  cx - r - half_sw)
+    opt_set_f(opts, "y",  cy - r - half_sw)
+    opt_set_f(opts, "x2", cx + r + half_sw)
+    opt_set_f(opts, "y2", cy + r + half_sw)
+    opt_set_s(opts, "fillColor",   fill_color)
+    opt_set_s(opts, "strokeColor", stroke_color)
+    opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
+
+    underlying = dispatch.dispatch_circle(backend, opts)
+
+    maybe_pop_transform(ctx, did_push)
+
+    el = element.element_new(underlying)
+    element.element_set_bounds(el, cx - r, cy - r, 2.0 * r, 2.0 * r)
+    // Record SVG-space geometry so a bindPos result can recompute
+    // bounds on refresh (reactive.recompute_bounds).
+    element.element_set_shape_circle(el, cx_raw, cy_raw, r_raw)
+    // The adapter consumed opts by value at dispatch; the cascade copied the
+    // style's winners. Freeing both per dispatch is what keeps a 60fps draw
+    // region (thousands of dispatches/second) memory-stable.
+    map.free(opts)
+    map.free(style)
+    return el
+}
+
+// ─── shape_rectangle ─────────────────────────────────────────────
+
+shape_rectangle(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
+    did_push = maybe_push_transform(ctx, attrs)
+    style = style.resolve_style(ctx, attrs, "rect",
+                                        attr_str_or(attrs, "class", ""))
+
+    px = rendering.parse_len_x(ctx, attr_str_or(attrs, "x", "0"))
+    py = rendering.parse_len_y(ctx, attr_str_or(attrs, "y", "0"))
+    pw = rendering.parse_len_x(ctx, attr_str_or(attrs, "width",  "0"))
+    ph = rendering.parse_len_y(ctx, attr_str_or(attrs, "height", "0"))
+
+    // Filter / clipPath → render via the raster pipeline.
+    rfid = style_filter_id(style)
+    rcid = style_clip_id(style)
+    if needs_raster(rfid, rcid) == 1 {
+        rfill = utils.resolve_fill_color(style)
+        if string.length(rfill) == 0 { rfill = "black" }
+        el_raster = render_as_raster.render_as_raster(ctx, backend,
+            px, py, pw, ph, rfill, style, rfid, rcid) callback |buf: ptr, w: int, h: int, off_x: float, off_y: float, r: int, g: int, b: int, a: int| {
+            avg = transform.affine_average_scale_p(rendering.current_transform(ctx))
+            px_w = rendering.map_length(ctx, pw) * avg
+            px_h = rendering.map_length(ctx, ph) * avg
+            rasterize.fill_rect_in_buffer(buf, w, h, off_x, off_y, px_w, px_h, r, g, b, a)
+        }
+        maybe_pop_transform(ctx, did_push)
+        el_w = element.element_new(el_raster)
+        element.element_set_shape_rect(el_w, px, py, pw, ph)
+        map.free(style)
+        return el_w
+    }
+
+    // Gradient fill, rotation, or rounded corners → build a rect path
+    // and delegate to shape_path (which handles gradients, arbitrary
+    // mapping, and arc-corner flattening). Mirrors the TS
+    // `if (gradDef || hasRotation || hasRoundedCorners)` branch.
+    has_grad = string.length(style_grad_id_of(style, "fill")) > 0
+    rx = rendering.parse_len_x(ctx, attr_str_or(attrs, "rx", "0"))
+    ry = rendering.parse_len_y(ctx, attr_str_or(attrs, "ry", "0"))
+    has_round = 0
+    if rx > 0.0 { has_round = 1 }
+    if ry > 0.0 { has_round = 1 }
+    cur_x = rendering.current_transform(ctx)
+    has_rot = 0
+    if math.abs_float(transform.affine_b(cur_x)) > 0.000001 { has_rot = 1 }
+    if math.abs_float(transform.affine_c(cur_x)) > 0.000001 { has_rot = 1 }
+    needs_path = 0
+    if has_grad == 1 { needs_path = 1 }
+    if has_round == 1 { needs_path = 1 }
+    if has_rot == 1 { needs_path = 1 }
+    if needs_path == 1 {
+        elv = rect_via_path(ctx, backend, attrs, style, px, py, pw, ph, rx, ry, did_push)
+        map.free(style)
+        return elv
+    }
+
+    // Project the four corners and compute axis-aligned bounds.
+    p1 = rendering.map_point(ctx, px, py)
+    p2 = rendering.map_point(ctx, px + pw, py)
+    p3 = rendering.map_point(ctx, px, py + ph)
+    p4 = rendering.map_point(ctx, px + pw, py + ph)
+    x1 = transform.pt_x(p1)
+    y1 = transform.pt_y(p1)
+    min_x = x1; max_x = x1
+    min_y = y1; max_y = y1
+    cand_x = transform.pt_x(p2); cand_y = transform.pt_y(p2)
+    if cand_x < min_x { min_x = cand_x }
+    if cand_x > max_x { max_x = cand_x }
+    if cand_y < min_y { min_y = cand_y }
+    if cand_y > max_y { max_y = cand_y }
+    cand_x = transform.pt_x(p3); cand_y = transform.pt_y(p3)
+    if cand_x < min_x { min_x = cand_x }
+    if cand_x > max_x { max_x = cand_x }
+    if cand_y < min_y { min_y = cand_y }
+    if cand_y > max_y { max_y = cand_y }
+    cand_x = transform.pt_x(p4); cand_y = transform.pt_y(p4)
+    if cand_x < min_x { min_x = cand_x }
+    if cand_x > max_x { max_x = cand_x }
+    if cand_y < min_y { min_y = cand_y }
+    if cand_y > max_y { max_y = cand_y }
+
+    fill_color = utils.resolve_fill_color(style)
+    stroke_color = utils.resolve_stroke_color(style)
+    sw = 0.0
+    if string.length(stroke_color) > 0 {
+        sw_raw = utils.style_num_default(style, "stroke-width", 1.0)
+        smap = rendering.map_stroke_width(ctx, sw_raw)
+        sw = rendering.stroke_width(smap)
+        op = rendering.stroke_opacity_factor(smap)
+        if op < 1.0 {
+            stroke_color = utils.apply_opacity_to_color(stroke_color, op)
+        }
+    }
+    half_sw = sw / 2.0
+
+    opts = map.new()
+    opt_set_f(opts, "x",  min_x - half_sw)
+    opt_set_f(opts, "y",  min_y - half_sw)
+    opt_set_f(opts, "x2", max_x + half_sw)
+    opt_set_f(opts, "y2", max_y + half_sw)
+    opt_set_s(opts, "fillColor",   fill_color)
+    opt_set_s(opts, "strokeColor", stroke_color)
+    opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
+
+    underlying = dispatch.dispatch_rectangle(backend, opts)
+
+    maybe_pop_transform(ctx, did_push)
+
+    el = element.element_new(underlying)
+    element.element_set_bounds(el, min_x, min_y, max_x - min_x, max_y - min_y)
+    element.element_set_shape_rect(el, px, py, pw, ph)
+    // The adapter consumed opts by value at dispatch; the cascade copied the
+    // style's winners. Freeing both per dispatch is what keeps a 60fps draw
+    // region (thousands of dispatches/second) memory-stable.
+    map.free(opts)
+    map.free(style)
+    return el
+}
+
+// rect_via_path — build an SVG path for a rect (rounded or plain) in
+// SVG space and delegate to shape_path, which handles gradients,
+// arbitrary (rotating) mapping, and arc-corner flattening. Mirrors
+// the TS rect()→path() delegation.
+//
+// The rect's transform is already pushed on the context (did_push);
+// we strip `transform` from the delegated attrs so shape_path doesn't
+// double-push, let shape_path render under the active transform, then
+// pop here. rx/ry are clamped to half the width/height per SVG spec.
+rect_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
+              px: float, py: float, pw: float, ph: float,
+              rx: float, ry: float, did_push: int) -> ptr {
+    // SVG: if only one of rx/ry is given, the other defaults to it.
+    erx = rx
+    ery = ry
+    if erx == 0.0 { erx = ery }
+    if ery == 0.0 { ery = erx }
+    crx = erx
+    if crx > pw / 2.0 { crx = pw / 2.0 }
+    cry = ery
+    if cry > ph / 2.0 { cry = ph / 2.0 }
+
+    d = ""
+    if crx > 0.0 {
+        d = rounded_rect_path(px, py, pw, ph, crx, cry)
+    } else {
+        if cry > 0.0 {
+            d = rounded_rect_path(px, py, pw, ph, crx, cry)
+        } else {
+            d = plain_rect_path(px, py, pw, ph)
+        }
+    }
+
+    // Delegate to shape_path with transform stripped + d/fill carried.
+    pa = map.new()
+    _ = map.put(pa, "d", d)
+    copy_resolved_paint(pa, style, attrs)
+
+    el = shape_path(ctx, backend, pa)
+    maybe_pop_transform(ctx, did_push)
+    map.free(pa)
+    return el
+}
+
+// circle_via_path — a circle (cx,cy,r) as an ellipse path (rx==ry==r) so it
+// routes through shape_path, which is the only shape that emits gradient opts.
+// Same transform-strip + style-carry as rect_via_path (the circle's transform
+// is already pushed via did_push; shape_path renders under it, then we pop).
+circle_via_path(ctx: ptr, backend: ptr, attrs: ptr, style: ptr,
+                cx: float, cy: float, r: float, did_push: int) -> ptr {
+    d = utils.ellipse_to_path(cx, cy, r, r)
+    pa = map.new()
+    _ = map.put(pa, "d", d)
+    copy_resolved_paint(pa, style, attrs)
+
+    el = shape_path(ctx, backend, pa)
+    maybe_pop_transform(ctx, did_push)
+    element.element_set_shape_circle(el, cx, cy, r)
+    map.free(pa)
+    return el
+}
+
+// Copy the resolved presentation properties from `style` into a fresh attrs
+// map `pa` for a delegated shape_path call (rect_via_path / circle_via_path).
+// MUST carry the opacity + rule properties, not just fill/stroke/width — they
+// were being dropped, so a rounded rect / gradient circle with fill-opacity
+// rendered fully opaque (open-clipart.svg's translucent drop-shadows came out
+// solid black). resolve_fill_color/resolve_stroke_color in shape_path bake
+// these into the colour, so the values just need to reach shape_path's style.
+copy_resolved_paint(pa: ptr, style: ptr, attrs: ptr) {
+    copy_style_prop(pa, style, "fill")
+    copy_style_prop(pa, style, "stroke")
+    copy_style_prop(pa, style, "stroke-width")
+    copy_style_prop(pa, style, "fill-opacity")
+    copy_style_prop(pa, style, "stroke-opacity")
+    copy_style_prop(pa, style, "opacity")
+    copy_style_prop(pa, style, "fill-rule")
+    copy_style_prop(pa, style, "stroke-linecap")
+    copy_style_prop(pa, style, "stroke-linejoin")
+    clv = attr_str_or(attrs, "class", "")
+    if string.length(clv) > 0 { _ = map.put(pa, "class", clv) }
+}
+
+copy_style_prop(pa: ptr, style: ptr, key: string) {
+    v = style.style_get(style, key)
+    if string.length(v) > 0 { _ = map.put(pa, key, v) }
+}
+
+// Plain rectangle as a closed M/L path (SVG space).
+plain_rect_path(px: float, py: float, pw: float, ph: float) -> string {
+    sb = strbuilder.new(64)
+    _ = strbuilder.append(sb, "M ")
+    append_xy(sb, px, py)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px + pw, py)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px + pw, py + ph)
+    _ = strbuilder.append(sb, " L ")
+    append_xy(sb, px, py + ph)
+    _ = strbuilder.append(sb, " Z")
+    return strbuilder.finish(sb)
+}
+
+// Rounded rectangle using arc (A) corner commands (SVG space). The
+// normalizer converts A → cubic, then shape_path flattens.
+rounded_rect_path(px: float, py: float, pw: float, ph: float,
+                  cx: float, cy: float) -> string {
+    sb = strbuilder.new(128)
+    _ = strbuilder.append(sb, "M "); append_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + pw - cx, py)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + pw, py + cy)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + pw, py + ph - cy)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + pw - cx, py + ph)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px + cx, py + ph)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px, py + ph - cy)
+    _ = strbuilder.append(sb, " L "); append_xy(sb, px, py + cy)
+    _ = strbuilder.append(sb, " A "); append_xy(sb, cx, cy)
+    _ = strbuilder.append(sb, " 0 0 1 "); append_xy(sb, px + cx, py)
+    _ = strbuilder.append(sb, " Z")
+    return strbuilder.finish(sb)
+}
+
+append_xy(sb: ptr, x: float, y: float) {
+    _ = strbuilder.append(sb, string.from_float(x))
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, string.from_float(y))
+}
+
+// ─── shape_line ──────────────────────────────────────────────────
+
+shape_line(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
+    did_push = maybe_push_transform(ctx, attrs)
+    style = style.resolve_style(ctx, attrs, "line",
+                                        attr_str_or(attrs, "class", ""))
+
+    x1_raw = rendering.parse_len_x(ctx, attr_str_or(attrs, "x1", "0"))
+    y1_raw = rendering.parse_len_y(ctx, attr_str_or(attrs, "y1", "0"))
+    x2_raw = rendering.parse_len_x(ctx, attr_str_or(attrs, "x2", "0"))
+    y2_raw = rendering.parse_len_y(ctx, attr_str_or(attrs, "y2", "0"))
+
+    p1 = rendering.map_point(ctx, x1_raw, y1_raw)
+    p2 = rendering.map_point(ctx, x2_raw, y2_raw)
+    mx1 = transform.pt_x(p1); my1 = transform.pt_y(p1)
+    mx2 = transform.pt_x(p2); my2 = transform.pt_y(p2)
+
+    stroke_color = utils.resolve_stroke_color(style)
+    sw = 0.0
+    if string.length(stroke_color) > 0 {
+        sw_raw = utils.style_num_default(style, "stroke-width", 1.0)
+        smap = rendering.map_stroke_width(ctx, sw_raw)
+        sw = rendering.stroke_width(smap)
+        op = rendering.stroke_opacity_factor(smap)
+        if op < 1.0 {
+            stroke_color = utils.apply_opacity_to_color(stroke_color, op)
+        }
+    }
+
+    opts = map.new()
+    opt_set_f(opts, "x1", mx1)
+    opt_set_f(opts, "y1", my1)
+    opt_set_f(opts, "x2", mx2)
+    opt_set_f(opts, "y2", my2)
+    opt_set_s(opts, "strokeColor", stroke_color)
+    opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
+
+    underlying = dispatch.dispatch_line(backend, opts)
+
+    maybe_pop_transform(ctx, did_push)
+
+    el = element.element_new(underlying)
+    // Bounds: AABB of the two endpoints.
+    lo_x = mx1; if mx2 < lo_x { lo_x = mx2 }
+    lo_y = my1; if my2 < lo_y { lo_y = my2 }
+    hi_x = mx1; if mx2 > hi_x { hi_x = mx2 }
+    hi_y = my1; if my2 > hi_y { hi_y = my2 }
+    element.element_set_bounds(el, lo_x, lo_y, hi_x - lo_x, hi_y - lo_y)
+    element.element_set_shape_line(el, x1_raw, y1_raw, x2_raw, y2_raw)
+    map.free(opts)
+    map.free(style)
+    return el
+}
+
+// ─── shape_path ──────────────────────────────────────────────────
+//
+// Takes raw `d` attribute, normalises via normalizer.ae, computes
+// path-bounds, dispatches to canvas_path.
+
+shape_path(ctx: ptr, backend: ptr, attrs: ptr) -> ptr {
+    d, _ = map.get(attrs, "d")
+    if d == null {
+        // No d → return an empty AevgElement (no backend call).
+        return element.element_new(null)
+    }
+    did_push = maybe_push_transform(ctx, attrs)
+    style = style.resolve_style(ctx, attrs, "path",
+                                        attr_str_or(attrs, "class", ""))
+
+    // Normalise the path string; consumers see only M/L/C/Z.
+    cmds = normalizer.normalize_commands(normalizer.parse_path(d))
+
+    // Flatten to a canvas-space polyline. Each M/L contributes one
+    // mapped point; each C is sampled into PATH_CUBIC_STEPS line
+    // segments (canvas-space). Z marks a sub-path close. The result is
+    // emitted as a compact "points" opt: a space-separated list of
+    // "x,y" tokens, with sub-paths separated by the token "Z". The
+    // backend adapter strokes/fills it directly — no further mapping.
+    //
+    // Bounds are accumulated over the *mapped* points (the old code
+    // computed bounds in SVG space, which was wrong for any non-
+    // identity viewBox; hit-testing now matches the drawn pixels).
+    points = strbuilder.new(128)
+    has_pt = 0
+    mnx = 0.0; mny = 0.0; mxx = 0.0; mxy = 0.0
+    // Current pen position in SVG space (for cubic sampling start).
+    cur_x = 0.0; cur_y = 0.0
+    n_cmds = list_size(cmds)
+    Z_code = 90
+    M_code = 77
+    C_code = 67
+    i = 0
+    while i < n_cmds {
+        item, _ = list.get(cmds, i)
+        cty = normalizer.cmd_type(item)
+        args = normalizer.cmd_args(item)
+
+        if cty == Z_code {
+            sb_token(points, "Z")
+        } else {
+            if cty == C_code {
+                // Cubic: sample from (cur_x,cur_y) through the two
+                // control points to the endpoint. Each sample is
+                // mapped to canvas space.
+                cp1x = floatarr_get_unchecked(args, 0)
+                cp1y = floatarr_get_unchecked(args, 1)
+                cp2x = floatarr_get_unchecked(args, 2)
+                cp2y = floatarr_get_unchecked(args, 3)
+                ex   = floatarr_get_unchecked(args, 4)
+                ey   = floatarr_get_unchecked(args, 5)
+                steps = PATH_CUBIC_STEPS()
+                s = 1
+                while s <= steps {
+                    t = s / steps_f()
+                    bx = cubic_at(cur_x, cp1x, cp2x, ex, t)
+                    by = cubic_at(cur_y, cp1y, cp2y, ey, t)
+                    mp = rendering.map_point(ctx, bx, by)
+                    px = transform.pt_x(mp); py = transform.pt_y(mp)
+                    has_pt, mnx, mny, mxx, mxy =
+                        emit_pt(points, px, py, has_pt, mnx, mny, mxx, mxy)
+                    s = s + 1
+                }
+                cur_x = ex; cur_y = ey
+            } else {
+                // M or L: one point. M emits a pen-up marker first so
+                // the adapter starts a new sub-path (move_to) rather
+                // than drawing a line from the previous sub-path.
+                ax = floatarr_get_unchecked(args, 0)
+                ay = floatarr_get_unchecked(args, 1)
+                mp = rendering.map_point(ctx, ax, ay)
+                px = transform.pt_x(mp); py = transform.pt_y(mp)
+                if cty == M_code { sb_token(points, "M") }
+                has_pt, mnx, mny, mxx, mxy =
+                    emit_pt(points, px, py, has_pt, mnx, mny, mxx, mxy)
+                cur_x = ax; cur_y = ay
+            }
+        }
+        i = i + 1
+    }
+
+    fill_color = utils.resolve_fill_color(style)
+    stroke_color = utils.resolve_stroke_color(style)
+    sw = 0.0
+    if string.length(stroke_color) > 0 {
+        sw_raw = utils.style_num_default(style, "stroke-width", 1.0)
+        smap = rendering.map_stroke_width(ctx, sw_raw)
+        sw = rendering.stroke_width(smap)
+        op = rendering.stroke_opacity_factor(smap)
+        if op < 1.0 {
+            stroke_color = utils.apply_opacity_to_color(stroke_color, op)
+        }
+    }
+
+    opts = map.new()
+    opt_set_s(opts, "d", d)                          // raw, for reference
+    opt_set_s(opts, "points", strbuilder.finish(points))  // mapped polyline
+    opt_set_f(opts, "strokeWidth", sw)
+    emit_stroke_caps(opts, style)
+    // Gradient fill takes precedence over a solid fill color; gradient
+    // stroke over a solid stroke color. Bbox drives objectBoundingBox.
+    if has_pt == 1 {
+        is_grad = emit_gradient_opts(ctx, style, opts, mnx, mny, mxx - mnx, mxy - mny)
+        if is_grad == 0 { opt_set_s(opts, "fillColor", fill_color) }
+        is_sgrad = emit_gradient_for(ctx, style, opts, "stroke", "strokeGrad",
+                                     mnx, mny, mxx - mnx, mxy - mny)
+        if is_sgrad == 0 { opt_set_s(opts, "strokeColor", stroke_color) }
+    } else {
+        opt_set_s(opts, "fillColor", fill_color)
+        opt_set_s(opts, "strokeColor", stroke_color)
+    }
+
+    underlying = dispatch.dispatch_path(backend, opts)
+
+    maybe_pop_transform(ctx, did_push)
+
+    el = element.element_new(underlying)
+    if has_pt == 1 {
+        element.element_set_bounds(el, mnx, mny, mxx - mnx, mxy - mny)
+    }
+    map.free(opts)
+    map.free(style)
+    return el
+}
+
+// ─── path flattening helpers ─────────────────────────────────────
+
+// Number of line segments per cubic Bézier. 16 is plenty for typical
+// on-screen paths; matches the density most SVG renderers use at
+// moderate zoom.
+PATH_CUBIC_STEPS() -> int { return 16 }
+steps_f() -> float { return 16.0 }
+
+// One axis of a cubic Bézier at parameter t (de Casteljau, expanded).
+cubic_at(p0: float, p1: float, p2: float, p3: float, t: float) -> float {
+    u = 1.0 - t
+    uu = u * u
+    tt = t * t
+    return uu * u * p0 + 3.0 * uu * t * p1 + 3.0 * u * tt * p2 + tt * t * p3
+}
+
+// Append a control token ("M" or "Z"), space-prefixed. The leading
+// space yields an empty first split-token, which the adapter ignores.
+sb_token(sb: ptr, tok: string) {
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, tok)
+}
+
+// Append one canvas-space point token " x,y" to the polyline builder
+// and fold it into the running bounds. Returns the updated
+// (has_pt, mnx, mny, mxx, mxy) tuple.
+emit_pt(sb: ptr, px: float, py: float,
+        has_pt: int,
+        mnx: float, mny: float, mxx: float, mxy: float)
+        -> (int, float, float, float, float) {
+    _ = strbuilder.append(sb, " ")
+    _ = strbuilder.append(sb, string.from_float(px))
+    _ = strbuilder.append(sb, ",")
+    _ = strbuilder.append(sb, string.from_float(py))
+    if has_pt == 0 {
+        mnx = px; mny = py; mxx = px; mxy = py
+    } else {
+        if px < mnx { mnx = px }
+        if py < mny { mny = py }
+        if px > mxx { mxx = px }
+        if py > mxy { mxy = py }
+    }
+    return 1, mnx, mny, mxx, mxy
+}
+
+// std.list / std.floatarr externs we need (the qualified imports
+// can't reach in to call them on a path-args value from another
+// module; use raw extern access). std.list.size and floatarr.size
+// are already exported.
+import std.list
+import std.floatarr
+list_size(p: ptr) -> int { return list.size(p) }
+floatarr_size(p: ptr) -> int { return floatarr.size(p) }
+floatarr_get_unchecked(p: ptr, i: int) -> float { return floatarr.get_unchecked(p, i) }
+
+// ─── shape_group ─────────────────────────────────────────────────
+//
+// `g` is unique: it pushes context state (style + transform +
+// optional `when` predicate), runs the builder closure, then pops.
+// No backend call. The builder closure typically calls more
+// `shape_*` factories within it.
+
+// `builder` is a reserved keyword in Aether (DSL hangover); use `body`.
+shape_group(ctx: ptr, attrs: ptr, body: fn) {
+    // Style cascade: push the g's resolved style as a new top.
+    // The g's tag for CSS lookup is "g" (rare in practice, but
+    // the TS source threads it through).
+    style.push_style(ctx, attrs, "g", attr_str_or(attrs, "class", ""))
+    did_push_xform = maybe_push_transform(ctx, attrs)
+
+    // Optional when= predicate goes onto context's when stack.
+    // We can't accept a `fn` field from attrs (attrs is a string
+    // map). when handlers in the closure-DSL form would arrive
+    // through a separate API (see deferred work). Skip for now.
+
+    body()
+
+    maybe_pop_transform(ctx, did_push_xform)
+    style.pop_style(ctx)
+}
+
+// ─── shape_text ─────────────────────────────────────────────────
+//
+// SVG <text> element. Takes the parser handle for the text node so
+// the factory can read both the inline text (`node_text`) and any
+// `<tspan>` children for multi-line content.
+//
+// Backend dispatches `canvas_text` with computed opts:
+//   x, y          — mapped origin (with baseline correction applied)
+//   text          — the content string
+//   color         — resolved fill (or fallback to stroke / "black")
+//   text_size     — viewBox-scaled font size
+//   bold, italic, monospace  — derived from style.font-* via regex
+//   alignment     — "leading"/"center"/"trailing" from text-anchor
+//
+// For multi-line (with tspans), emit one canvas_text call per
+// tspan; the returned AevgElement wraps the LAST underlying call's
+// handle (matching TS source behaviour).
+//
+// Bounds estimate for hit-testing: char-width ≈ 0.6 × text_size,
+// height ≈ text_size. Adjusted for alignment (center/end shifts).
+
+shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
+    attrs = parser.node_attrs(node_h)
+    did_push = maybe_push_transform(ctx, attrs)
+    style = style.resolve_style(ctx, attrs, "text",
+                                        attr_str_or(attrs, "class", ""))
+
+    // Base font size from style (default 16, per CSS).
+    base_font_size = utils.style_num_default(style, "font-size", 16.0)
+    t_scale = transform.affine_average_scale_p(rendering.current_transform(ctx))
+    text_size = rendering.map_length(ctx, base_font_size) * t_scale
+
+    // text-anchor → alignment string. SVG values: "start" (leading,
+    // default), "middle" (center), "end" (trailing).
+    anchor = style.style_get(style, "text-anchor")
+    alignment = "leading"
+    if string.equals(anchor, "middle") == 1 { alignment = "center" }
+    if string.equals(anchor, "end") == 1    { alignment = "trailing" }
+
+    // Font flags. The TS source matches via regex (bold|600+, italic|oblique,
+    // mono|courier|consolas case-insensitive); we do the same.
+    fw = style.style_get(style, "font-weight")
+    bold = is_bold(fw)
+    fs = style.style_get(style, "font-style")
+    italic = is_italic(fs)
+    ff = style.style_get(style, "font-family")
+    monospace = is_monospace(ff)
+
+    // Resolved fill (with effective alpha baked in).
+    fill_color = utils.resolve_fill_color(style)
+    // Text falls back to "black" when no fill is resolved.
+    if string.length(fill_color) == 0 { fill_color = "black" }
+
+    // Baseline correction.
+    baseline_offset = text_size * 1.07
+
+    // ─── tspan path ──────────────────────────────────────────────
+    // Walk children for <tspan> elements. If any exist, emit one
+    // canvas_text per tspan with positioning from its x/dx/dy attrs.
+    n_children = parser.node_child_count(node_h)
+    tspan_count = count_tspans(node_h, n_children)
+
+    if tspan_count > 0 {
+        emit_tspans(ctx, backend, node_h, attrs,
+                    text_size, baseline_offset,
+                    fill_color, alignment, bold, italic, monospace,
+                    base_font_size)
+        maybe_pop_transform(ctx, did_push)
+        el = element.element_new(null)
+        return el
+    }
+
+    // ─── Simple text path ────────────────────────────────────────
+    content = parser.node_text(node_h)
+    if string.length(content) == 0 {
+        maybe_pop_transform(ctx, did_push)
+        return element.element_new(null)
+    }
+
+    x_raw = rendering.parse_len_x(ctx, attr_str_or(attrs, "x", "0"))
+    y_raw = rendering.parse_len_y(ctx, attr_str_or(attrs, "y", "0"))
+    p = rendering.map_point(ctx, x_raw, y_raw)
+    mx = transform.pt_x(p)
+    my = transform.pt_y(p)
+
+    opts = mk_text_opts(content, mx, my - baseline_offset, fill_color,
+                       text_size, alignment, bold, italic, monospace)
+    underlying = dispatch.dispatch_text(backend, opts)
+
+    maybe_pop_transform(ctx, did_push)
+    el = element.element_new(underlying)
+
+    // Estimate bounds for hit-testing.
+    est_w = string.length(content) * text_size * 0.6
+    est_h = text_size
+    bx = mx
+    if string.equals(alignment, "center") == 1   { bx = mx - est_w / 2.0 }
+    if string.equals(alignment, "trailing") == 1 { bx = mx - est_w }
+    element.element_set_bounds(el, bx, my - est_h, est_w, est_h)
+    return el
+}
+
+// Build the opts map for canvas_text. Keys mirror what the TS
+// source passes to app.canvasText (the Tsyne canvas widget surface);
+// real backend implementations consume these directly.
+mk_text_opts(content: string, x: float, y: float, color: string,
+             text_size: float, alignment: string,
+             bold: int, italic: int, monospace: int) -> ptr {
+    opts = map.new()
+    opt_set_s(opts, "text",      content)
+    opt_set_f(opts, "x",         x)
+    opt_set_f(opts, "y",         y)
+    opt_set_s(opts, "color",     color)
+    opt_set_f(opts, "textSize",  text_size)
+    opt_set_s(opts, "alignment", alignment)
+    opt_set_s(opts, "bold",      int_to_str(bold))
+    opt_set_s(opts, "italic",    int_to_str(italic))
+    opt_set_s(opts, "monospace", int_to_str(monospace))
+    return opts
+}
+
+// Count <tspan> children for the multi-line dispatch decision.
+count_tspans(node_h: ptr, n: int) -> int {
+    c = 0
+    i = 0
+    while i < n {
+        child = parser.node_child_at(node_h, i)
+        if string.equals(parser.node_tag(child), "tspan") == 1 { c = c + 1 }
+        i = i + 1
+    }
+    return c
+}
+
+// Emit one canvas_text per tspan child. tspan.x resets horizontal
+// position; tspan.dx adds horizontal offset; tspan.dy adds
+// vertical offset (em-relative via parse_dy_em).
+emit_tspans(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr,
+            text_size: float, baseline_offset: float,
+            color: string, alignment: string,
+            bold: int, italic: int, monospace: int,
+            base_font_size: float) {
+    base_x = rendering.parse_len_x(ctx, attr_str_or(attrs, "x", "0"))
+    base_y = rendering.parse_len_y(ctx, attr_str_or(attrs, "y", "0"))
+    cur_x = base_x
+    cur_y = base_y
+
+    n = parser.node_child_count(node_h)
+    i = 0
+    while i < n {
+        child = parser.node_child_at(node_h, i)
+        if string.equals(parser.node_tag(child), "tspan") == 1 {
+            t_text = parser.node_text(child)
+            if string.length(t_text) > 0 {
+                t_attrs = parser.node_attrs(child)
+                // x resets, dx adds, dy adds.
+                tx_str, _ = map.get(t_attrs, "x")
+                if tx_str != null {
+                    cur_x = rendering.parse_len_x(ctx, tx_str)
+                }
+                dx_str, _ = map.get(t_attrs, "dx")
+                if dx_str != null {
+                    cur_x = cur_x + utils.parse_dy_em(dx_str, base_font_size)
+                }
+                dy_str, _ = map.get(t_attrs, "dy")
+                if dy_str != null {
+                    cur_y = cur_y + utils.parse_dy_em(dy_str, base_font_size)
+                }
+
+                p = rendering.map_point(ctx, cur_x, cur_y)
+                mx = transform.pt_x(p)
+                my = transform.pt_y(p)
+
+                opts = mk_text_opts(t_text, mx, my - baseline_offset, color,
+                                   text_size, alignment, bold, italic, monospace)
+                _ = dispatch.dispatch_text(backend, opts)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ─── Font-style classifiers ──────────────────────────────────────
+//
+// SVG font-weight: "normal" / "bold" / numeric (100..900). 600+ counts
+// as bold per CSS convention. The TS source matches /bold/i OR >= 600.
+
+is_bold(fw: string) -> int {
+    if string.length(fw) == 0 { return 0 }
+    // Case-insensitive match for "bold" substring.
+    lower = string.to_lower(fw)
+    if string.contains(lower, "bold") == 1 { return 1 }
+    // Numeric: 600+ → bold.
+    n, e = string.to_double(fw)
+    if e == "" {
+        if n >= 600.0 { return 1 }
+    }
+    return 0
+}
+
+is_italic(fs: string) -> int {
+    if string.length(fs) == 0 { return 0 }
+    lower = string.to_lower(fs)
+    if string.starts_with(lower, "italic")  == 1 { return 1 }
+    if string.starts_with(lower, "oblique") == 1 { return 1 }
+    return 0
+}
+
+is_monospace(ff: string) -> int {
+    if string.length(ff) == 0 { return 0 }
+    lower = string.to_lower(ff)
+    if string.contains(lower, "mono")     == 1 { return 1 }
+    if string.contains(lower, "courier")  == 1 { return 1 }
+    if string.contains(lower, "consolas") == 1 { return 1 }
+    return 0
+}
+
+// Tiny helper used inside mk_text_opts. Keeps the opts map
+// uniformly stringy (test inspect-via-opt_get expects strings).
+import std.string

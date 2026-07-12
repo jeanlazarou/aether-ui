@@ -1,0 +1,501 @@
+// aevg/gtk.ae — real-display backend adapter (Phase 1).
+//
+// Presents the same 7-entry-point API as the recording stub
+// (record.ae) but forwards each shape dispatch to the real
+// aether_ui canvas primitives (GTK4 / AppKit / Win32). This is the
+// bridge that turns AeVG's headless shape factories into live pixels.
+//
+// The recording stub stores opts and lets tests inspect them; this
+// adapter instead translates each opts map into immediate-mode
+// canvas calls:
+//
+//   canvas_circle    → canvas_arc (full circle) + fill + stroke
+//   canvas_rectangle → fill_rect (fill) + 4-segment stroke outline
+//   canvas_line      → begin_path + move/line + stroke
+//   canvas_path      → replay mapped polyline (move/line/close) + fill/stroke
+//   canvas_text      → fill_text at baseline
+//   canvas_raster    → base64-decode rawPixels → canvas_draw_image blit
+//   canvas_tappable_raster → same as raster
+//
+// Shape factories emit canvas-space bounding boxes (x, y, x2, y2)
+// plus fillColor / strokeColor / strokeWidth (and for text: text,
+// x, y, color, textSize). The adapter recovers circle center/radius
+// from the bbox: cx = (x+x2)/2, cy = (y+y2)/2, r = (x2-x)/2.
+//
+// Colors are parsed via rasterize.parse_color_to_rgba (→ 0..255
+// ints) and scaled to the 0..1 floats the canvas wants. Empty
+// color string means "no fill"/"no stroke" — that branch is skipped.
+//
+// The backend handle wraps the integer canvas id. canvas_* return a
+// fresh ptr (a unique heap cell) for AevgElement.underlying, same
+// contract as the stub — the real widget identity lives in the
+// canvas-id + draw order, which this immediate-mode API doesn't
+// expose per-shape.
+
+exports (
+    gtk_backend_new, gtk_backend_canvas_id, gtk_backend_redraw
+)
+
+import std.string
+import std.map
+import std.math
+import aether_ui
+import vg.raster.rasterize
+import vg.backend.dispatch
+import std.cryptography
+import std.floatarr
+
+extern malloc(size: int) -> ptr
+
+// ─── Backend handle ──────────────────────────────────────────────
+
+struct GtkBackend {
+    canvas_id: int       // aether_ui canvas id (from canvas_create)
+    raster_skipped: int  // count of skipped raster dispatches (telemetry)
+}
+
+// Create an adapter backend around an existing aether_ui canvas id.
+// Callers make the canvas via aether_ui.canvas_create(w, h) and pass
+// the returned id here. Returns a *dispatch.Dispatch the
+// shape factories dispatch through — the GtkBackend handle is the
+// `be` threaded into the op-switch closure.
+gtk_backend_new(canvas_id: int) -> ptr {
+    b = malloc(16) as *GtkBackend
+    b.canvas_id = canvas_id
+    b.raster_skipped = 0
+    return dispatch.backend_make(b) callback |be: ptr, op: int, opts: ptr| {
+        if op == 0 { return canvas_circle(be, opts) }
+        if op == 1 { return canvas_rectangle(be, opts) }
+        if op == 2 { return canvas_line(be, opts) }
+        if op == 3 { return canvas_path(be, opts) }
+        if op == 4 { return canvas_text(be, opts) }
+        if op == 5 { return canvas_raster(be, opts) }
+        return canvas_tappable_raster(be, opts)
+    }
+}
+
+// The canvas id / redraw helpers unwrap the dispatch ptr back to the
+// GtkBackend handle.
+gtk_backend_canvas_id(p: ptr) -> int {
+    b = dispatch.backend_self(p) as *GtkBackend
+    return b.canvas_id
+}
+
+gtk_backend_redraw(p: ptr) {
+    b = dispatch.backend_self(p) as *GtkBackend
+    aether_ui.canvas_redraw(b.canvas_id)
+}
+
+// ─── opts helpers ────────────────────────────────────────────────
+
+opt_f(opts: ptr, key: string, dflt: float) -> float {
+    v, _ = map.get(opts, key)
+    if v == null { return dflt }
+    if string.length(v) == 0 { return dflt }
+    parsed, e = string.to_double(v)
+    if e != "" { return dflt }
+    return parsed
+}
+
+opt_s(opts: ptr, key: string) -> string {
+    v, _ = map.get(opts, key)
+    if v == null { return "" }
+    return v
+}
+
+opt_i(opts: ptr, key: string, dflt: int) -> int {
+    v, _ = map.get(opts, key)
+    if v == null { return dflt }
+    if string.length(v) == 0 { return dflt }
+    parsed, e = string.to_int(v)
+    if e != "" { return dflt }
+    return parsed
+}
+
+// Returns a fresh unique ptr for AevgElement.underlying. The
+// immediate-mode canvas has no per-shape widget handle, so we just
+// hand back a unique heap cell (pointer identity is all the caller
+// needs for tracked-element bookkeeping).
+fresh_handle() -> ptr {
+    return malloc(8)
+}
+
+// ─── Color parsing ──────────────────────────────────────────────
+//
+// parse_color_to_rgba returns 0..255 ints; the canvas takes 0..1
+// floats. We return them packed into a small struct-free tuple-ish
+// via four out-reads. Empty/none colors → caller checks length first.
+
+// Dividing an int by a float literal promotes to float in Aether
+// (verified: `200 / 255.0` → 0.784). That's the int→float path here.
+color_r01(css: string) -> float {
+    rgba = rasterize.parse_color_to_rgba(css)
+    return rasterize.rgba_r(rgba) / 255.0
+}
+color_g01(css: string) -> float {
+    rgba = rasterize.parse_color_to_rgba(css)
+    return rasterize.rgba_g(rgba) / 255.0
+}
+color_b01(css: string) -> float {
+    rgba = rasterize.parse_color_to_rgba(css)
+    return rasterize.rgba_b(rgba) / 255.0
+}
+color_a01(css: string) -> float {
+    rgba = rasterize.parse_color_to_rgba(css)
+    return rasterize.rgba_a(rgba) / 255.0
+}
+
+// ─── canvas_circle ───────────────────────────────────────────────
+//
+// opts: x, y, x2, y2 (bbox), fillColor, strokeColor, strokeWidth.
+// Recover center + radius from the bbox.
+
+canvas_circle(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    x  = opt_f(opts, "x",  0.0)
+    y  = opt_f(opts, "y",  0.0)
+    x2 = opt_f(opts, "x2", 0.0)
+    y2 = opt_f(opts, "y2", 0.0)
+    cx = (x + x2) / 2.0
+    cy = (y + y2) / 2.0
+
+    fill = opt_s(opts, "fillColor")
+    stroke = opt_s(opts, "strokeColor")
+    sw = opt_f(opts, "strokeWidth", 1.0)
+
+    // The opts bbox (x..x2) INCLUDES the stroke (shape_circle emits
+    // x = cx - r - sw/2). The stroke path radius is the GEOMETRIC radius, so
+    // subtract half the stroke width back out — otherwise a stroked circle
+    // draws at r + sw/2 (too big; mars.svg's ring was inflated by half a
+    // stroke). Fill uses the same geometric radius (the bbox half-width minus
+    // the stroke padding).
+    r = (x2 - x) / 2.0 - sw / 2.0
+    if r < 0.0 { r = (x2 - x) / 2.0 }
+
+    two_pi = math.tau()
+
+    // Fill: build the circle path, fill it.
+    if string.length(fill) > 0 {
+        aether_ui.canvas_begin_path(cid)
+        aether_ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
+        aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+                                   color_b01(fill), color_a01(fill))
+    }
+    // Stroke: rebuild the path, stroke it.
+    if string.length(stroke) > 0 {
+        aether_ui.canvas_begin_path(cid)
+        aether_ui.canvas_arc(cid, cx, cy, r, 0.0, two_pi)
+        stroke_path(cid, stroke, sw, opts)
+    }
+    return fresh_handle()
+}
+
+// ─── canvas_rectangle ────────────────────────────────────────────
+
+canvas_rectangle(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    x  = opt_f(opts, "x",  0.0)
+    y  = opt_f(opts, "y",  0.0)
+    x2 = opt_f(opts, "x2", 0.0)
+    y2 = opt_f(opts, "y2", 0.0)
+    w  = x2 - x
+    h  = y2 - y
+
+    fill = opt_s(opts, "fillColor")
+    stroke = opt_s(opts, "strokeColor")
+    sw = opt_f(opts, "strokeWidth", 1.0)
+
+    if string.length(fill) > 0 {
+        aether_ui.canvas_fill_rect(cid, x, y, w, h,
+            color_r01(fill), color_g01(fill), color_b01(fill), color_a01(fill))
+    }
+    if string.length(stroke) > 0 {
+        // Outline: a closed 4-segment polyline.
+        aether_ui.canvas_begin_path(cid)
+        aether_ui.canvas_move_to(cid, x, y)
+        aether_ui.canvas_line_to(cid, x2, y)
+        aether_ui.canvas_line_to(cid, x2, y2)
+        aether_ui.canvas_line_to(cid, x, y2)
+        aether_ui.canvas_close_path(cid)
+        stroke_path(cid, stroke, sw, opts)
+    }
+    return fresh_handle()
+}
+
+// ─── canvas_line ─────────────────────────────────────────────────
+
+canvas_line(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    x1 = opt_f(opts, "x1", 0.0)
+    y1 = opt_f(opts, "y1", 0.0)
+    x2 = opt_f(opts, "x2", 0.0)
+    y2 = opt_f(opts, "y2", 0.0)
+    stroke = opt_s(opts, "strokeColor")
+    sw = opt_f(opts, "strokeWidth", 1.0)
+
+    if string.length(stroke) > 0 {
+        aether_ui.canvas_begin_path(cid)
+        aether_ui.canvas_move_to(cid, x1, y1)
+        aether_ui.canvas_line_to(cid, x2, y2)
+        stroke_path(cid, stroke, sw, opts)
+    }
+    return fresh_handle()
+}
+
+// ─── canvas_path ─────────────────────────────────────────────────
+//
+// The 'd' string would need flattening to line segments (the
+// normalizer + a cubic flattener already exist in Tier A/B). For the
+// initial adapter we stroke nothing and return a handle — path
+// flattening to canvas segments is the next adapter increment.
+// Logged so the gap is visible rather than silent.
+
+// opts: "points" — a space-separated polyline in canvas space
+// produced by shape_path. Tokens are either "x,y" coordinate pairs,
+// "M" (start a new sub-path — the next point is a move_to), or "Z"
+// (close the current sub-path). Plus fillColor / strokeColor /
+// strokeWidth.
+//
+// Fill and stroke each replay the whole token stream (fill first so
+// the stroke sits on top), because the canvas command buffer's
+// fill/stroke consume the accumulated path.
+
+canvas_path(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    pts = opt_s(opts, "points")
+    if string.length(pts) == 0 { return fresh_handle() }
+
+    fill = opt_s(opts, "fillColor")
+    stroke = opt_s(opts, "strokeColor")
+    grad_type = opt_s(opts, "gradType")
+    stroke_grad_type = opt_s(opts, "strokeGradType")
+    sw = opt_f(opts, "strokeWidth", 1.0)
+
+    // Gradient fill (if a gradType opt was emitted) takes precedence
+    // over a solid fill color.
+    if string.length(grad_type) > 0 {
+        replay_path(cid, pts)
+        apply_gradient(cid, opts, "grad", grad_type, 0.0)
+    } else {
+        if string.length(fill) > 0 {
+            replay_path(cid, pts)
+            aether_ui.canvas_fill(cid, color_r01(fill), color_g01(fill),
+                                       color_b01(fill), color_a01(fill))
+        }
+    }
+    // Stroke: gradient stroke takes precedence over a solid stroke.
+    if string.length(stroke_grad_type) > 0 {
+        replay_path(cid, pts)
+        apply_gradient(cid, opts, "strokeGrad", stroke_grad_type, sw)
+    } else {
+        if string.length(stroke) > 0 {
+            replay_path(cid, pts)
+            stroke_path(cid, stroke, sw, opts)
+        }
+    }
+    return fresh_handle()
+}
+
+// Parse the {prefix}Stops opt + geometry and invoke the canvas
+// gradient primitive. The current path must already be on the canvas
+// (the caller replays it first). Stops are "off,r,g,b,a ..." with
+// rgba in 0..255; built into floatarrs of offsets + colours (0..1).
+// line_width = 0 fills the path; > 0 strokes it at that width.
+apply_gradient(cid: int, opts: ptr, prefix: string, grad_type: string, line_width: float) {
+    stops_s = opt_s(opts, string.concat(prefix, "Stops"))
+    if string.length(stops_s) == 0 { return }
+    toks = string_split(stops_s, " ")
+    n = string_array_size(toks)
+    if n == 0 { return }
+
+    offsets, _ = floatarr.new(n)
+    rgba, _ = floatarr.new(n * 4)
+    valid = 0
+    i = 0
+    while i < n {
+        tok = string_array_get(toks, i)
+        if string.length(tok) > 0 {
+            parts = string_split(tok, ",")
+            if string_array_size(parts) >= 5 {
+                off, _  = string.to_double(string_array_get(parts, 0))
+                rr, _   = string.to_double(string_array_get(parts, 1))
+                gg, _   = string.to_double(string_array_get(parts, 2))
+                bb, _   = string.to_double(string_array_get(parts, 3))
+                aa, _   = string.to_double(string_array_get(parts, 4))
+                floatarr.set_unchecked(offsets, valid, off)
+                floatarr.set_unchecked(rgba, valid * 4 + 0, rr / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 1, gg / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 2, bb / 255.0)
+                floatarr.set_unchecked(rgba, valid * 4 + 3, aa / 255.0)
+                valid = valid + 1
+            }
+        }
+        i = i + 1
+    }
+    if valid == 0 { return }
+
+    extend = spread_to_extend(opt_s(opts, string.concat(prefix, "Spread")))
+
+    if string.equals(grad_type, "radial") == 1 {
+        cx = opt_f(opts, string.concat(prefix, "CX"), 0.0)
+        cy = opt_f(opts, string.concat(prefix, "CY"), 0.0)
+        r  = opt_f(opts, string.concat(prefix, "R"),  0.0)
+        fx = opt_f(opts, string.concat(prefix, "FX"), cx)
+        fy = opt_f(opts, string.concat(prefix, "FY"), cy)
+        aether_ui.canvas_fill_radial_gradient(cid, cx, cy, r, fx, fy, valid, offsets, rgba, line_width, extend)
+    } else {
+        x1 = opt_f(opts, string.concat(prefix, "X1"), 0.0)
+        y1 = opt_f(opts, string.concat(prefix, "Y1"), 0.0)
+        x2 = opt_f(opts, string.concat(prefix, "X2"), 0.0)
+        y2 = opt_f(opts, string.concat(prefix, "Y2"), 0.0)
+        aether_ui.canvas_fill_linear_gradient(cid, x1, y1, x2, y2, valid, offsets, rgba, line_width, extend)
+    }
+}
+
+// SVG spreadMethod string → cairo extend code (0=pad, 1=reflect, 2=repeat).
+spread_to_extend(spread: string) -> int {
+    if string.equals(spread, "reflect") == 1 { return 1 }
+    if string.equals(spread, "repeat") == 1 { return 2 }
+    return 0
+}
+
+// stroke-linecap → cap code (0=butt default, 1=round, 2=square).
+linecap_code(opts: ptr) -> int {
+    v = opt_s(opts, "strokeLinecap")
+    if string.equals(v, "round") == 1 { return 1 }
+    if string.equals(v, "square") == 1 { return 2 }
+    return 0
+}
+// stroke-linejoin → join code (0=miter default, 1=round, 2=bevel).
+linejoin_code(opts: ptr) -> int {
+    v = opt_s(opts, "strokeLinejoin")
+    if string.equals(v, "round") == 1 { return 1 }
+    if string.equals(v, "bevel") == 1 { return 2 }
+    return 0
+}
+
+// Stroke the current path with the resolved colour + width, honouring the
+// stroke-linecap/linejoin opts (SVG defaults butt/miter).
+stroke_path(cid: int, stroke: string, sw: float, opts: ptr) {
+    aether_ui.canvas_stroke_cj(cid, color_r01(stroke), color_g01(stroke),
+        color_b01(stroke), color_a01(stroke), sw,
+        linecap_code(opts), linejoin_code(opts))
+}
+
+// Replay a polyline token stream into the canvas as a path (no
+// fill/stroke — the caller does that). The first point of each
+// sub-path is a move_to; subsequent points are line_to; "M" forces
+// the next point to be a move_to; "Z" closes the sub-path.
+replay_path(cid: int, pts: string) {
+    aether_ui.canvas_begin_path(cid)
+    toks = string_split(pts, " ")
+    n = string_array_size(toks)
+    pen_down = 0       // 0 = next coord is a move_to
+    i = 0
+    while i < n {
+        tok = string_array_get(toks, i)
+        if string.length(tok) == 0 {
+            i = i + 1
+            continue
+        }
+        if string.equals(tok, "M") == 1 {
+            pen_down = 0
+            i = i + 1
+            continue
+        }
+        if string.equals(tok, "Z") == 1 {
+            aether_ui.canvas_close_path(cid)
+            pen_down = 0
+            i = i + 1
+            continue
+        }
+        // "x,y" coordinate token.
+        comma = string.index_of(tok, ",")
+        if comma > 0 {
+            xs = string.substring(tok, 0, comma)
+            ys = string.substring(tok, comma + 1, string.length(tok))
+            x, ex = string.to_double(xs)
+            y, ey = string.to_double(ys)
+            if ex == "" {
+                if ey == "" {
+                    if pen_down == 0 {
+                        aether_ui.canvas_move_to(cid, x, y)
+                        pen_down = 1
+                    } else {
+                        aether_ui.canvas_line_to(cid, x, y)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ─── canvas_text ─────────────────────────────────────────────────
+//
+// opts: text, x, y, color, textSize. The shape factory already
+// applied baseline correction to y, so we pass it straight through.
+
+canvas_text(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    text = opt_s(opts, "text")
+    x = opt_f(opts, "x", 0.0)
+    y = opt_f(opts, "y", 0.0)
+    size = opt_f(opts, "textSize", 16.0)
+    color = opt_s(opts, "color")
+    if string.length(color) == 0 { color = "black" }
+
+    aether_ui.canvas_fill_text(cid, text, x, y, size,
+        color_r01(color), color_g01(color), color_b01(color), color_a01(color))
+    return fresh_handle()
+}
+
+// ─── canvas_raster ───────────────────────────────────────────────
+//
+// opts: x, y (canvas-space top-left), w, h (pixel dims), rawPixels
+// (base64 of a w*h*4 RGBA8888 buffer, produced by render_as_raster).
+// Decode the base64 back to bytes and blit via canvas_draw_image.
+
+canvas_raster(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    cid = b.canvas_id
+
+    raw_b64 = opt_s(opts, "rawPixels")
+    if string.length(raw_b64) == 0 { return fresh_handle() }
+
+    x = opt_f(opts, "x", 0.0)
+    y = opt_f(opts, "y", 0.0)
+    w = opt_i(opts, "w", 0)
+    h = opt_i(opts, "h", 0)
+    if w <= 0 { return fresh_handle() }
+    if h <= 0 { return fresh_handle() }
+
+    // base64_decode returns (bytes-as-string, length, err).
+    pixels, n, e = cryptography.base64_decode(raw_b64)
+    if e != "" {
+        println("[aevg_gtk_backend] canvas_raster: base64 decode failed: ${e}")
+        return fresh_handle()
+    }
+    expected = w * h * 4
+    if n < expected {
+        println("[aevg_gtk_backend] canvas_raster: short buffer (${n} < ${expected}) — skipped")
+        return fresh_handle()
+    }
+
+    aether_ui.canvas_draw_image(cid, x, y, w, h, pixels, n)
+    return fresh_handle()
+}
+
+canvas_tappable_raster(p: ptr, opts: ptr) -> ptr {
+    return canvas_raster(p, opts)
+}

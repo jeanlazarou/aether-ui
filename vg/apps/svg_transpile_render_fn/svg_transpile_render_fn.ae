@@ -1,0 +1,35 @@
+// aevg/svg_transpile_render_fn.ae — emit ONE `render_<name>(out, sz)` function
+// for an SVG (read on stdin), via transpiler.transpile_svg_to_render_fn. The
+// function name comes from the AEVG_FN env var.
+//
+// The parity suite's combined single-compile path (svg-compare-aevg.py
+// --transpile) emits one of these per corpus SVG, concatenates them all under
+// one shared header + a dispatching main() into a single _gen_all.ae, and
+// compiles ONCE — amortizing the per-file aetherc+link cost (~88% of a
+// --transpile run) across the whole corpus. The standalone-per-file harness
+// (svg_transpile_harness.ae) remains the fallback.
+//
+//   build:  ./build.sh aevg/svg_transpile_render_fn.ae build/svg_transpile_render_fn
+//   use:    AEVG_FN=foo ./build/svg_transpile_render_fn < in.svg > fn.ae
+
+import std.string
+import std.strbuilder
+import vg.svg.transpiler
+extern getchar() -> int
+extern getenv(name: string) -> string
+
+read_stdin() -> string {
+    out = strbuilder.new(4096)
+    c = getchar()
+    while c >= 0 {
+        _ = strbuilder.append_byte(out, c)
+        c = getchar()
+    }
+    return strbuilder.finish(out)
+}
+
+main() {
+    fn = getenv("AEVG_FN")
+    if string.length(fn) == 0 { fn = "svg" }
+    println(transpiler.transpile_svg_to_render_fn(read_stdin(), fn))
+}

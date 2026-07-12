@@ -1,0 +1,1031 @@
+// aevg/vg.ae — the SVG-like declarative drawing DSL ("DSL with Scope").
+//
+// `vg(view_box(…), w, h) { … }` opens a vector-graphics scene inside any
+// aether_ui surface (window / render_to / record) or layout. Shapes read
+// like the SVG they came from — positional geometry + a trailing config
+// block, the same in-block-modifier idiom the widget DSL uses
+// (`circle(50,50,20) { fill("#F00") }` mirrors `button("+") { bg_color(…) }`):
+//
+//   window("Demo", 400, 300) {
+//       vg(view_box(0,0,100,100), 400, 300) {
+//           circle(50, 50, 20) { fill("#F00") }
+//           rect(10, 10, 40, 30) { fill("blue"); stroke("#000", 2) }
+//           g() {
+//               fill("red")
+//               circle(1, 1, 1) { }
+//           }
+//       }
+//   }
+//
+// Mechanism (per docs/closures-and-builder-dsl.md): every `_ctx` value inside
+// a vg subtree is a *VgNode* carrying (a) the scene — the AevgContext +
+// backend everything draws into — and (b) a payload (the current element or
+// group). Aether has no module-level mutable globals, so the scene rides the
+// builder-context stack: `vg` pushes VgNode{scene, null}; a shape reads _ctx,
+// draws via the scene, and pushes VgNode{scene, element} so its block's
+// modifiers find the element AND a nested shape still finds the scene; `g`
+// pushes VgNode{scene, group}. The scene is therefore reachable at any
+// nesting depth without a global.
+//
+// `vg` is a *regular* trailing-block builder (function-first), not a
+// `builder … with` — it creates the canvas/context eagerly so the block's
+// shapes draw live; nothing needs to run after the block. (The surface verbs
+// use `builder … with` because their loop/flush body must run after.)
+
+// This module is PURE AeVG (no aether_ui / GTK coupling) so it tests headless
+// in Phase 0 against the recording backend. The live, canvas-creating `vg(…)`
+// scene verb lives in live.ae (which imports aether_ui); it builds a scene
+// via scene_new + a GTK backend and hands it to these verbs.
+
+exports (
+    view_box,
+    circle, rect, line, path, text, text_sized, g,
+    fill, stroke, opacity, transform, linecap, linejoin,
+    // Interaction modifiers (attach a handler to the shape's element).
+    on_click, on_hover, on_double_click, on_right_click, cursor, tooltip,
+    on_click_recolor, visible_when,
+    bind_fill, bind_stroke, bind_opacity, bind_text, bind_pos,
+    // Re-exported element mutators so a handler can recolor the element it
+    // captured: vg.element_set_fill(el, "#0f0") inside an on_click closure.
+    element_set_fill, element_set_stroke, element_set_opacity,
+    // Scene construction — backend-agnostic (recording stub, GTK adapter, …).
+    scene_new, vg_root, node_element, scene_ctx, scene_backend, node_scene,
+    scene_set_canvas, scene_canvas, scene_set_ctx, mk_node,
+    scene_px_to_vb_x, scene_px_to_vb_y,
+    scene_set_event_state, scene_event_state,
+    // Deferred flush (the live path): record shapes during the block, then
+    // dispatch them with their final cached style after the block closes.
+    scene_set_deferred, scene_is_deferred, vg_flush, scene_refresh,
+    bind_to, bind_items, bind_trackby, bind_render, bind_update, bind_start,
+    animate, scene_animation_manager, scene_is_animating, scene_tick, scene_advance,
+    scene_add_live_region, scene_live_regions, scene_render_live_draws, render_one_draw,
+    scene_free_recording,
+    scene_set_refreshing, scene_is_refreshing, scene_eval_bindings
+)
+
+import std.string
+import std.map
+import std.list
+import vg.grammar.context
+import vg.grammar.shapes
+import vg.grammar.element
+import vg.grammar.events
+import vg.grammar.reactive
+import vg.grammar.bind
+import vg.grammar.animations
+import vg.region
+import vg.svg.parser
+
+extern malloc(size: int) -> ptr
+extern free(p: ptr)
+extern string_retain(s: string)
+extern string_release(s: string)
+
+// ─── VgScene: the shared drawing target ──────────────────────────
+//
+// Two dispatch modes:
+//   deferred = 0 (recording / headless tests, example_vg_png):
+//       shapes dispatch EAGERLY to `backend` as they run — call order is
+//       observable (test_vg asserts backend_kind(bk,0)=="circle"). The
+//       trailing-block fill() only updates the element's cache (the
+//       recording stub doesn't re-read it; tests inspect last_fill directly).
+//   deferred = 1 (the live `vg { … }` path, live.ae):
+//       shapes do NOT dispatch during the block — they build a placeholder
+//       element + record a VgPending entry into `pending`. The trailing
+//       block's fill()/stroke()/opacity() write the FINAL style onto that
+//       element. After the block, vg_flush(scene) walks `pending` and
+//       dispatches each shape for real, injecting the cached style into the
+//       attrs so the backend draws the right colour. This is the fix for the
+//       "everything renders black" ordering bug: in immediate mode the colour
+//       must be known BEFORE the backend call, but fill() runs AFTER the
+//       shape — so we defer the call until the block (and its fill) is done.
+struct VgScene {
+    ctx: ptr        // *AevgContext (viewBox→canvas mapping)
+    backend: ptr    // *dispatch.Dispatch (the GTK canvas adapter)
+    canvas_id: int  // aether_ui canvas handle (for redraw)
+    deferred: int   // 1 = record into `pending` + flush after block
+    pending: ptr    // std.list of *VgPending (draw order); null until deferred
+    event_state: ptr // *events.EventState — shared hover/drag/click state
+    anim_mgr: ptr   // *animations.AnimationManager (null until animate)
+    live_regions: ptr // std.list of *region.LiveRegion (null until first)
+    refreshing: int // 1 = the live loop re-evaluates bind_pos/when bindings each
+                    //   frame (the live analogue of CVG's poll()); set by a
+                    //   binding-driven scene like a clock.
+    nodes: ptr      // when non-null: every mk_node is tracked here so
+                    //   scene_free_recording can free them. Set ONLY on the
+                    //   per-frame draw-region sub-scenes (render_one_draw);
+                    //   null (untracked) for ordinary long-lived scenes.
+}
+
+// One deferred shape: enough to dispatch it after its style is known.
+// kind: 0=circle 1=rect 2=line 3=path 4=text. attrs holds the geometry
+// (and, for path, "d"); element carries the final cached fill/stroke/opacity
+// that vg_flush folds back into attrs before dispatch.
+struct VgPending {
+    kind: int
+    attrs: ptr      // std.map of geometry attrs (built by the shape verb)
+    element: ptr    // *AevgElement placeholder (style cache target)
+    tx: float       // text only: x
+    ty: float       // text only: y
+    content: string // text only: the string
+    font_size: float // text only: font-size in viewBox units (0 = engine default)
+    tracked: int    // 1 once track_element'd (re-flush must not double-track)
+}
+
+// PAYLOAD_NONE / ELEMENT / GROUP — what the VgNode's payload is.
+struct VgNode {
+    scene: ptr      // *VgScene (the shared drawing target)
+    payload: ptr    // *AevgElement (shape) / group handle / null (vg root)
+}
+
+mk_node(scene: ptr, payload: ptr) -> ptr {
+    n = malloc(16) as *VgNode
+    n.scene = scene
+    n.payload = payload
+    s = scene as *VgScene
+    if s.nodes != null { _ = list.add(s.nodes, n) }
+    return n
+}
+
+node_scene(p: ptr) -> ptr   { n = p as *VgNode; return n.scene }
+node_payload(p: ptr) -> ptr { n = p as *VgNode; return n.payload }
+
+scene_ctx(p: ptr) -> ptr     { s = p as *VgScene; return s.ctx }
+scene_backend(p: ptr) -> ptr { s = p as *VgScene; return s.backend }
+
+// scene_px_to_vb_x/y — invert the viewBox→canvas mapping: canvas-PIXEL
+// coords (what canvas_on_click/on_move/on_release deliver) → viewBox units.
+// An app that hit-tests its own geometry in viewBox space must route event
+// coords through these, or its picks drift as soon as the canvas allocation
+// differs from the viewBox (any window resize): the scene rescales visually
+// but raw pixel coords no longer equal viewBox units.
+scene_px_to_vb_x(p: ptr, px: float) -> float {
+    m = context.ctx_mapping(scene_ctx(p))
+    v = (px - context.mapping_offset_x(m)) / context.mapping_scale(m)
+    return v + context.mapping_vb_min_x(m)
+}
+
+scene_px_to_vb_y(p: ptr, py: float) -> float {
+    m = context.ctx_mapping(scene_ctx(p))
+    v = (py - context.mapping_offset_y(m)) / context.mapping_scale(m)
+    return v + context.mapping_vb_min_y(m)
+}
+
+// scene_set_ctx — swap the AevgContext (viewBox→canvas mapping). Used on
+// resize: rebuild the mapping for the new canvas size, swap it in, then
+// re-run vg_flush so the recorded shapes re-dispatch at the new scale. The
+// pending list lives on the scene, not the context, so it survives the swap.
+//
+// Tracked elements, however, live in the CONTEXT's tracked list — so a swap
+// orphans them in the old ctx (clicks then hit-test an empty new ctx). Reset
+// each pending entry's `tracked` flag so the next vg_flush re-registers the
+// elements into the new ctx. (Also recompute their bounds at the new scale,
+// which the re-flush does via the dispatched element's bounds copy.)
+scene_set_ctx(p: ptr, ctx: ptr) {
+    s = p as *VgScene
+    s.ctx = ctx
+    if s.pending != null {
+        n = list.size(s.pending)
+        i = 0
+        while i < n {
+            item, _ = list.get(s.pending, i)
+            pe = item as *VgPending
+            pe.tracked = 0
+            i = i + 1
+        }
+    }
+}
+
+// canvas_id accessors — the live vg verb (live.ae) stores the aether_ui
+// canvas handle here so vg_redraw can present it. 0 = headless / recording.
+scene_set_canvas(p: ptr, cid: int) { s = p as *VgScene; s.canvas_id = cid }
+scene_canvas(p: ptr) -> int        { s = p as *VgScene; return s.canvas_id }
+
+// scene_new(ctx, backend) — build a scene around an AevgContext + any
+// backend (recording stub, GTK adapter, …). canvas_id 0 means "no live
+// canvas" (headless / recording). vg_root wraps it as the root VgNode the
+// shape verbs accept as _ctx.
+scene_new(ctx: ptr, backend: ptr) -> ptr {
+    s = malloc(96) as *VgScene
+    s.ctx = ctx
+    s.backend = backend
+    s.canvas_id = 0
+    s.deferred = 0
+    s.pending = null
+    s.event_state = null
+    s.anim_mgr = null
+    s.live_regions = null
+    s.refreshing = 0
+    s.nodes = null
+    return s
+}
+
+// scene_set_refreshing(scene, 1) — make the live loop re-evaluate bind_pos/when
+// bindings every frame (the live analogue of CVG's poll()). A binding-driven
+// scene (e.g. a clock whose hands use bind_pos) turns this on so it ticks.
+scene_set_refreshing(p: ptr, on: int) { s = p as *VgScene; s.refreshing = on }
+scene_is_refreshing(p: ptr) -> int    { s = p as *VgScene; return s.refreshing }
+
+// event_state — the scene's shared hover/drag/click state. vg_live creates one
+// (events.event_state_new) so the canvas click handler and shape
+// tracking share it. null = no interaction wired (headless eager path).
+scene_set_event_state(p: ptr, es: ptr) { s = p as *VgScene; s.event_state = es }
+scene_event_state(p: ptr) -> ptr       { s = p as *VgScene; return s.event_state }
+
+// scene_set_deferred(scene, 1) — switch the scene to deferred mode (live
+// path). Allocates the pending list. Idempotent.
+scene_set_deferred(p: ptr, on: int) {
+    s = p as *VgScene
+    s.deferred = on
+    if on == 1 {
+        if s.pending == null { s.pending = list.new() }
+    }
+}
+scene_is_deferred(p: ptr) -> int { s = p as *VgScene; return s.deferred }
+vg_root(scene: ptr) -> ptr {
+    return mk_node(scene, null)
+}
+
+// node_element(node) — the *AevgElement a shape node wraps (for tests /
+// callers that want the element after drawing). null for the vg root / g.
+node_element(p: ptr) -> ptr { return node_payload(p) }
+
+// ─── view_box(x, y, w, h) — typed viewBox constructor ────────────
+//
+// Returns the SVG viewBox string ("x y w h"). Kept as a constructor so
+// hand-authored code reads `view_box(0,0,100,100)` (typed, compile-checked)
+// not a stringly-typed "0 0 100 100". The transpiler emits this form too.
+
+view_box(x: float, y: float, w: float, h: float) -> string {
+    a = string.from_float(x)
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(y))
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(w))
+    a = string.concat(a, " ")
+    a = string.concat(a, string.from_float(h))
+    return a
+}
+
+// ─── shape verbs ─────────────────────────────────────────────────
+//
+// Each reads _ctx (a VgNode), pulls the scene, builds an attrs map from the
+// positional geometry, dispatches via shapes.shape_*, and returns a
+// new VgNode wrapping the element — pushed as _ctx so the trailing block's
+// fill/stroke/opacity modify this element, and a nested shape still finds the
+// scene. The scene rides along, so depth doesn't matter.
+
+circle(_ctx: ptr, cx: float, cy: float, r: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "cx", cx)
+    put_f(a, "cy", cy)
+    put_f(a, "r",  r)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 0, a)
+    }
+    el = shapes.shape_circle(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+rect(_ctx: ptr, x: float, y: float, w: float, h: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "x", x)
+    put_f(a, "y", y)
+    put_f(a, "width",  w)
+    put_f(a, "height", h)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 1, a)
+    }
+    el = shapes.shape_rectangle(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+line(_ctx: ptr, x1: float, y1: float, x2: float, y2: float) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    put_f(a, "x1", x1)
+    put_f(a, "y1", y1)
+    put_f(a, "x2", x2)
+    put_f(a, "y2", y2)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 2, a)
+    }
+    el = shapes.shape_line(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+path(_ctx: ptr, d: string) -> ptr {
+    scene = node_scene(_ctx)
+    a = map.new()
+    _ = map.put(a, "d", d)
+    if scene_is_deferred(scene) == 1 {
+        return record_shape(scene, 3, a)
+    }
+    el = shapes.shape_path(scene_ctx(scene), scene_backend(scene), a)
+    return mk_node(scene, el)
+}
+
+// text differs from the other shapes: shapes.shape_text takes a
+// parsed SvgNode (it reads node_attrs + node_text), not an attrs map — it
+// has to handle <tspan> children. So we build a minimal <text> element
+// string and parse it into a real node, then dispatch (same as the loader).
+text(_ctx: ptr, x: float, y: float, content: string) -> ptr {
+    return text_sized(_ctx, x, y, 0.0, content)   // 0 = engine default size
+}
+
+// text_sized — like text but with an explicit font-size (viewBox units). size
+// 0 falls back to the engine default. Both deferred and eager paths carry it.
+text_sized(_ctx: ptr, x: float, y: float, size: float, content: string) -> ptr {
+    scene = node_scene(_ctx)
+    if scene_is_deferred(scene) == 1 {
+        return record_text(scene, x, y, size, content)
+    }
+    s = "<svg><text x='"
+    s = string.concat(s, string.from_float(x))
+    s = string.concat(s, "' y='")
+    s = string.concat(s, string.from_float(y))
+    if size > 0.0 {
+        s = string.concat(s, "' font-size='")
+        s = string.concat(s, string.from_float(size))
+    }
+    s = string.concat(s, "'>")
+    s = string.concat(s, content)
+    s = string.concat(s, "</text></svg>")
+    root = parser.parse_svg(s)
+    node_h = parser.node_child_at(root, 0)
+    el = shapes.shape_text(scene_ctx(scene), scene_backend(scene), node_h)
+    return mk_node(scene, el)
+}
+
+// g() { … } — a style/transform scope. Pushes a VgNode carrying the scene so
+// nested shapes draw into it. The group's style (fill/stroke set in its
+// block) cascades to children via the context's style stack — handled by
+// shapes.shape_group, which we invoke with the block as its body.
+//
+// Note: shapes.shape_group(ctx, attrs, body) pushes style+transform,
+// runs `body`, then pops. Here the block IS the body, so we expose g as a
+// trailing-block builder whose pushed _ctx lets children draw, and the
+// style-stack push/pop is driven by group_open/group_close around the block.
+g(_ctx: ptr) -> ptr {
+    scene = node_scene(_ctx)
+    // First cut: g() is a passthrough scope that threads the scene so
+    // `g() { circle(…) }` nests structurally. The shapes draw into the same
+    // scene. Group-level style/transform CASCADE (fill set on the g applying
+    // to children) is deferred — it needs an after-block pop hook, which a
+    // regular trailing block lacks; it lands when g moves to a builder form.
+    return mk_node(scene, null)
+}
+
+// ─── in-block modifiers ──────────────────────────────────────────
+//
+// Read _ctx (the current element's VgNode) and set the cached property the
+// renderer / backend reads. Mirror bg_color/onclick on a widget.
+
+fill(_ctx: ptr, color: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_fill(el, color)
+    }
+}
+
+stroke(_ctx: ptr, color: string, width: float) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_stroke(el, color, width)
+    }
+}
+
+opacity(_ctx: ptr, value: float) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_opacity(el, value)
+    }
+}
+
+// transform("scale(0.1)") — apply an SVG transform to this shape. In deferred
+// mode it's cached on the element and folded into the dispatch attrs at flush
+// (maybe_push_transform applies it). Mirrors the SVG `transform=` attribute.
+transform(_ctx: ptr, t: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_transform(el, t)
+    }
+}
+
+// linecap("round")/linejoin("round") — stroke cap/join, folded into the
+// dispatch attrs at flush so the backend honours them (SVG defaults butt/miter;
+// the transpiler emits these from a <g stroke-linecap=…> or element attr).
+linecap(_ctx: ptr, v: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_linecap(el, v)
+    }
+}
+linejoin(_ctx: ptr, v: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_linejoin(el, v)
+    }
+}
+
+// ─── interaction modifiers ───────────────────────────────────────
+//
+// Attach an event handler / cursor / tooltip to this shape's element. The
+// handler is stored on the placeholder element; at flush the element is
+// track_element'd into the context so dispatch_click/hover hit-test it. The
+// handler closure can capture the element (returned by the shape verb) and
+// recolor it: `c = circle(…) { fill("#f00") }; on_click(c) { ... set_fill }`.
+
+on_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_on_click(el, h) }
+}
+
+on_hover(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_on_hover(el, h) }
+}
+
+on_double_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_on_double_click(el, h) }
+}
+
+on_right_click(_ctx: ptr, h: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_on_right_click(el, h) }
+}
+
+// on_click_recolor(color) — convenience modifier: clicking this shape sets its
+// own fill to `color`. The handler captures THIS element (the block's _ctx
+// element), so it reads in the DSL as `circle(…) { fill("#f00");
+// on_click_recolor("#0f0") }` without the caller needing a named handle. The
+// general on_click (above) is for arbitrary handlers.
+on_click_recolor(_ctx: ptr, color: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        // Retain the captured colour so it survives past this frame (the click
+        // fires later). Capturing the param directly works; the earlier
+        // string.copy-then-capture form hit the helper-string-corruption bug.
+        string_retain(color)
+        element.element_on_click(el) callback |x: float, y: float| {
+            element.element_set_fill(el, color)
+        }
+    }
+}
+
+// ─── reactive bindings ───────────────────────────────────────────
+//
+// Re-evaluated on scene_refresh: bind_fill/stroke/text return a fresh value,
+// bind_opacity a fresh float, bind_pos a map of geometry attrs that re-drives
+// the shape's position (and recomputes its hit-test bounds). Mirror CVG's
+// .bindFill/.bindPos/etc. The closure captures whatever state it reads.
+
+bind_fill(_ctx: ptr, f: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_bind_fill(el, f) }
+}
+bind_stroke(_ctx: ptr, f: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_bind_stroke(el, f) }
+}
+bind_opacity(_ctx: ptr, f: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_bind_opacity(el, f) }
+}
+bind_text(_ctx: ptr, f: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_bind_text(el, f) }
+}
+// bind_pos(f) — f returns a map of changed geometry attrs (e.g. {"cx","cy"}).
+// On refresh the result merges into the shape's SVG-space geometry and
+// recompute_bounds re-maps to canvas space, so hit-testing follows the move
+// (CVG semantic-update). The element must carry shape geometry — set by the
+// shape factory at flush — so bind_pos is meaningful after the first flush.
+bind_pos(_ctx: ptr, f: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_bind_pos(el, f) }
+}
+
+// visible_when(pred) — conditional rendering. `pred` is a `fn -> int` (1 = show,
+// 0 = hide), re-evaluated on scene refresh. A hidden element is not drawn and
+// not hit-tested (clicks fall through). CVG names this `when`; Aether reserves
+// that word, so the DSL spells it visible_when.
+visible_when(_ctx: ptr, pred: fn) {
+    el = node_payload(_ctx)
+    if el != null { element.element_set_when(el, pred) }
+}
+
+cursor(_ctx: ptr, c: string) {
+    el = node_payload(_ctx)
+    if el != null { element.element_set_cursor(el, c) }
+}
+
+tooltip(_ctx: ptr, t: string) {
+    el = node_payload(_ctx)
+    if el != null { element.element_set_tooltip(el, t) }
+}
+
+// ─── element mutators (re-exported for handler bodies) ───────────
+//
+// A handler recolors the element it captured. These forward to grammar_element
+// so callers need only `import vg`, not grammar_element too.
+
+element_set_fill(el: ptr, color: string) { element.element_set_fill(el, color) }
+element_set_stroke(el: ptr, color: string, width: float) {
+    element.element_set_stroke(el, color, width)
+}
+element_set_opacity(el: ptr, value: float) { element.element_set_opacity(el, value) }
+
+// ─── deferred recording + flush (live path) ──────────────────────
+//
+// record_shape / record_text build a placeholder element (the fill/stroke/
+// opacity modifiers in the trailing block write their cache onto it) and
+// append a VgPending entry. The shape is NOT drawn yet. After the block,
+// vg_flush walks the pending list in draw order, folds each element's final
+// cached style into its attrs, and dispatches for real.
+
+record_shape(scene: ptr, kind: int, attrs: ptr) -> ptr {
+    s = scene as *VgScene
+    el = element.element_new(null)
+    p = malloc(72) as *VgPending
+    p.kind = kind
+    p.attrs = attrs
+    p.element = el
+    p.content = ""
+    p.tracked = 0
+    _ = list.add(s.pending, p)
+    return mk_node(scene, el)
+}
+
+record_text(scene: ptr, x: float, y: float, size: float, content: string) -> ptr {
+    s = scene as *VgScene
+    el = element.element_new(null)
+    p = malloc(72) as *VgPending
+    p.kind = 4
+    p.attrs = null
+    p.element = el
+    p.tx = x
+    p.ty = y
+    // Own a copy: the caller's string may be scope-freed before the flush
+    // reads it, and scene_free_recording releases it symmetrically.
+    cc = string.copy(content)
+    string_retain(cc)
+    p.content = cc
+    p.font_size = size
+    p.tracked = 0
+    _ = list.add(s.pending, p)
+    return mk_node(scene, el)
+}
+
+// vg_flush(scene) — dispatch every recorded shape with its final style.
+// Called by the live surface after the vg block closes (live.ae registers
+// the scene; the enclosing window/render_to/record body drains it). No-op for
+// an eager (non-deferred) scene or an empty pending list.
+vg_flush(scene: ptr) {
+    s = scene as *VgScene
+    if s.deferred == 0 { return }
+    if s.pending == null { return }
+    ctx = s.ctx
+    be = s.backend
+    es = s.event_state
+    n = list.size(s.pending)
+    i = 0
+    while i < n {
+        item, _ = list.get(s.pending, i)
+        p = item as *VgPending
+        flush_one_tracked(ctx, be, p, es)
+        i = i + 1
+    }
+}
+
+// ─── data-driven shapes (bindTo) ─────────────────────────────────
+//
+// CVG's .bindTo(data, render): one shape per data item, diffed by a stable
+// key on refresh (new → render, vanished → destroy+untrack, survivor →
+// update). Aether allows only ONE trailing-callback per call, so the three
+// callbacks are wired with separate setter calls (mirroring grammar_bind's
+// own API), then bind_start kicks off the initial render:
+//
+//   r = vg.bind_to(scene)
+//   vg.bind_items(r)   callback { return my_list }
+//   vg.bind_trackby(r) callback |it| { return key_of(it) }
+//   vg.bind_render(r)  callback |it, idx| {
+//       n = vg.circle(root, ...); vg.fill(n, ...); return vg.node_element(n)
+//   }
+//   vg.bind_update(r)  callback |it, el| { ... }   // optional
+//   vg.bind_start(scene, r)
+//
+// Thereafter vg.scene_refresh(scene) re-diffs the region. The render closure
+// captures the scene's vg_root to draw into the scene.
+
+bind_to(scene: ptr) -> ptr {
+    return bind.new_region()
+}
+bind_items(region: ptr, cb: fn)   { bind.region_set_items(region, cb) }
+bind_trackby(region: ptr, cb: fn) { bind.region_set_trackby(region, cb) }
+bind_render(region: ptr, cb: fn)  { bind.region_set_render(region, cb) }
+bind_update(region: ptr, cb: fn)  { bind.region_set_update(region, cb) }
+bind_start(scene: ptr, region: ptr) {
+    s = scene as *VgScene
+    bind.region_init(s.ctx, region)
+}
+
+// scene_refresh(scene) — re-evaluate every tracked element's when()/bindings
+// (visibility, reactive fill/pos/opacity), then re-render. This is the state-
+// changed → repaint entry point: a click handler that flips a `when` predicate
+// or a bound value calls scene_refresh to make the change show. Returns the
+// number of elements whose bindings fired (telemetry). The caller (live path)
+// pairs this with canvas_clear + canvas_redraw around the flush.
+scene_refresh(scene: ptr) -> int {
+    s = scene as *VgScene
+    // Ensure elements are tracked before re-evaluating (tracking happens at
+    // flush; on a never-flushed scene refresh would otherwise see an empty
+    // list and never run when()/bindings). Flush → diff regions → re-eval
+    // per-element bindings → flush so the changes take effect on the buffer.
+    // Order mirrors refresh.ae: regions first (they add/remove elements), then
+    // the per-element pass walks the updated tracked list.
+    vg_flush(scene)
+    n = scene_eval_bindings(scene)
+    vg_flush(scene)
+    return n
+}
+
+// scene_eval_bindings(scene) — re-evaluate binding regions + per-element
+// when()/bind_pos/bind_fill bindings, WITHOUT flushing (the caller flushes).
+// The live loop calls this each frame for a refreshing scene, then runs its own
+// _flush_live; headless scene_refresh wraps it in flush/flush. Assumes elements
+// are already tracked (true after the first flush).
+scene_eval_bindings(scene: ptr) -> int {
+    s = scene as *VgScene
+    bind.refresh_all(s.ctx)
+    return reactive.refresh_all_elements(s.ctx)
+}
+
+// ─── animation (continuous, timer-driven) ───────────────────────
+//
+// animate(node, duration_ms, loop, yoyo) callback |el, t| { ... } registers a
+// per-frame animation on the scene's manager. The tick closure is
+// fn(el: ptr, t: float): `el` is THIS shape's element (passed in so the closure
+// captures no block-locals — a captured block-local would dangle once the
+// vg{} block returns and the timer fires later), `t` is raw in [0,1] (apply
+// easing yourself). Mutate via vg.element_set_*(el, …). On a live window
+// vg_live runs a 16ms timer that advances + re-renders while is_animating;
+// headless callers drive scene_tick(scene, now_ms). Mirrors CVG's .transition.
+animate(_ctx: ptr, duration_ms: long, loop: int, yoyo: int, tick: fn) {
+    el = node_payload(_ctx)
+    if el == null { return }
+    mgr = scene_anim_mgr_of_node(_ctx)
+    if mgr == null { return }
+    _ = animations.add_animation(mgr, el, duration_ms, 0, loop, yoyo, 0, tick)
+}
+
+// The scene's animation manager (lazily created). node carries the scene.
+scene_anim_mgr_of_node(_ctx: ptr) -> ptr {
+    scene = node_scene(_ctx)
+    return scene_animation_manager(scene)
+}
+
+scene_animation_manager(scene: ptr) -> ptr {
+    s = scene as *VgScene
+    if s.anim_mgr == null { s.anim_mgr = animations.manager_new() }
+    return s.anim_mgr
+}
+
+scene_is_animating(scene: ptr) -> int {
+    s = scene as *VgScene
+    // A scene with an ANIMATED live region renders continuously (a video
+    // source, a t-keyed draw like the tumbling cube). A region marked
+    // static-until-dirty (region_set_animated(lr, 0) — e.g. a treemap that
+    // only changes on navigation) does NOT keep the loop hot: the app
+    // re-renders it explicitly via vg_flush_live when its state changes.
+    if s.live_regions != null {
+        n = list.size(s.live_regions)
+        i = 0
+        while i < n {
+            it, _ = list.get(s.live_regions, i)
+            if region.region_animated(it) == 1 { return 1 }
+            i = i + 1
+        }
+    }
+    if s.anim_mgr == null { return 0 }
+    return animations.is_animating(s.anim_mgr)
+}
+
+// ─── live regions (video / game / generated, per-frame) ──────────
+//
+// Register a live region (from region.ae) on the scene. RASTER regions are
+// blitted by the live path (vg_live walks scene_live_regions and calls
+// canvas_draw_image); DRAW regions are rendered here via scene_render_live_draws
+// during flush. Both compose into the one backbuffer → atomic present.
+scene_add_live_region(scene: ptr, lr: ptr) {
+    s = scene as *VgScene
+    if s.live_regions == null { s.live_regions = list.new() }
+    _ = list.add(s.live_regions, lr)
+}
+
+scene_live_regions(scene: ptr) -> ptr {
+    s = scene as *VgScene
+    return s.live_regions
+}
+
+// Render every DRAW live region by invoking its callback with (region, t). The
+// callbacks emit vg shapes into the scene (eager dispatch against the scene's
+// ctx/backend), so they must run AFTER the normal flush, into the same buffer.
+// `t` is a caller-supplied normalized clock (the live loop derives it from
+// now_monotonic_ms; headless tests pass an explicit value).
+scene_render_live_draws(scene: ptr, t: float) {
+    s = scene as *VgScene
+    if s.live_regions == null { return }
+    n = list.size(s.live_regions)
+    i = 0
+    while i < n {
+        item, _ = list.get(s.live_regions, i)
+        if region.region_kind(item) == region.LIVE_DRAW() {
+            render_one_draw(scene, item, t)
+        }
+        i = i + 1
+    }
+}
+
+// Free a per-frame recording sub-scene: every pending (attrs map, element,
+// owned text string), every tracked VgNode, the pending/node lists, and the
+// scene itself. This is the other half of render_one_draw's fresh-scene-per-
+// frame design — without it a draw region leaked its entire recording every
+// frame (a heavy region = gigabytes per minute). Only valid on sub-scenes
+// whose elements carry no interaction handlers (draw regions: event_state is
+// null, nothing is tracked elsewhere).
+scene_free_recording(scene: ptr) {
+    s = scene as *VgScene
+    if s.pending != null {
+        n = list.size(s.pending)
+        i = 0
+        while i < n {
+            item, _ = list.get(s.pending, i)
+            pend = item as *VgPending
+            if pend.attrs != null { map.free(pend.attrs) }
+            if pend.kind == 4 { string_release(pend.content) }
+            element.element_release(pend.element)
+            free(item)
+            i = i + 1
+        }
+        list.free(s.pending)
+        s.pending = null
+    }
+    if s.nodes != null {
+        n2 = list.size(s.nodes)
+        j = 0
+        while j < n2 {
+            nd, _ = list.get(s.nodes, j)
+            free(nd)
+            j = j + 1
+        }
+        list.free(s.nodes)
+        s.nodes = null
+    }
+    free(scene)
+}
+
+// Render a single DRAW region: a FRESH deferred sub-scene sharing this scene's
+// ctx + backend — the callback's shapes record into it (so a trailing fill() is
+// known before dispatch, the colour-ordering fix), then flush + FREE. Fresh
+// each call → no `pending` accumulation; the free returns the frame's whole
+// recording (pendings, elements, nodes, style strings). Exported so the
+// z-ordered live driver renders one region at its z slot.
+render_one_draw(scene: ptr, region: ptr, t: float) {
+    s = scene as *VgScene
+    df = region.region_draw_fn(region)
+    if df == null { return }
+    sub = scene_new(s.ctx, s.backend)
+    scene_set_deferred(sub, 1)
+    sub_s = sub as *VgScene
+    sub_s.nodes = list.new()          // track nodes so the free can reap them
+    region.invoke_region_draw(df, vg_root(sub), t)
+    vg_flush(sub)
+    scene_free_recording(sub)
+}
+
+// scene_advance(scene, now_ms) — advance animations to `now_ms` WITHOUT
+// re-rendering (the tick closures mutate element state). The live loop calls
+// this then does its own clear + clip + flush + redraw. Returns the count that
+// ticked.
+scene_advance(scene: ptr, now_ms: long) -> int {
+    s = scene as *VgScene
+    if s.anim_mgr == null { return 0 }
+    return animations.tick_animations(s.anim_mgr, now_ms)
+}
+
+// scene_tick(scene, now_ms) — advance + re-flush (no canvas clear/redraw).
+// Convenience for headless tests that inspect element state after a tick.
+scene_tick(scene: ptr, now_ms: long) -> int {
+    n = scene_advance(scene, now_ms)
+    vg_flush(scene)
+    return n
+}
+
+// Fold the placeholder element's cached fill/stroke/opacity into the attrs
+// map (as presentation attributes — highest priority in resolve_style), then
+// dispatch via the same grammar_shapes path the eager mode uses.
+flush_one(ctx: ptr, be: ptr, p: ptr) {
+    flush_one_tracked(ctx, be, p, null)
+}
+
+// As flush_one, but if `es` (the scene's EventState) is non-null and the
+// placeholder element carries any interaction (handler/cursor/tooltip), copy
+// the freshly-dispatched element's canvas-px bounds onto the placeholder and
+// track it so dispatch_click/hover can hit-test it. The placeholder is the
+// event entity (it holds the user's handlers); the dispatched element only
+// draws — so the bounds must be copied across.
+flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
+    pend = p as *VgPending
+    el = pend.element
+    if pend.kind == 4 {
+        flush_text(ctx, be, pend)
+        return
+    }
+    // Track interactive elements regardless of visibility, so the tracked list
+    // is stable across when() toggles. A hidden element's hit-test returns 0
+    // (clicks fall through); when shown again it hit-tests live.
+    if es != null {
+        if element_is_interactive(el) == 1 {
+            if pend.tracked == 0 {
+                events.track_element(ctx, el)
+                pend.tracked = 1
+            }
+        }
+    }
+    // Conditional rendering: a when()=false element is hidden — don't draw it
+    // (and don't refresh its bounds; the stale bounds don't matter while
+    // invisible since hit_test short-circuits on visible==0).
+    if element.element_is_visible(el) == 0 {
+        return
+    }
+    a = pend.attrs
+    apply_cached_style(a, el)
+    // If a bind_pos moved this shape, its current geometry lives on the element
+    // (geo0..3, updated by recompute_bounds on refresh). Sync the draw attrs
+    // from it so the redraw reflects the new position — otherwise re-flush
+    // redraws from the original static attrs and clobbers the move.
+    if element.element_pos_binding(el) != null {
+        sync_attrs_from_geo(a, el, pend.kind)
+    }
+    drawn = null
+    if pend.kind == 0 { drawn = shapes.shape_circle(ctx, be, a) }
+    if pend.kind == 1 { drawn = shapes.shape_rectangle(ctx, be, a) }
+    if pend.kind == 2 { drawn = shapes.shape_line(ctx, be, a) }
+    if pend.kind == 3 { drawn = shapes.shape_path(ctx, be, a) }
+    if drawn != null {
+        // Refresh the placeholder's hit-test bounds from the drawn element.
+        if element.element_has_bounds(drawn) == 1 {
+            element.element_set_bounds(el,
+                element.element_bounds_x(drawn),
+                element.element_bounds_y(drawn),
+                element.element_bounds_width(drawn),
+                element.element_bounds_height(drawn))
+        }
+        // Copy the SVG-space shape geometry onto the placeholder ONCE, so a
+        // bind_pos can merge into it + recompute_bounds. Only when the
+        // placeholder has none yet — a bind_pos refresh updates the geometry
+        // in place, and re-flush must not overwrite it with the static attrs.
+        if element.element_shape_type(el) == element.SHAPE_NONE() {
+            copy_shape_geo(el, drawn)
+        }
+        // The dispatched element only exists to carry bounds/geo back to the
+        // placeholder (copied above) — free it, or every re-flush of every
+        // shape leaks a 384-byte element (a 60fps draw region leaked
+        // thousands per second).
+        element.element_release(drawn)
+    }
+}
+
+// Write the element's current geo0..3 back into the draw attrs map, keyed by
+// shape kind, so a bind_pos-moved shape redraws at its new position. Only the
+// geometry attrs change; style stays as apply_cached_style set it.
+sync_attrs_from_geo(a: ptr, el: ptr, kind: int) {
+    if element.element_shape_type(el) == element.SHAPE_NONE() { return }
+    g0 = element.element_geo0(el)
+    g1 = element.element_geo1(el)
+    g2 = element.element_geo2(el)
+    g3 = element.element_geo3(el)
+    if kind == 0 {
+        ig0 = map.put(a, "cx", string.from_float(g0))
+        ig1 = map.put(a, "cy", string.from_float(g1))
+        ig2 = map.put(a, "r",  string.from_float(g2))
+    }
+    if kind == 1 {
+        ig0 = map.put(a, "x",      string.from_float(g0))
+        ig1 = map.put(a, "y",      string.from_float(g1))
+        ig2 = map.put(a, "width",  string.from_float(g2))
+        ig3 = map.put(a, "height", string.from_float(g3))
+    }
+    if kind == 2 {
+        ig0 = map.put(a, "x1", string.from_float(g0))
+        ig1 = map.put(a, "y1", string.from_float(g1))
+        ig2 = map.put(a, "x2", string.from_float(g2))
+        ig3 = map.put(a, "y2", string.from_float(g3))
+    }
+}
+
+// Copy shape type + geo0..3 from `src` to `dst` via the typed shape setters.
+copy_shape_geo(dst: ptr, src: ptr) {
+    st = element.element_shape_type(src)
+    g0 = element.element_geo0(src)
+    g1 = element.element_geo1(src)
+    g2 = element.element_geo2(src)
+    g3 = element.element_geo3(src)
+    if st == element.SHAPE_CIRCLE() {
+        element.element_set_shape_circle(dst, g0, g1, g2)
+    }
+    if st == element.SHAPE_RECT() {
+        element.element_set_shape_rect(dst, g0, g1, g2, g3)
+    }
+    if st == element.SHAPE_LINE() {
+        element.element_set_shape_line(dst, g0, g1, g2, g3)
+    }
+}
+
+// An element needs tracking if it participates in hit-testing (any handler,
+// cursor, or tooltip — the union events.find_topmost_hoverable /
+// *_with_click use) OR it has a when() predicate (so scene_refresh's
+// refresh_all_elements, which walks the tracked list, re-evaluates it).
+element_is_interactive(el: ptr) -> int {
+    if element.element_click_handler(el) != null { return 1 }
+    if element.element_hover_handler(el) != null { return 1 }
+    if element.element_double_click_handler(el) != null { return 1 }
+    if element.element_right_click_handler(el) != null { return 1 }
+    if string.length(element.element_cursor(el)) > 0 { return 1 }
+    if string.length(element.element_tooltip(el)) > 0 { return 1 }
+    if element.element_when_predicate(el) != null { return 1 }
+    // Reactive bindings need tracking too, so scene_refresh (which walks the
+    // tracked list) re-evaluates them.
+    if element.element_pos_binding(el) != null { return 1 }
+    if element.element_fill_binding(el) != null { return 1 }
+    if element.element_opacity_binding(el) != null { return 1 }
+    return 0
+}
+
+flush_text(ctx: ptr, be: ptr, p: ptr) {
+    pend = p as *VgPending
+    el = pend.element
+    s = "<svg><text x='"
+    s = string.concat(s, string.from_float(pend.tx))
+    s = string.concat(s, "' y='")
+    s = string.concat(s, string.from_float(pend.ty))
+    if pend.font_size > 0.0 {
+        s = string.concat(s, "' font-size='")
+        s = string.concat(s, string.from_float(pend.font_size))
+    }
+    fillc = element.element_last_fill(el)
+    if string.length(fillc) > 0 {
+        s = string.concat(s, "' fill='")
+        s = string.concat(s, fillc)
+    }
+    s = string.concat(s, "'>")
+    s = string.concat(s, pend.content)
+    s = string.concat(s, "</text></svg>")
+    root = parser.parse_svg(s)
+    node_h = parser.node_child_at(root, 0)
+    _ = shapes.shape_text(ctx, be, node_h)
+}
+
+// Write the element's cached fill/stroke/opacity as presentation attrs.
+// resolve_style reads attrs["fill"]/["stroke"]/["stroke-width"] at highest
+// priority, so this is exactly the "own fill" cascade the trailing block set.
+apply_cached_style(a: ptr, el: ptr) {
+    fillc = element.element_last_fill(el)
+    if string.length(fillc) > 0 {
+        _ = map.put(a, "fill", fillc)
+    }
+    if element.element_has_stroke(el) == 1 {
+        sc = element.element_last_stroke_color(el)
+        if string.length(sc) > 0 {
+            _ = map.put(a, "stroke", sc)
+            sw = element.element_last_stroke_width(el)
+            _ = map.put(a, "stroke-width", string.from_float(sw))
+        }
+    }
+    if element.element_has_opacity(el) == 1 {
+        ov = element.element_last_opacity(el)
+        _ = map.put(a, "opacity", string.from_float(ov))
+    }
+    tf = element.element_last_transform(el)
+    if string.length(tf) > 0 {
+        _ = map.put(a, "transform", tf)
+    }
+    lc = element.element_last_linecap(el)
+    if string.length(lc) > 0 {
+        _ = map.put(a, "stroke-linecap", lc)
+    }
+    lj = element.element_last_linejoin(el)
+    if string.length(lj) > 0 {
+        _ = map.put(a, "stroke-linejoin", lj)
+    }
+}
+
+// ─── helpers ─────────────────────────────────────────────────────
+
+put_f(m: ptr, k: string, v: float) {
+    _ = map.put(m, k, string.from_float(v))
+}

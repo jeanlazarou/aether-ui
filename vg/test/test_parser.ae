@@ -1,0 +1,125 @@
+// aevg/test_parser.ae — regression test for parser.ae.
+//
+// Mirrors the structural assertions implicit in
+// cosyne/src/cvg/parser.ts plus what its consumers (loader.ts,
+// bbox.ts) depend on:
+//   - Simple <svg/> self-close → root with tag "svg", 0 children
+//   - Nested elements with attributes round-trip
+//   - Mixed quote styles (" and ')
+//   - XML declaration / DOCTYPE / comments stripped
+//   - Text content captured on parent
+//   - Empty / whitespace-only input → fallback <svg/>
+
+import vg.svg.parser
+import std.string
+
+extern exit(code: int)
+
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 {
+        println("  PASS: ${label} ('${got}')")
+    } else {
+        println("  FAIL: ${label}: got '${got}' want '${want}'")
+        exit(1)
+    }
+}
+
+assert_eq_int(label: string, got: int, want: int) {
+    if got == want {
+        println("  PASS: ${label} (${got})")
+    } else {
+        println("  FAIL: ${label}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+main() {
+    println("=== test_parser ===")
+
+    // ─── Empty / whitespace input → fallback <svg/> ──────────────
+    e_root = parser.parse_svg("")
+    assert_eq_str("empty input tag", parser.node_tag(e_root), "svg")
+    assert_eq_int("empty input child count", parser.node_child_count(e_root), 0)
+
+    w_root = parser.parse_svg("   \n\t  ")
+    assert_eq_str("whitespace-only tag", parser.node_tag(w_root), "svg")
+
+    // ─── Self-closing root ───────────────────────────────────────
+    sc_root = parser.parse_svg("<svg width=\"100\" height=\"50\"/>")
+    assert_eq_str("self-close tag",          parser.node_tag(sc_root),                  "svg")
+    assert_eq_str("self-close attr width",   parser.node_attr(sc_root, "width"),        "100")
+    assert_eq_str("self-close attr height",  parser.node_attr(sc_root, "height"),       "50")
+    assert_eq_int("self-close child count",  parser.node_child_count(sc_root), 0)
+    assert_eq_int("self-close has width",    parser.node_has_attr(sc_root, "width"),    1)
+    assert_eq_int("self-close has missing",  parser.node_has_attr(sc_root, "fill"),     0)
+
+    // ─── Open + nested children + close ──────────────────────────
+    nested = "<svg viewBox='0 0 10 10'><rect x='0' y='0' width='5' height='5'/><circle cx='3' cy='3' r='2'/></svg>"
+    n_root = parser.parse_svg(nested)
+    assert_eq_str("nested tag",       parser.node_tag(n_root),                 "svg")
+    assert_eq_str("nested viewBox",   parser.node_attr(n_root, "viewBox"),     "0 0 10 10")
+    assert_eq_int("nested child cnt", parser.node_child_count(n_root),         2)
+
+    rect = parser.node_child_at(n_root, 0)
+    assert_eq_str("rect tag",     parser.node_tag(rect),                 "rect")
+    assert_eq_str("rect x",       parser.node_attr(rect, "x"),           "0")
+    assert_eq_str("rect width",   parser.node_attr(rect, "width"),       "5")
+
+    circ = parser.node_child_at(n_root, 1)
+    assert_eq_str("circle tag",   parser.node_tag(circ),                 "circle")
+    assert_eq_str("circle cx",    parser.node_attr(circ, "cx"),          "3")
+    assert_eq_str("circle r",     parser.node_attr(circ, "r"),           "2")
+
+    // ─── Mixed quote styles ──────────────────────────────────────
+    // Double-quoted value containing '
+    mq = parser.parse_svg("<svg title=\"it's fine\"/>")
+    assert_eq_str("dq with apostrophe", parser.node_attr(mq, "title"), "it's fine")
+
+    // ─── XML decl + DOCTYPE + comments stripped ──────────────────
+    full_doc = "<?xml version='1.0'?><!-- a comment --><svg width='50'/>"
+    fd = parser.parse_svg(full_doc)
+    assert_eq_str("stripped doc tag",   parser.node_tag(fd),               "svg")
+    assert_eq_str("stripped doc width", parser.node_attr(fd, "width"),     "50")
+
+    doctype_doc = "<?xml version='1.0' encoding='UTF-8'?><!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd'><svg viewBox='0 0 1 1'><g/></svg>"
+    dt = parser.parse_svg(doctype_doc)
+    assert_eq_str("doctype doc tag", parser.node_tag(dt), "svg")
+    assert_eq_str("doctype doc vb",  parser.node_attr(dt, "viewBox"), "0 0 1 1")
+    assert_eq_int("doctype doc child cnt", parser.node_child_count(dt), 1)
+    assert_eq_str("doctype doc child tag", parser.node_tag(parser.node_child_at(dt, 0)), "g")
+
+    // ─── Text content ────────────────────────────────────────────
+    text_doc = "<svg><text x='10' y='20'>Hello World</text></svg>"
+    td = parser.parse_svg(text_doc)
+    assert_eq_int("text doc child cnt", parser.node_child_count(td), 1)
+    text_node = parser.node_child_at(td, 0)
+    assert_eq_str("text tag", parser.node_tag(text_node), "text")
+    assert_eq_str("text content", parser.node_text(text_node), "Hello World")
+
+    // ─── Attribute with namespace prefix (xml:space, xmlns:xlink) ──
+    ns_doc = "<svg xmlns:xlink='http://x' xml:space='preserve'/>"
+    ns = parser.parse_svg(ns_doc)
+    assert_eq_str("ns xmlns:xlink", parser.node_attr(ns, "xmlns:xlink"), "http://x")
+    assert_eq_str("ns xml:space",   parser.node_attr(ns, "xml:space"),   "preserve")
+
+    // ─── Hyphenated and dotted attribute names (data-*, font-size) ──
+    h_doc = "<svg data-id='42' font-size='14'/>"
+    hh = parser.parse_svg(h_doc)
+    assert_eq_str("hyphen attr",   parser.node_attr(hh, "data-id"),   "42")
+    assert_eq_str("hyphen attr 2", parser.node_attr(hh, "font-size"), "14")
+
+    // ─── Deeper nesting + sibling ordering preserved ─────────────
+    deep = "<svg><g><rect x='1'/><circle cx='2'/></g><path d='M0 0 L1 1'/></svg>"
+    d_root = parser.parse_svg(deep)
+    assert_eq_int("deep root children", parser.node_child_count(d_root), 2)
+    g_node = parser.node_child_at(d_root, 0)
+    assert_eq_str("deep g tag", parser.node_tag(g_node), "g")
+    assert_eq_int("deep g child cnt", parser.node_child_count(g_node), 2)
+    assert_eq_str("deep g[0]", parser.node_tag(parser.node_child_at(g_node, 0)), "rect")
+    assert_eq_str("deep g[1]", parser.node_tag(parser.node_child_at(g_node, 1)), "circle")
+    p_node = parser.node_child_at(d_root, 1)
+    assert_eq_str("deep path tag", parser.node_tag(p_node), "path")
+    assert_eq_str("deep path d",   parser.node_attr(p_node, "d"), "M0 0 L1 1")
+
+    println("=== test_parser passed ===")
+}
