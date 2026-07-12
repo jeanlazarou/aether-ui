@@ -1,6 +1,9 @@
 # Re-namespace plan: AeVG to the root, widgets to a subtree
 
-**Status: PLAN — nothing moved yet.** 2026-07-11.
+**Status: IN PROGRESS.** 2026-07-11.
+- **P1 DONE** (e85eafb, 2026-07-12): `aevg/` → `vg/` tree; 41/41 units +
+  full ci green. `import vg`/`vg.rect` call sites byte-identical.
+- P2/P3/P4 + fight_flash_fraud: pending.
 
 ## The question
 
