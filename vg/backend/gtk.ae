@@ -441,8 +441,11 @@ replay_path(cid: int, pts: string) {
 
 // ─── canvas_text ─────────────────────────────────────────────────
 //
-// opts: text, x, y, color, textSize. The shape factory already
-// applied baseline correction to y, so we pass it straight through.
+// opts: text, x, y, color, textSize. `y` is the SVG text baseline; the
+// canvas fill_text path (cairo_show_text) treats the origin as the
+// baseline-left point, so we pass y straight through — no correction
+// here or upstream (the old shape-factory offset was a double correction;
+// see briefs/typography.md).
 
 canvas_text(p: ptr, opts: ptr) -> ptr {
     b = p as *GtkBackend

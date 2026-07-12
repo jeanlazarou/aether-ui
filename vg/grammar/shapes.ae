@@ -945,8 +945,14 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
     // Text falls back to "black" when no fill is resolved.
     if string.length(fill_color) == 0 { fill_color = "black" }
 
-    // Baseline correction.
-    baseline_offset = text_size * 1.07
+    // No baseline correction: SVG's `y` IS the text baseline, and the
+    // backend (cairo_show_text via canvas_fill_text) already treats the
+    // origin as the baseline-left point. The old `text_size * 1.07`
+    // subtraction was a double correction that lifted every glyph ~1em
+    // above its declared baseline (see briefs/typography.md). Kept as a
+    // named 0.0 so emit_tspans' signature and the two call sites don't
+    // churn; the value threads through unchanged.
+    baseline_offset = 0.0
 
     // ─── tspan path ──────────────────────────────────────────────
     // Walk children for <tspan> elements. If any exist, emit one

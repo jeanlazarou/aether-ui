@@ -79,9 +79,11 @@ main() {
     assert_opt_str("text: content",         bk1, 0, "text", "hello")
     assert_opt_str("text: color = red",     bk1, 0, "color", "red")
     assert_opt_near("text: x = 20",         bk1, 0, "x", 20.0)
-    // y = 50 - baseline_offset (text_size * 1.07). Default font-size = 16,
-    // identity viewBox → text_size = 16 → baseline = 17.12 → y_emit = 32.88.
-    assert_opt_near("text: y (50 - baseline)", bk1, 0, "y", 50.0 - 16.0 * 1.07)
+    // y = the SVG baseline, passed through unchanged: cairo_show_text (the
+    // backend fill_text) treats the origin as the baseline-left point, so
+    // no correction is applied. The old `50 - text_size*1.07` expectation
+    // encoded a double-correction bug (see briefs/typography.md).
+    assert_opt_near("text: y = 50 (SVG baseline, unchanged)", bk1, 0, "y", 50.0)
     assert_opt_near("text: text_size = 16 (default)", bk1, 0, "textSize", 16.0)
     assert_opt_str("text: default alignment = leading",
                     bk1, 0, "alignment", "leading")
@@ -172,9 +174,11 @@ main() {
                    record.backend_call_count(bk_ts), 2)
     assert_opt_str("tspan[0]: line one",  bk_ts, 0, "text", "line one")
     assert_opt_str("tspan[1]: line two",  bk_ts, 1, "text", "line two")
-    // tspan[0] y = 20 - 17.12 = 2.88; tspan[1] y = 36 - 17.12 = 18.88
-    assert_opt_near("tspan[0] y", bk_ts, 0, "y", 20.0 - 16.0 * 1.07)
-    assert_opt_near("tspan[1] y", bk_ts, 1, "y", 36.0 - 16.0 * 1.07)
+    // Baselines pass through unchanged (no offset): tspan[0] at y=20;
+    // tspan[1] adds dy=1em (16) → y=36. (Was 2.88 / 18.88 under the old
+    // double-correction — see briefs/typography.md.)
+    assert_opt_near("tspan[0] y", bk_ts, 0, "y", 20.0)
+    assert_opt_near("tspan[1] y", bk_ts, 1, "y", 36.0)
 
     // ─── Hit-test bounds estimate ───────────────────────────────
     // For "hello" (5 chars) at default size 16: est_w = 5 * 16 * 0.6 = 48
