@@ -112,6 +112,11 @@ needle; the compare harness is the gate. **Depends on:** nothing.
 
 ### 3. Dynamic children — `each` (smaller than a QML Repeater)
 
+**Hand-off brief: `briefs/each.md`** (2026-07-12, ready for execution —
+NB it corrects two stale claims below: remove_child/clear_children
+already exist on all three backends, and runtime attach is shipped code
+in overlay_demo, not just a probe).
+
 **Borrowed from:** QML's `Repeater`/model-delegate split — but Aether
 needs LESS than QML did, on two counts verified 2026-07-12:
 
