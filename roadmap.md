@@ -1,0 +1,269 @@
+# Roadmap: what to engineer next
+
+**Status: PROPOSAL.** 2026-07-12. Companion to `re-namespace.md` (done):
+that settled where things live; this is what to build there next, pulling
+from SwiftUI, Flutter, QML, and Swing.
+
+## Method: the stress test already ran
+
+grand_perspective (and fight_flash_fraud, and the month's platform work)
+was a de-facto audit of the toolkit. Every place an app hand-rolled
+something is a missing feature with evidence attached:
+
+| Wound (what we hand-rolled / suffered)                      | Missing feature |
+|--------------------------------------------------------------|-----------------|
+| Breadcrumbs = fixed pool of 8 buttons, relabelled/hidden      | dynamic children (`each`) |
+| List pane hand-drawn in canvas: rows, hit-test, "+N more…"    | table/list widget |
+| GTK popovers never display on sommelier; picker unusable there| in-window overlay layer |
+| Text draws ~17px above requested baseline; 3 bugs, every call site compensates | typography layer |
+| Tile depth faked with a 5-rect bevel                          | shadow effect |
+| Stop/Rescan ghosting and radio flips snap instantly           | implicit transitions |
+| Three panes fixed-width inside one canvas                     | split panes / flex weights |
+| Imperative `set_text` everywhere; state is doubles-only       | declarative bindings, typed state |
+| Focus grabbed ad hoc; keyboard nav wired per-app              | focus & shortcut system |
+| Open/Reveal shell out to xdg-open; no save/open dialog        | file dialogs |
+
+The ranking below is by (foundation-ness × evidence), not by shininess.
+
+## The ranked items
+
+### 1. In-window overlay layer — the Swing z-layer, aimed at our sorest wound
+
+**Borrowed from:** Swing `JLayeredPane` (POPUP_LAYER / MODAL_LAYER / glass
+pane) — its menus worked everywhere *because they were drawn in-window*,
+not compositor popups. Flutter `Overlay` + `OverlayEntry` is the modern
+restatement: a dropdown is just paint. SwiftUI `.overlay`/`.popover`.
+
+**Evidence:** the context-menu saga. GTK4 popovers (xdg_popup) report
+mapped=1 but never display under sommelier (ChromeOS); `picker`
+(GtkDropDown) is unusable there for the same reason; we shipped a
+window-fallback hack gated on `$SOMMELIER_VERSION`. An overlay stack
+converts our worst platform liability into a non-issue by construction.
+
+**Shape:** a per-window z-ordered stack of vg scenes above the widget
+tree (vg.region already has per-region z — the compositing primitive
+exists). DSL: `ui.overlay { … vg or widgets … }`, `ui.dismiss_overlay()`,
+plus the three consumers that prove it: a drawn dropdown (replaces
+picker on hostile compositors), tooltips, toasts. Modal scrim = a
+full-window overlay that eats clicks (Swing's glass pane, literally).
+
+**Effort:** M (1–2 weeks incl. the drawn dropdown + driver routes + specs).
+**Risk:** low — no new compositor surface is the whole point. Input
+routing (overlay eats clicks first) needs care with the canvas legacy
+controllers. **Depends on:** nothing. **Unlocks:** menus/dropdowns/
+tooltips/toasts portable across GTK4/sommelier/Win32/AppKit.
+
+### 2. Typography layer — metrics, measurement, wrap
+
+**Borrowed from:** Flutter's layering lesson: the paragraph/painting
+layer shipped *before* the widget layer because everything sits on it.
+SwiftUI `Text` metrics; QML `TextMetrics`/`FontMetrics`.
+
+**Evidence:** the renderer draws text at a fixed ~17px above the
+requested baseline. Three separate visual bugs this month (clipped list
+header, legend labels floating a line above their chips, the ".." row
+missing its own click zone) — and every call site now carries a hand-
+tuned `+17`. There is no way to measure a string, so labels clip by
+character count (`clip_name`), not by width.
+
+**Shape:** real font metrics in the vg text path (ascent/descent/line
+height per size), `vg.text_extent(size, s) -> (w, h, baseline)`,
+ellipsize-to-width, multi-line wrap with alignment. Then a one-time
+sweep deleting every `+17` compensation (they're all commented).
+
+**Effort:** M (renderer work + call-site sweep + conformance re-run —
+the ~86% librsvg parity number guards against regressions here).
+**Risk:** medium — touching the text path can move the SVG conformance
+needle; the compare harness is the gate. **Depends on:** nothing.
+**Unlocks:** items 4 and 9; honest labels everywhere.
+
+### 3. Dynamic children — `each` (QML Repeater / SwiftUI ForEach)
+
+**Borrowed from:** QML's `Repeater`/model-delegate split is the most
+markup-native of the three; Flutter `ListView.builder`; SwiftUI
+`ForEach(items, id:)`.
+
+**Evidence:** widgets cannot be created after window build — the
+breadcrumb *pool* (8 pre-made buttons, relabelled, hidden, with a sliding
+"…" window) is the workaround pattern, and it will metastasize into
+every data-driven app.
+
+**Shape:** `ui.each(list_state) callback |item| { btn(item.label) … }`
+with reconciliation on change (identity by index first; track-by later —
+vg.grammar.bind already has `bind_trackby` as prior art in-repo). Needs
+backend add/remove-child-at-runtime, which GTK4/AppKit/Win32 all support;
+the DSL's builder `_ctx` injection is the part to prototype carefully.
+
+**Effort:** L (the reconciler is the work; backend child add/remove is
+small). **Risk:** medium — interacts with the deferred-build surface
+model and `_ctx`; prototype on GTK4 first, stub the others like
+`toggle_group` did. **Depends on:** nothing. **Unlocks:** item 4, real
+breadcrumbs, dynamic forms.
+
+### 4. Table / list / tree widgets
+
+**Borrowed from:** Swing's genuinely great contribution — `JTable`/
+`JTree` with the renderer/editor split and sortable columns. QML
+`ListView` + delegates for the declarative shape; SwiftUI `List`/`Table`.
+
+**Evidence:** grand_perspective's entire left pane — rows, chips,
+selection outline, %-bars, hit-testing, and a "+N more…" fold instead of
+scrolling — is ~300 lines of app code that should have been
+`ui.table(columns…, rows_state)`.
+
+**Shape:** virtualized rows over a list state, column spec with widths/
+alignment, row selection synced to state, sort hooks, and delegate-style
+cell content (a callback per cell, QML-style). Driver: rows and cells
+visible in `/widgets` JSON, `select_row` route, uidriver helpers +
+Aeocha matchers on day one.
+
+**Effort:** L–XL (the flagship widget; virtualization + 3 backends).
+GTK4 first via GtkColumnView; a vg-drawn fallback is plan B where native
+tables fight us. **Risk:** medium. **Depends on:** 3 (models), 2 (cell
+text measurement).
+
+### 5. Effects: shadow, opacity groups, (later) backdrop blur
+
+**Borrowed from:** SwiftUI `.shadow(radius:x:y:)`; Flutter `BoxShadow`/
+`elevation`; QML GraphicalEffects (`DropShadow`, `FastBlur`); QML's
+layer.enabled for group opacity.
+
+**Evidence:** render_shaded's 5-rect bevel fakes depth on every tile;
+vg already has gaussian blur (`vg/raster/blur.ae`) — a drop shadow is
+blur + offset + tint of an alpha mask, mostly plumbing. No way to fade a
+subtree (highlight-dim in gp re-colours every tile instead).
+
+**Shape:** `vg.shadow(el, dx, dy, blur, color)` modifier; `ui`-side via
+GTK CSS `box-shadow` for native widgets; `vg.group_opacity(g, a)`.
+Backdrop blur (frosted overlay scrim) explicitly LAST — it's the
+expensive one and only matters once overlays (item 1) exist.
+
+**Effort:** S–M for shadow + group opacity; backdrop blur separate/later.
+**Risk:** low; perf on big scenes → cache the blurred mask per element
+like the recording cache. **Depends on:** nothing (pairs beautifully
+with 1).
+
+### 6. Implicit transitions — QML `Behavior`, not SwiftUI `withAnimation`
+
+**Borrowed from:** QML's `Behavior on opacity { NumberAnimation {} }` —
+declare once on a property, every subsequent setter animates. The most
+markup-centric of the three designs (SwiftUI's `withAnimation` is a
+call-site wrapper; Flutter's Animated* is a widget zoo).
+
+**Evidence:** Stop/Rescan ghosting, radio flips, selection outlines —
+all snap. The animation machinery (easing curves, the 60fps loop,
+`scene_advance`) already exists in vg and idles at zero cost.
+
+**Shape:** `ui.transition(handle, "opacity", 150ms, ease_out)` — then
+`set_hidden`/`style_opacity`/enable changes tween instead of snap.
+vg-side: `vg.behavior(el, "fill", 200ms)` reusing grammar.animations.
+Enter/exit transitions for overlay entries (ties into item 1).
+
+**Effort:** S–M. **Risk:** low — additive; per-property opt-in keeps the
+driver deterministic (specs can assert the END state; add a
+`settle`/no-animation env for CI like GSK_RENDERER=cairo).
+
+### 7. Layout: flex weights, wrap, split panes, `on_layout`
+
+**Borrowed from:** Flutter `Expanded(flex:)`/`Flexible` (the constraints-
+down-sizes-up model's user face); SwiftUI `layoutPriority` +
+`GeometryReader`; QML anchors; every desktop toolkit's splitter
+(GtkPaned exists and is unwrapped).
+
+**Evidence:** gp's three panes are fixed-width in one canvas — no
+splitters; `spacer()` is the only flex tool; the canvas resize hook we
+built for the viewBox remap is a bespoke `GeometryReader` begging to be
+generalized.
+
+**Shape:** `weight(2)` modifier on stack children; `ui.splitview(h/v)`
+wrapping GtkPaned/NSSplitView/Win32 splitter; `ui.wrap {}` flow
+container; `on_layout(handle) callback |w,h|` (generalizing the canvas
+resize hook). **Effort:** M. **Risk:** low. **Depends on:** nothing.
+
+### 8. Declarative bindings + typed state
+
+**Borrowed from:** SwiftUI `@State`/`@Binding`; QML property bindings
+(the whole language is bindings); our own vg.grammar.bind
+(`bind_fill/bind_text/bind_pos`) — the pattern is already in-repo.
+
+**Evidence:** `ui_state` is doubles-only (the calculator display reads
+`42.000000`); everything else is imperative `set_text` from callbacks;
+vg and ui have two different reactivity stories.
+
+**Shape:** typed state (string/int/bool alongside float), `bind_text
+(handle, state)`/`bind_enabled(handle, state)` on the ui side delegating
+to the same refresh machinery vg uses; driver `/state` grows typed
+routes. **Effort:** M. **Risk:** low-medium (unifying two reactivity
+systems is the design work, not the code).
+
+### 9. Focus, tab order, shortcuts
+
+**Borrowed from:** Swing's second great contribution: `InputMap`/
+`ActionMap` (declarative keystroke→action, per focus scope). SwiftUI
+`.keyboardShortcut`; QML `Shortcut`.
+
+**Evidence:** the canvas grabs focus with a bespoke map-signal dance +
+a re-grab on click; gp's keyboard nav is wired per-app; the sommelier
+focus-click gesture never fires (legacy-controller lesson). No
+accelerators (menu items show no Ctrl+…).
+
+**Shape:** `ui.shortcut("Ctrl+R") callback {}` per window (InputMap,
+essentially), sane default tab order from build order + `focus_group`,
+driver route to query/set focus so specs can assert it. **Effort:** M.
+**Risk:** low.
+
+### Backlog (real, smaller, or gated)
+
+- **File dialogs** (`ui.open_file`/`save_file` → GtkFileDialog/NSPanel/
+  IFileDialog) — gp shells out to xdg-open today. S, do opportunistically.
+- **Tab view** (`ui.tabs`) — navstack exists; tabs don't. S–M.
+- **Drag & drop** — inter-widget first (list reorder), inter-app later. M.
+- **Multi-window** — one window per app today (surface table is
+  single-window by design). M, needs a driver story (window ids in
+  `/widgets`). Defer until an app needs it.
+- **Accessibility** — native widgets get GTK/AppKit a11y free; anything
+  vg-DRAWN (item 1's dropdown, item 4's plan-B table) needs a semantics
+  bridge eventually — this is the real cost of the drawn path, and why
+  Flutter maintains a semantics tree. Track it; don't block on it.
+- **Backdrop blur / materials** — after 1 + 5.
+
+## The strategic fork (not scheduled): vg-drawn controls
+
+The Flutter turn — a widget set *drawn by vg* — would make every control
+pixel-identical across backends, fully themeable, effect-capable, and
+immune to compositor politics. The costs are exactly Flutter's costs:
+you take on a11y (semantics tree), IME/text input (brutal), and
+"platform-feel" drift. SwiftUI's hybrid is the likelier right answer for
+a three-backend toolkit: **native text inputs, drawn chrome** — draw
+what natives do worst across our platforms (menus, dropdowns, overlays,
+maybe tables), keep native what they do best (entries, IME, a11y).
+Items 1, 2, and 5 are deliberately the foundations of that hybrid, so
+this fork stays open without being committed to. If/when it's serious,
+it gets its own re-namespace.md-style comparison doc first.
+
+## House rules (carry-overs from this month, now policy)
+
+1. **Driver-first widgets:** every new widget/effect ships with its
+   `/widgets` JSON representation, driver routes, uidriver helpers, and
+   an Aeocha spec in the same commit (the `toggle_group` precedent).
+2. **Sommelier is a release gate** for anything compositor-adjacent —
+   test on the Chromebook before calling it done; never let a Crostini
+   workaround become the default (gate on `$SOMMELIER_VERSION`).
+3. **Idle must cost zero** — the static-until-dirty discipline
+   (region_set_animated lesson) applies to transitions and overlays too.
+4. **Headless parity:** everything renderable must render via
+   canvas_write_png so specs can screenshot it (the /screenshot path).
+
+## Suggested sequence
+
+| Order | Item | Size | Why this order |
+|-------|------|------|----------------|
+| 1 | Overlay layer (+ drawn dropdown) | M | Retires a live platform bug; foundation for menus/toasts/modals |
+| 2 | Typography | M | Foundation for 4 & 9; deletes the +17 debt while it's still findable |
+| 3 | `each` (dynamic children) | L | Architectural unblock; everything data-driven waits on it |
+| 4 | Table/list | L–XL | The flagship widget; needs 2 & 3 |
+| 5 | Shadows + group opacity | S–M | Cheap, visible, pairs with 1 |
+| 6 | Implicit transitions | S–M | Perceived quality; machinery exists in vg |
+| 7 | Flex/split/on_layout | M | Unblocks real multi-pane apps |
+| 8 | Bindings + typed state | M | Unify ui/vg reactivity |
+| 9 | Focus/shortcuts | M | Polish + testability |
