@@ -55,7 +55,20 @@ routing (overlay eats clicks first) needs care with the canvas legacy
 controllers. **Depends on:** nothing. **Unlocks:** menus/dropdowns/
 tooltips/toasts portable across GTK4/sommelier/Win32/AppKit.
 
-### 2. Typography layer — metrics, measurement, wrap
+### 2. Typography layer — metrics, measurement, wrap ✅ DONE (2026-07-12)
+
+**Shipped** (commits 9e55d0c Phase A, 12c32cc Phase B baseline fix,
+aa78062 Phase C metrics API, f299b06 Phase D sweep): the text
+double-correction is fixed (SVG conformance rose 195→196 good), and there
+is now a real measurement surface — `vg.text_extent(size,s) -> (w, height,
+ascent)`, `vg.text_width`, `vg.font_ascent/descent/height`, `vg.ellipsize`
+(cairo-backed on GTK4; win32/macOS stubbed → 0). A GET /text_extent driver
+route + Aeocha spec (5/5) and a 16-check unit test cover it. gp's every
+`+17` compensation is gone, re-derived from real metrics (row_baseline
+helper). Stretch goals NOT done (own follow-up if wanted): multi-line
+wrap (`text_wrapped`) and text-anchor middle/end; win32/macOS real GDI/
+CoreText metrics (deferred to those boxes). Detail below is the original
+proposal, kept for the reasoning.
 
 **Borrowed from:** Flutter's layering lesson: the paragraph/painting
 layer shipped *before* the widget layer because everything sits on it.
@@ -272,7 +285,7 @@ format: comparisons, verdict, phased ci-gated migration).
 | Order | Item | Size | Why this order |
 |-------|------|------|----------------|
 | 1 | Overlay layer (+ drawn dropdown) | M | Retires a live platform bug; foundation for menus/toasts/modals |
-| 2 | Typography | M | Foundation for 4 & 9; deletes the +17 debt while it's still findable |
+| 2 | Typography ✅ | M | DONE 2026-07-12 (9e55d0c/12c32cc/aa78062/f299b06) — +17 debt gone, metrics API + driver route shipped |
 | 3 | `each` (dynamic children) | M | Loops/ifs are first-class + runtime attach probed working; only remove/insert + reconciler to build |
 | 4 | Table/list | L–XL | The flagship widget; needs 2 & 3 |
 | 5 | Shadows + group opacity | S–M | Cheap, visible, pairs with 1 |
