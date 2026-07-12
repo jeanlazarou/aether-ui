@@ -95,19 +95,17 @@ def render_loader(svg_path: Path, output_path: Path) -> bool:
         return False
 
 
-# Tools for the transpiled column (built on demand).
-TRANSPILE_MODULE_BIN = AEVG_ROOT / 'build' / 'svg_transpile_module'   # vg{} source (for display)
-TRANSPILE_RENDERFN_BIN = AEVG_ROOT / 'build' / 'svg_transpile_render_fn'  # one render_<name> fn emitter
+# Tools for the transpiled column. Post-re-namespace (2026-07) these are aeb
+# app nodes under apps/, built to target/build/apps/<name>/bin/<name>.
+TRANSPILE_MODULE_BIN = AEVG_ROOT / 'target' / 'build' / 'apps' / 'svg_transpile_module' / 'bin' / 'svg_transpile_module'
+TRANSPILE_RENDERFN_BIN = AEVG_ROOT / 'target' / 'build' / 'apps' / 'svg_transpile_render_fn' / 'bin' / 'svg_transpile_render_fn'
 
 
-def _ensure_built(src_rel: str, bin_path: Path) -> bool:
-    """Build an .ae tool if its binary is missing. Returns True if present."""
+def _ensure_built(app: str, bin_path: Path) -> bool:
+    """Build an aeb app node if its binary is missing. Returns True if present."""
     if bin_path.exists():
         return True
-    src = AEVG_ROOT / src_rel
-    if not src.exists():
-        return False
-    r = subprocess.run([str(BUILD_SH), src_rel, f'build/{bin_path.name}'],
+    r = subprocess.run(['aeb', f'apps/{app}/.build.ae'],
                        cwd=str(AEVG_ROOT), capture_output=True, text=True)
     return bin_path.exists()
 
@@ -115,7 +113,7 @@ def _ensure_built(src_rel: str, bin_path: Path) -> bool:
 def transpile_to_source(svg_path: Path) -> str:
     """Emit the human-facing vg{} module source for display (the 'show source'
     pane). Best-effort; '' if the emitter tool isn't available."""
-    if not _ensure_built('aevg/svg_transpile_module.ae', TRANSPILE_MODULE_BIN):
+    if not _ensure_built('svg_transpile_module', TRANSPILE_MODULE_BIN):
         return ''
     try:
         r = subprocess.run([str(TRANSPILE_MODULE_BIN)],
@@ -137,13 +135,13 @@ def _fn_name(svg_path: Path) -> str:
 
 _COMBINED_HEADER = (
     '// Generated COMBINED transpiler-parity harness batch (one compile, N renders).\n'
-    'import aether_ui\n'
-    'import aether_ui (canvas_create, canvas_write_png)\n'
+    'import ui\n'
+    'import ui (canvas_create, canvas_write_png)\n'
     'import vg\n'
     'import vg (view_box)\n'
-    'import grammar_factories\n'
-    'import aevg_gtk_backend\n'
-    'import loader\n'
+    'import vg.grammar.factories\n'
+    'import vg.backend.gtk\n'
+    'import vg.svg.loader\n'
     'import std.string\n'
     'extern getenv(name: string) -> string\n'
     'extern exit(code: int)\n\n'
@@ -169,7 +167,7 @@ def _compile_combined_batch(idx: int, entries) -> Path:
     dispatch, compile it, return the binary path. Raises TranspileError if the
     batch fails to compile — no fallback."""
     bin_path = AEVG_ROOT / 'build' / f'_gen_batch{idx}'
-    gen_ae = AEVG_ROOT / 'aevg' / f'_gen_batch{idx}.ae'
+    gen_ae = AEVG_ROOT / f'_gen_batch{idx}.ae'   # repo root so `import ui`/`vg.*` resolve
     dispatch = [
         f'    if string.equals(which, "{nm}") == 1 '
         f'{{ render_{fn}(out, sz); println("ok"); exit(0) }}'
@@ -188,18 +186,34 @@ def _compile_combined_batch(idx: int, entries) -> Path:
         '}\n'
     )
     gen_ae.write_text(_COMBINED_HEADER + '\n'.join(b for _, _, b in entries) + '\n' + main_fn)
+    gen_c = AEVG_ROOT / 'build' / f'_gen_batch{idx}.c'
+    out = err = ''
     try:
-        b = subprocess.run([str(BUILD_SH), f'aevg/_gen_batch{idx}.ae', f'build/_gen_batch{idx}'],
+        # aetherc → C, then gcc link against the GTK4 backend (the batch
+        # `import ui` + vg canvas need it). Mirrors ci.sh's AEVG_GTK_TESTS.
+        ae_cflags = subprocess.run(['ae', 'cflags'], capture_output=True, text=True).stdout.split()
+        gtk_cflags = subprocess.run(['pkg-config', '--cflags', 'gtk4'], capture_output=True, text=True).stdout.split()
+        gtk_libs = subprocess.run(['pkg-config', '--libs', 'gtk4'], capture_output=True, text=True).stdout.split()
+        c = subprocess.run(['aetherc', '--lib', str(AEVG_ROOT), str(gen_ae), str(gen_c)],
                            cwd=str(AEVG_ROOT), capture_output=True, text=True, timeout=600)
+        out, err = c.stdout, c.stderr
+        if gen_c.exists():
+            l = subprocess.run(
+                ['gcc', *gtk_cflags, str(gen_c),
+                 'backend/aether_ui_gtk4.c', 'backend/aether_ui_system_extras.c', 'backend/aether_ui_sni.c',
+                 *ae_cflags, '-pthread', '-lm', *gtk_libs, '-o', str(bin_path)],
+                cwd=str(AEVG_ROOT), capture_output=True, text=True, timeout=600)
+            out += l.stdout; err += l.stderr
     finally:
         gen_ae.unlink(missing_ok=True)
+        gen_c.unlink(missing_ok=True)
     if not bin_path.exists():
-        tok = 'maximum token limit' in (b.stdout + b.stderr)
+        tok = 'maximum token limit' in (out + err)
         why = ('exceeded aetherc token limit — lower _COMBINED_BATCH_BUDGET'
                if tok else 'aetherc/cc error')
         raise TranspileError(
             f'batch {idx} ({len(entries)} SVGs) failed to compile: {why}\n'
-            f'{(b.stdout + b.stderr)[-1500:]}')
+            f'{(out + err)[-1500:]}')
     return bin_path
 
 
@@ -213,7 +227,7 @@ def build_combined_harness(svgs) -> dict:
     no fallback: a failed emit or a failed batch compile raises TranspileError
     and aborts the run (caller exits nonzero). A broken transpiler must never
     produce a green-looking report."""
-    if not _ensure_built('aevg/svg_transpile_render_fn.ae', TRANSPILE_RENDERFN_BIN):
+    if not _ensure_built('svg_transpile_render_fn', TRANSPILE_RENDERFN_BIN):
         raise TranspileError(
             f'could not build the render-fn emitter ({TRANSPILE_RENDERFN_BIN.name})')
 
