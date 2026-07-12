@@ -35,4 +35,4 @@ sources, raw-RGBA frame source) is feature-complete; these are the next layers.
 
 - **The multi-window system compositor** — still out of scope. (Region algebra,
   occlusion passes, per-view backbuffers, host blit ABI; see
-  `docs/aevg-live-regions-plan.md`.)
+  `docs/design/aevg-live-regions-plan.md`.)
