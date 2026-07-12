@@ -2480,6 +2480,15 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     canvas_add_cmd(canvas_id, c);
 }
 
+// Text metrics — STUB (returns zeros). Win32 has real metrics via GDI
+// (GetTextExtentPoint32 / GetTextMetrics); wiring them is deferred to when
+// we're next on winbaz. Zeros keep the ABI linkable so vg.text_extent
+// compiles everywhere (GTK4 has the real impl).
+double aether_ui_text_measure(double size, const char* text) { (void)size; (void)text; return 0.0; }
+double aether_ui_font_ascent(double size)  { (void)size; return 0.0; }
+double aether_ui_font_descent(double size) { (void)size; return 0.0; }
+double aether_ui_font_height(double size)  { (void)size; return 0.0; }
+
 void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
                                        int iw, int ih,
                                        const unsigned char* rgba, int byte_len) {

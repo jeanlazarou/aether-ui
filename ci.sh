@@ -153,6 +153,9 @@ run_smoke_test() {
 # under SKIP_RUNTIME. Each is a self-contained `main()` that exits non-zero
 # on the first failed assertion. Append new modules' tests here as they land.
 AEVG_TESTS=(test_transform test_normalizer test_easing test_parser test_bbox test_blur test_rasterize test_grammar_utils test_grammar_context test_grammar_element test_grammar_rendering test_grammar_style test_grammar_shapes test_grammar_factories test_grammar_animations test_loader test_grammar_defs test_grammar_text test_grammar_css test_grammar_events test_path_builder test_render_as_raster test_grammar_bind test_grammar_reactive test_refresh test_reactive_bindpos test_backend_dispatch test_raster_roundtrip test_filter_routing test_gradient_fill test_vg test_transpiler test_grammar_interaction test_vg_interactive test_vg_when test_vg_bindto test_vg_bindpos test_vg_clock test_vg_hidpi test_vg_anim test_live_region)
+# Tests that exercise the REAL cairo text metrics — linked against the GTK4
+# backend (the pure-Aether AEVG_TESTS link with $(ae cflags) only).
+AEVG_GTK_TESTS=(test_text_metrics)
 
 # `ae cflags --libs` emits the transitive deps that libaether.a was
 # built with (PCRE2 / OpenSSL / zlib / nghttp2 — see Aether CHANGELOG
@@ -185,6 +188,32 @@ for t in "${AEVG_TESTS[@]}"; do
         FAIL=$((FAIL + 1))
     fi
 done
+
+# GTK-backend-linked unit tests: those exercising the real cairo text
+# metrics (aether_ui_text_measure etc.) need the GTK4 backend + gtk4 libs
+# linked, unlike the pure-Aether tests above. Skipped when GTK is absent
+# (e.g. build-only runners); pure metrics have no display dependency, so
+# they run even under SKIP_RUNTIME as long as gtk4 dev libs are present.
+if pkg-config --exists gtk4 2>/dev/null; then
+    for t in "${AEVG_GTK_TESTS[@]}"; do
+        src="vg/test/${t}.ae"; cfile="build/aevg_${t}.c"; bin="build/aevg_${t}"
+        if ! aetherc --lib "$ROOT" "$src" "$cfile" > "/tmp/ci_aevg_${t}.log" 2>&1; then
+            echo "  FAIL $t (compile)"; tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'; FAIL=$((FAIL + 1)); continue
+        fi
+        if ! gcc $(pkg-config --cflags gtk4) "$cfile" \
+                backend/aether_ui_gtk4.c backend/aether_ui_system_extras.c backend/aether_ui_sni.c \
+                $(ae cflags) -pthread -lm $(pkg-config --libs gtk4) -o "$bin" >> "/tmp/ci_aevg_${t}.log" 2>&1; then
+            echo "  FAIL $t (link)"; tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'; FAIL=$((FAIL + 1)); continue
+        fi
+        if "$bin" > "/tmp/ci_aevg_${t}_run.log" 2>&1; then
+            echo "  OK   $t (gtk-linked)"
+        else
+            echo "  FAIL $t (run)"; tail -15 "/tmp/ci_aevg_${t}_run.log" | sed 's/^/       /'; FAIL=$((FAIL + 1))
+        fi
+    done
+else
+    echo "  SKIP AEVG_GTK_TESTS (gtk4 dev libs absent)"
+fi
 echo
 
 echo "=== Phase 1: build all aether_ui examples (aeb fan-out) ==="
@@ -265,6 +294,17 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=calculator/spec_calculator \
     run_server_test "$(EX_BIN calculator)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" calculator || FAIL=$((FAIL + 1))
+fi
+
+echo
+echo "=== Phase 3b: AetherUIDriver text-metrics spec ==="
+# App-agnostic: exercises the GET /text_extent route against the calculator
+# binary (any driver-armed app exposes it). Verifies the cairo text metrics
+# behave over the real HTTP surface (roadmap item 2).
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    UI_SPEC=text_metrics/spec_text_metrics \
+    run_server_test "$(EX_BIN calculator)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" text_metrics || FAIL=$((FAIL + 1))
 fi
 
 echo

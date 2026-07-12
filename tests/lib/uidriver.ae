@@ -15,6 +15,7 @@
 
 exports (
     url_of, get_body, post_ok, post_status, post_body,
+    text_width, font_ascent,
     click, click_widget, toggle_widget, key, move_to, resize_window,
     set_state, state_value_int,
     widget_id_by_text, widget_id_of, widget_text_by_id, widget_bool_by_text,
@@ -109,6 +110,33 @@ state_value_int(id: int) -> int {
     f = json.json_object_get_raw(v, "value")
     r = 0 - 999999
     if f != null { r = f_to_i(json.json_get_number(f)) }
+    json.json_free(v)
+    return r
+}
+
+// ─── Text metrics (GET /text_extent) ─────────────────────────────
+
+// Measured advance width of `s` at `size`px, via the app's cairo text
+// metrics (the same font it renders with). -1 on transport/parse failure.
+text_width(size: int, s: string) -> float {
+    body = get_body("/text_extent?size=${size}&s=${s}")
+    v, _jerr = json.parse(body)
+    if v == null { return 0.0 - 1.0 }
+    f = json.json_object_get_raw(v, "width")
+    r = 0.0 - 1.0
+    if f != null { r = json.json_get_number(f) }
+    json.json_free(v)
+    return r
+}
+
+// Font ascent at `size`px (top-to-baseline). -1 on failure.
+font_ascent(size: int) -> float {
+    body = get_body("/text_extent?size=${size}&s=x")
+    v, _jerr = json.parse(body)
+    if v == null { return 0.0 - 1.0 }
+    f = json.json_object_get_raw(v, "ascent")
+    r = 0.0 - 1.0
+    if f != null { r = json.json_get_number(f) }
     json.json_free(v)
     return r
 }

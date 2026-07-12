@@ -60,7 +60,12 @@ exports (
     animate, scene_animation_manager, scene_is_animating, scene_tick, scene_advance,
     scene_add_live_region, scene_live_regions, scene_render_live_draws, render_one_draw,
     scene_free_recording,
-    scene_set_refreshing, scene_is_refreshing, scene_eval_bindings
+    scene_set_refreshing, scene_is_refreshing, scene_eval_bindings,
+    // Text metrics: measure a string, get font vertical extents, ellipsize
+    // to a pixel width. text_extent returns (width, line-height, ascent) —
+    // ascent is the top-to-baseline distance, so drawing at y=top+ascent
+    // places the declared baseline correctly.
+    text_extent, text_width, font_ascent, font_descent, font_height, ellipsize
 )
 
 import std.string
@@ -80,6 +85,15 @@ extern malloc(size: int) -> ptr
 extern free(p: ptr)
 extern string_retain(s: string)
 extern string_release(s: string)
+
+// Text metrics (GTK4 cairo-backed; win32/macos stubbed → 0). measure = pen
+// advance width at `size`px; font_* = vertical extents at `size`px. These
+// measure cairo's default toy font at the given size — the same font
+// CANVAS_FILL_TEXT renders with — so measurement agrees with drawing.
+extern aether_ui_text_measure(size: float, text: string) -> float
+extern aether_ui_font_ascent(size: float) -> float
+extern aether_ui_font_descent(size: float) -> float
+extern aether_ui_font_height(size: float) -> float
 
 // ─── VgScene: the shared drawing target ──────────────────────────
 //
@@ -1028,4 +1042,45 @@ apply_cached_style(a: ptr, el: ptr) {
 
 put_f(m: ptr, k: string, v: float) {
     _ = map.put(m, k, string.from_float(v))
+}
+
+// ─── Text metrics surface ────────────────────────────────────────
+//
+// text_extent(size, s) -> (width, height, ascent). width = pen advance;
+// height = font line height; ascent = top-to-baseline (draw at
+// y=box_top+ascent to seat the baseline). Backed by cairo on GTK4; the
+// win32/macos stubs return 0 for now (callers get a 0-extent, which is a
+// safe no-clip / no-measure fallback).
+text_extent(size: float, s: string) -> (float, float, float) {
+    w = aether_ui_text_measure(size, s)
+    h = aether_ui_font_height(size)
+    a = aether_ui_font_ascent(size)
+    return w, h, a
+}
+
+text_width(size: float, s: string) -> float {
+    return aether_ui_text_measure(size, s)
+}
+
+font_ascent(size: float) -> float  { return aether_ui_font_ascent(size) }
+font_descent(size: float) -> float { return aether_ui_font_descent(size) }
+font_height(size: float) -> float  { return aether_ui_font_height(size) }
+
+// ellipsize(size, s, max_w) -> s clipped to fit max_w px, with a trailing
+// "…" when it doesn't. Greedy: measure the whole string first (common case
+// fits, no loop); else drop characters from the end until "prefix…" fits.
+// When the backend has no metrics (stub → 0 width) everything "fits", so
+// the string passes through unchanged — a safe degrade.
+ellipsize(size: float, s: string, max_w: float) -> string {
+    if aether_ui_text_measure(size, s) <= max_w { return s }
+    ell = "…"
+    ell_w = aether_ui_text_measure(size, ell)
+    n = string.length(s)
+    i = n - 1
+    while i > 0 {
+        cand = string.concat(string.substring(s, 0, i), ell)
+        if aether_ui_text_measure(size, cand) <= max_w { return cand }
+        i = i - 1
+    }
+    return ell
 }

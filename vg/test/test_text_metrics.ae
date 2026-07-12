@@ -1,0 +1,68 @@
+// test_text_metrics.ae — vg text metrics (roadmap item 2 / briefs/typography.md).
+//
+// Unlike the other Phase-0 vg tests, this one exercises the REAL cairo-backed
+// metrics, so ci.sh links it against the GTK backend (see the AEVG_GTK_TESTS
+// special-case in ci.sh). Assertions are RELATIONAL, never absolute pixel
+// values — fonts differ across boxes, so we assert monotonicity, scaling, and
+// ellipsize behaviour, not "hello is 37px".
+
+import vg
+import std.string
+
+extern exit(code: int)
+
+// No top-level mutable globals in Aether — assert_true just prints + exits
+// on failure; the count is incidental.
+assert_true(label: string, cond: int) {
+    if cond == 1 {
+        println("  PASS: ${label}")
+    } else {
+        println("  FAIL: ${label}")
+        exit(1)
+    }
+}
+
+main() {
+    println("=== test_text_metrics ===")
+
+    // Empty string measures zero width.
+    assert_true("empty string → 0 width", vg.text_width(16.0, "") == 0.0)
+
+    // Non-empty string has positive width and the font has positive extents.
+    w_hi = vg.text_width(16.0, "hi")
+    assert_true("non-empty → positive width", w_hi > 0.0)
+    assert_true("font height positive", vg.font_height(16.0) > 0.0)
+    assert_true("font ascent positive", vg.font_ascent(16.0) > 0.0)
+
+    // Monotonic in length: a longer string is wider (same size).
+    w_hello = vg.text_width(16.0, "hello")
+    w_hello_world = vg.text_width(16.0, "hello world")
+    assert_true("longer string is wider", w_hello_world > w_hello)
+    assert_true("adding chars never narrows", w_hello >= w_hi)
+
+    // Scales with font size: same string, bigger size ⇒ bigger extents.
+    w_small = vg.text_width(10.0, "sample")
+    w_large = vg.text_width(30.0, "sample")
+    assert_true("bigger size → wider", w_large > w_small)
+    assert_true("bigger size → taller", vg.font_height(30.0) > vg.font_height(10.0))
+
+    // text_extent returns the three consistently.
+    ew, eh, ea = vg.text_extent(16.0, "hello")
+    assert_true("text_extent width matches text_width", ew == w_hello)
+    assert_true("text_extent height = font_height", eh == vg.font_height(16.0))
+    assert_true("text_extent ascent = font_ascent", ea == vg.font_ascent(16.0))
+    assert_true("ascent < height", ea < eh)
+
+    // Ellipsize: a string that fits is returned unchanged.
+    short = "ok"
+    assert_true("fitting string unchanged", string.equals(vg.ellipsize(16.0, short, 1000.0), short) == 1)
+
+    // A string that doesn't fit is shortened and ends with the ellipsis.
+    long_s = "this is a very long label that will not fit"
+    clipped = vg.ellipsize(16.0, long_s, 60.0)
+    assert_true("overlong string is shortened", string.length(clipped) < string.length(long_s))
+    assert_true("clipped ends with ellipsis", string.ends_with(clipped, "…") == 1)
+    assert_true("clipped actually fits max_w", vg.text_width(16.0, clipped) <= 60.0)
+
+    println("=== test_text_metrics passed ===")
+}

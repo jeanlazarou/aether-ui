@@ -2198,6 +2198,46 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     });
 }
 
+// ─── Text metrics ────────────────────────────────────────────────
+//
+// Measurement must work HEADLESS (no window, no canvas) — the layout code
+// calls it during build. A static 1x1 image-surface scratch cairo_t,
+// created on first use, gives cairo's text_extents/font_extents without a
+// display. It uses cairo's DEFAULT toy font at the requested size — exactly
+// what CANVAS_FILL_TEXT renders with (cairo_set_font_size + cairo_show_text,
+// no cairo_select_font_face), so measurements agree with what's drawn.
+static cairo_t* text_scratch_cr(void) {
+    static cairo_t* cr = NULL;
+    if (!cr) {
+        cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+        cr = cairo_create(s);
+        cairo_surface_destroy(s);   // cr keeps a ref
+    }
+    return cr;
+}
+
+// Advance width of `text` at `size` (px). 0 for NULL/empty.
+double aether_ui_text_measure(double size, const char* text) {
+    if (!text || !text[0]) return 0.0;
+    cairo_t* cr = text_scratch_cr();
+    cairo_set_font_size(cr, size);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, text, &ext);
+    return ext.x_advance;   // pen advance, the width you position siblings by
+}
+
+// Font vertical metrics at `size` (px): ascent, descent, line height. The
+// three are read from one font_extents call; separate getters keep the ABI
+// dumb (no tuple/out-param dance across the Aether extern boundary).
+static void text_font_extents(double size, cairo_font_extents_t* fe) {
+    cairo_t* cr = text_scratch_cr();
+    cairo_set_font_size(cr, size);
+    cairo_font_extents(cr, fe);
+}
+double aether_ui_font_ascent(double size)  { cairo_font_extents_t fe; text_font_extents(size, &fe); return fe.ascent; }
+double aether_ui_font_descent(double size) { cairo_font_extents_t fe; text_font_extents(size, &fe); return fe.descent; }
+double aether_ui_font_height(double size)  { cairo_font_extents_t fe; text_font_extents(size, &fe); return fe.height; }
+
 void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
                                        int iw, int ih,
                                        const unsigned char* rgba, int byte_len) {
@@ -2984,6 +3024,30 @@ static void handle_test_request(int client_fd) {
         double val = aether_ui_state_get(id);
         char buf[128];
         snprintf(buf, sizeof(buf), "{\"id\":%d,\"value\":%.6f}", id, val);
+        send_response(client_fd, 200, "OK", "application/json", buf);
+        close(client_fd);
+        return;
+    }
+
+    // GET /text_extent?size=&s=  — measure a string via the cairo text
+    // metrics (the same font CANVAS_FILL_TEXT renders with). Lets a driver
+    // spec assert vg.text_extent's behaviour against a running app without a
+    // bespoke probe binary. width/ascent/descent/height in px.
+    if (method == 0 && strncmp(path, "/text_extent", 12) == 0) {
+        const char* ss = extract_query_param(path, "size");
+        const char* st = extract_query_param(path, "s");
+        double size = ss ? atof(ss) : 16.0;
+        char sbuf[512] = "";
+        if (st) {
+            strncpy(sbuf, st, sizeof(sbuf) - 1);
+            char* amp = strchr(sbuf, '&'); if (amp) *amp = '\0';
+        }
+        double w = aether_ui_text_measure(size, sbuf);
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "{\"width\":%.3f,\"ascent\":%.3f,\"descent\":%.3f,\"height\":%.3f}",
+            w, aether_ui_font_ascent(size), aether_ui_font_descent(size),
+            aether_ui_font_height(size));
         send_response(client_fd, 200, "OK", "application/json", buf);
         close(client_fd);
         return;
