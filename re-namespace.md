@@ -1,9 +1,14 @@
 # Re-namespace plan: AeVG to the root, widgets to a subtree
 
-**Status: IN PROGRESS.** 2026-07-11.
-- **P1 DONE** (e85eafb, 2026-07-12): `aevg/` → `vg/` tree; 41/41 units +
-  full ci green. `import vg`/`vg.rect` call sites byte-identical.
-- P2/P3/P4 + fight_flash_fraud: pending.
+**Status: DONE.** 2026-07-12.
+- **P1** (e85eafb): `aevg/` → `vg/` tree; 41/41 units + full ci green.
+- **P2** (4829185): `vg/apps` → root `apps/`.
+- **P3** (d002b06): widget DSL `aether_ui.ae` → `ui/module.ae` (`import ui`);
+  the 213 `aether_ui_*` C-ABI externs + `aetherui` aeb module unchanged.
+- **fight_flash_fraud** (that repo's 76ab9d6): `import aether_ui` → `import ui`;
+  unit 4/4, UI spec 2/2.
+- **P4** (this commit): docs/memory sweep.
+Full ci.sh green after every phase.
 
 ## The question
 

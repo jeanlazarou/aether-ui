@@ -22,7 +22,7 @@ A declarative widget DSL for Aether, porting the Perry UI framework. It supports
 - **Bootstrap**: If Aether is missing from `/usr/local/`, use `./bootstrap_aether.sh` to fetch and build it locally.
 
 ## Files/dirs worth knowing
-- `aether_ui.ae`: The Aether-facing surface (imports, DSL wrappers).
+- `ui/module.ae`: The Aether-facing surface (imports, DSL wrappers).
 - `aether_ui_backend.h`: The backend ABI.
 - `aether_ui_<platform>.c/m`: The native platform implementations.
 - `aether_ui_test_server.c/h`: The shared HTTP test server implementation.
@@ -31,6 +31,6 @@ A declarative widget DSL for Aether, porting the Perry UI framework. It supports
 
 ## Idioms that keep biting
 - **Widget Registry**: Native widgets (GtkWidget*, NSView*) are registered in a flat global array and referenced via 1-based integers (`handle`). Never leak these handles.
-- **Sealing**: Use `aether_ui.seal_widget()` and `aether_ui.seal_subtree()` to protect widgets from automation in test environments.
-- **Imports**: All examples must use `import aether_ui`.
+- **Sealing**: Use `ui.seal_widget()` and `ui.seal_subtree()` to protect widgets from automation in test environments.
+- **Imports**: All examples must use `import ui`.
 - **CSS**: In the GTK4 backend, avoid global CSS. Apply styling using `aether_ui_apply_css` which scopes rules to a specific widget via a handle-derived class name (`.aui-{handle}`).

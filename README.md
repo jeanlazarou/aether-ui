@@ -77,7 +77,7 @@ A UI is opened inside a **surface** scope. The surface's *kind* decides its
 lifecycle (see [Surfaces](#surfaces-window--render_to--record) below):
 
 ```aether
-import aether_ui
+import ui
 
 main() {
     counter = aether_ui.ui_state(0)
@@ -143,22 +143,22 @@ a live window has "a life of its own" that ends on an external event, so only
 
 | Widget      | Aether function                                       | GTK4               | AppKit                  | Win32                      |
 |-------------|-------------------------------------------------------|--------------------|-------------------------|----------------------------|
-| Text        | `aether_ui.text("label")`                             | GtkLabel           | NSTextField (label)     | STATIC                     |
-| Button      | `aether_ui.button("label") callback { }`              | GtkButton          | NSButton                | BUTTON (BS_PUSHBUTTON)     |
-| VStack      | `aether_ui.vstack(spacing) { children }`              | GtkBox vertical    | NSStackView vertical    | AetherUIStack (custom)     |
-| HStack      | `aether_ui.hstack(spacing) { children }`              | GtkBox horizontal  | NSStackView horizontal  | AetherUIStack (custom)     |
-| Spacer      | `aether_ui.spacer()`                                  | Expanding GtkBox   | NSView flex filler      | flex placeholder           |
-| Divider     | `aether_ui.divider()`                                 | GtkSeparator       | NSBox separator         | GDI line (custom class)    |
-| TextField   | `aether_ui.textfield("hint") callback \|val\| { }`    | GtkEntry           | NSTextField             | EDIT                       |
-| SecureField | `aether_ui.securefield("hint") callback \|val\| { }`  | GtkPasswordEntry   | NSSecureTextField       | EDIT (ES_PASSWORD)         |
-| Toggle      | `aether_ui.toggle("label") callback \|active\| { }`   | GtkCheckButton     | NSButton (switch)       | BUTTON (BS_AUTOCHECKBOX)   |
-| Slider      | `aether_ui.slider(min, max, init) callback \|val\|`   | GtkScale           | NSSlider                | TRACKBAR (comctl32)        |
-| Picker      | `aether_ui.picker() callback \|idx\| { }`             | GtkDropDown        | NSPopUpButton           | COMBOBOX (CBS_DROPDOWNLIST)|
-| TextArea    | `aether_ui.textarea("hint") callback \|val\| { }`     | GtkTextView        | NSTextView              | EDIT (ES_MULTILINE)        |
-| ProgressBar | `aether_ui.progressbar(0.75)`                         | GtkProgressBar     | NSProgressIndicator     | PROGRESS (comctl32)        |
-| ScrollView  | `aether_ui.scrollview() { children }`                 | GtkScrolledWindow  | NSScrollView            | AetherUIStack + WS_VSCROLL |
-| Grid        | `aether_ui.root_grid(cols, rspace, cspace)` + `grid_place(...)` | GtkGrid   | NSGridView              | AetherUIGrid (custom)      |
-| Menu bar    | `aether_ui.menu_bar()` + `menu()` + `menu_item()`     | GMenu / GActionMap | NSMenu                  | HMENU (CreateMenu/SetMenu) |
+| Text        | `ui.text("label")`                             | GtkLabel           | NSTextField (label)     | STATIC                     |
+| Button      | `ui.button("label") callback { }`              | GtkButton          | NSButton                | BUTTON (BS_PUSHBUTTON)     |
+| VStack      | `ui.vstack(spacing) { children }`              | GtkBox vertical    | NSStackView vertical    | AetherUIStack (custom)     |
+| HStack      | `ui.hstack(spacing) { children }`              | GtkBox horizontal  | NSStackView horizontal  | AetherUIStack (custom)     |
+| Spacer      | `ui.spacer()`                                  | Expanding GtkBox   | NSView flex filler      | flex placeholder           |
+| Divider     | `ui.divider()`                                 | GtkSeparator       | NSBox separator         | GDI line (custom class)    |
+| TextField   | `ui.textfield("hint") callback \|val\| { }`    | GtkEntry           | NSTextField             | EDIT                       |
+| SecureField | `ui.securefield("hint") callback \|val\| { }`  | GtkPasswordEntry   | NSSecureTextField       | EDIT (ES_PASSWORD)         |
+| Toggle      | `ui.toggle("label") callback \|active\| { }`   | GtkCheckButton     | NSButton (switch)       | BUTTON (BS_AUTOCHECKBOX)   |
+| Slider      | `ui.slider(min, max, init) callback \|val\|`   | GtkScale           | NSSlider                | TRACKBAR (comctl32)        |
+| Picker      | `ui.picker() callback \|idx\| { }`             | GtkDropDown        | NSPopUpButton           | COMBOBOX (CBS_DROPDOWNLIST)|
+| TextArea    | `ui.textarea("hint") callback \|val\| { }`     | GtkTextView        | NSTextView              | EDIT (ES_MULTILINE)        |
+| ProgressBar | `ui.progressbar(0.75)`                         | GtkProgressBar     | NSProgressIndicator     | PROGRESS (comctl32)        |
+| ScrollView  | `ui.scrollview() { children }`                 | GtkScrolledWindow  | NSScrollView            | AetherUIStack + WS_VSCROLL |
+| Grid        | `ui.root_grid(cols, rspace, cspace)` + `grid_place(...)` | GtkGrid   | NSGridView              | AetherUIGrid (custom)      |
+| Menu bar    | `ui.menu_bar()` + `menu()` + `menu_item()`     | GMenu / GActionMap | NSMenu                  | HMENU (CreateMenu/SetMenu) |
 
 ## Reactive state
 
@@ -233,7 +233,7 @@ capabilities the test harness is denied, not the other way around.
 
 | Layer | File | Role |
 |-------|------|------|
-| Aether DSL | `aether_ui.ae` | Builder-pattern wrappers with `_ctx` auto-injection; surface verbs (`window`/`render_to`/`record`) |
+| Aether DSL | `ui/module.ae` | Builder-pattern wrappers with `_ctx` auto-injection; surface verbs (`window`/`render_to`/`record`) |
 | GTK4 backend | `aether_ui_gtk4.c` | Linux: GTK4 C API calls, Cairo canvas, test server |
 | macOS backend | `aether_ui_macos.m` | macOS: AppKit Objective-C |
 | Win32 backend | `aether_ui_win32.c` | Windows: USER32 + GDI+ + Common Controls |
