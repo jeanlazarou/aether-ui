@@ -37,7 +37,7 @@ cd "$ROOT"
 mkdir -p build
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -361,6 +361,17 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=picker/spec_picker \
     run_server_test "$(EX_BIN picker)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" picker || FAIL=$((FAIL + 1))
+fi
+
+echo
+echo "=== Phase 5e: AetherUIDriver each (dynamic children) spec ==="
+# each (roadmap item 3): Add/Remove/Reset drive each_update; the spec asserts
+# group children appear/disappear in /widgets and per-item closures fire with
+# the RIGHT item (needs aether >= 0.390 closure-capture fixes).
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    UI_SPEC=each_demo/spec_each_demo \
+    run_server_test "$(EX_BIN each_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" each_demo || FAIL=$((FAIL + 1))
 fi
 
 echo

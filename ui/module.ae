@@ -38,6 +38,7 @@ exports (
     window_create, window_set_body, window_show, window_close,
     overlay, overlay_modal, dismiss_overlay, overlay_is_live, toast,
     vg_tooltip_show, vg_tooltip_hide, vg_tooltip_drawn,
+    each, each_update, each_count, each_parent,
     sheet_create, sheet_set_body, sheet_present, sheet_dismiss,
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
@@ -57,6 +58,9 @@ exports (
 )
 
 import std.string   // overlay_anchor_code parses the anchor string
+import std.list     // each_update walks the items list
+
+extern malloc(size: int) -> ptr   // EachGroup allocation (house pattern, vg/module.ae:84)
 
 // ---------------------------------------------------------------------------
 // C externs — raw widget creation and manipulation
@@ -994,6 +998,95 @@ vg_tooltip_hide() {
 }
 vg_tooltip_drawn() -> int {
     return aether_ui_vg_tooltip_drawn_impl()
+}
+
+// ---------------------------------------------------------------------------
+// each — dynamic children (roadmap item 3; the ng-repeat half).
+//
+// The language already gives build-time repetition (loops in immediate
+// blocks). `each` is repetition over TIME: re-running the per-item build when
+// the LIST changes. It owns a plain group container (vstack/hstack) created
+// where the verb appears; each_update(e, items) clears that group and re-runs
+// the render closure per item — clear+rebuild, ng-repeat-without-track-by
+// semantics (keyed reuse is a later item; see briefs history).
+//
+//   rows = each("v", 4) callback |item: ptr, i: int, parent: int| {
+//       it = item as *MyItem
+//       _b = btn(parent, it.name) callback { ...uses it/i... }
+//   }
+//   ...
+//   each_update(rows, my_list)          // explicit, imperative (item 8 will
+//                                       // add a binding overload; not yet)
+//
+// The render closure receives (item, index, parent-container-handle) — the
+// 3-arg form; build item widgets into `parent` with the handle-as-first-arg
+// pattern. NB (compiler): a `_ =` discard inside a closure-in-closure emits
+// broken C — name the discard (`_b =`) in render bodies.
+//
+// Lifetime notes: removed widgets' handles are weak-ref-nulled by the
+// registry; their boxed closures are retained by the C side and are NOT
+// freed on removal — a small, bounded leak per removed child (same class as
+// every boxed closure today). Requires aether >= 0.390 (closure envs retain
+// captured heap strings — PR #1127; on older compilers per-item labels
+// dangle).
+// ---------------------------------------------------------------------------
+
+struct EachGroup {
+    container: int,     // the group box all item widgets live in
+    render: ptr,        // boxed render closure |item, i, parent|
+    count: int          // last rendered item count
+}
+
+// fn-typed-param bridge (the events.ae invoker pattern): stored-ptr → call.
+_each_invoke(cb: fn, item: ptr, i: int, parent: int) {
+    cb(item, i, parent)
+}
+
+// each(orientation "v"|"h", spacing, render) -> each-handle. Creates the group
+// container in the enclosing block (auto-attached via _ctx).
+each(_ctx: ptr, orientation: string, spacing: int, render: fn) -> ptr {
+    h = 0
+    if string.equals(orientation, "h") == 1 {
+        h = aether_ui_hstack_create(spacing)
+    } else {
+        h = aether_ui_vstack_create(spacing)
+    }
+    if _ctx != 0 {
+        aether_ui_widget_add_child_ctx(_ctx, h)
+    }
+    e = malloc(24) as *EachGroup
+    e.container = h
+    e.render = box_closure(render)
+    e.count = 0
+    return e as ptr
+}
+
+// each_update(e, items) — clear the group, re-run render(item, i, parent) for
+// every element of `items` (a std.list of ptr).
+each_update(ep: ptr, items: ptr) {
+    e = ep as *EachGroup
+    aether_ui_clear_children_impl(e.container)
+    r = unbox_closure(e.render)
+    n = list.size(items)
+    i = 0
+    while i < n {
+        it, _lerr = list.get(items, i)
+        _each_invoke(r, it, i, e.container)
+        i = i + 1
+    }
+    e.count = n
+}
+
+// Last rendered item count (tests/apps).
+each_count(ep: ptr) -> int {
+    e = ep as *EachGroup
+    return e.count
+}
+
+// The group container's widget handle (for styling/driver lookups).
+each_parent(ep: ptr) -> int {
+    e = ep as *EachGroup
+    return e.container
 }
 
 // Modal sheet
