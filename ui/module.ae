@@ -40,7 +40,7 @@ exports (
     image, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clip_rect, canvas_clear, canvas_redraw, canvas_write_png,
-    canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text,
+    canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text, canvas_stroke_text,
     canvas_draw_image, canvas_draw_image_scaled, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
@@ -227,6 +227,10 @@ extern aether_ui_canvas_fill_impl(canvas_id: int, r: float, g: float, b: float, 
 extern aether_ui_canvas_fill_text_impl(canvas_id: int, text: string,
                                        x: float, y: float, font_size: float,
                                        r: float, g: float, b: float, a: float)
+extern aether_ui_canvas_stroke_text_impl(canvas_id: int, text: string,
+                                         x: float, y: float, font_size: float,
+                                         line_width: float,
+                                         r: float, g: float, b: float, a: float)
 extern aether_ui_canvas_draw_image_impl(canvas_id: int, x: float, y: float,
                                         iw: int, ih: int,
                                         rgba: string, byte_len: int)
@@ -1005,6 +1009,13 @@ canvas_fill(cid: int, r: float, g: float, b: float, a: float) {
 canvas_fill_text(cid: int, text: string, x: float, y: float, font_size: float,
                  r: float, g: float, b: float, a: float) {
     aether_ui_canvas_fill_text_impl(cid, text, x, y, font_size, r, g, b, a)
+}
+
+// Stroke (outline) text at (x, y). Queue after canvas_fill_text for the same
+// run so the outline paints over the fill (SVG stroke-on-<text>).
+canvas_stroke_text(cid: int, text: string, x: float, y: float, font_size: float,
+                   line_width: float, r: float, g: float, b: float, a: float) {
+    aether_ui_canvas_stroke_text_impl(cid, text, x, y, font_size, line_width, r, g, b, a)
 }
 
 // Blit an RGBA8888 pixel buffer (iw×ih, byte_len = iw*ih*4) at canvas

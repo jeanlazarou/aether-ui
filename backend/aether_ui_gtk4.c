@@ -1585,6 +1585,7 @@ typedef enum {
     CANVAS_CLOSE_PATH,  // close the current sub-path
     CANVAS_FILL,        // fill the current path with a color
     CANVAS_FILL_TEXT,   // draw text at (x, y), size in w
+    CANVAS_STROKE_TEXT, // stroke text outline at (x,y): size in w, line width in h
     CANVAS_DRAW_IMAGE,  // blit an RGBA buffer at (x, y), size w×h
     CANVAS_FILL_LINEAR, // fill current path with a linear gradient
     CANVAS_FILL_RADIAL, // fill current path with a radial gradient
@@ -1726,6 +1727,24 @@ static void canvas_replay(cairo_t* cr, CanvasState* cs) {
                 if (c->text) cairo_show_text(cr, c->text);
                 cairo_new_path(cr); // show_text leaves a path; clear it
                 break;
+            case CANVAS_STROKE_TEXT: {
+                // Outline the glyphs: convert to a path, then stroke. Emitted
+                // AFTER the fill for the same run, so the outline sits on top.
+                // Round join/cap so a wide stroke fills without miter spikes.
+                cairo_line_join_t pj = cairo_get_line_join(cr);
+                cairo_line_cap_t  pc = cairo_get_line_cap(cr);
+                cairo_set_source_rgba(cr, c->r, c->g, c->b, c->a);
+                cairo_set_font_size(cr, c->w);
+                cairo_set_line_width(cr, c->h);
+                cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+                cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+                cairo_move_to(cr, c->x, c->y);
+                if (c->text) cairo_text_path(cr, c->text);
+                cairo_stroke(cr);   // consumes the path
+                cairo_set_line_join(cr, pj);
+                cairo_set_line_cap(cr, pc);
+                break;
+            }
             case CANVAS_DRAW_IMAGE:
                 if (c->pixels && c->iw > 0 && c->ih > 0) {
                     // Incoming buffer is RGBA8888 (R,G,B,A bytes).
@@ -2193,6 +2212,19 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
                                       double r, double g, double b, double a) {
     canvas_add_cmd(canvas_id, (CanvasCmd){
         .type = CANVAS_FILL_TEXT, .x = x, .y = y, .w = font_size,
+        .r = r, .g = g, .b = b, .a = a,
+        .text = text ? strdup(text) : NULL
+    });
+}
+
+// Stroke (outline) text at (x, y). font_size in w, line width in h, colour in
+// r,g,b,a. Queue AFTER the fill for the same run so the outline paints on top.
+void aether_ui_canvas_stroke_text_impl(int canvas_id, const char* text,
+                                        double x, double y, double font_size,
+                                        double line_width,
+                                        double r, double g, double b, double a) {
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_STROKE_TEXT, .x = x, .y = y, .w = font_size, .h = line_width,
         .r = r, .g = g, .b = b, .a = a,
         .text = text ? strdup(text) : NULL
     });

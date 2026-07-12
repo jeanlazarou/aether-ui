@@ -1637,6 +1637,17 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     });
 }
 
+// Stroke (outline) text — STUB. AppKit outline is CGContextSetTextDrawingMode
+// (kCGTextStroke) or a CGPath from CTFont; deferred to when we're next on the
+// Mac mini. No-op keeps the ABI linkable (the GTK4 backend is real).
+void aether_ui_canvas_stroke_text_impl(int canvas_id, const char* text,
+                                        double x, double y, double font_size,
+                                        double line_width,
+                                        double r, double g, double b, double a) {
+    (void)canvas_id; (void)text; (void)x; (void)y; (void)font_size;
+    (void)line_width; (void)r; (void)g; (void)b; (void)a;
+}
+
 // Text metrics — STUB (returns zeros). AppKit has real metrics via
 // CoreText (NSAttributedString / CTLineGetTypographicBounds); wiring them
 // is deferred to when we're next on the Mac mini. Zeros keep the ABI

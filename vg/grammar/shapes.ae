@@ -949,6 +949,21 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
     // Text falls back to "black" when no fill is resolved.
     if string.length(fill_color) == 0 { fill_color = "black" }
 
+    // Resolved stroke on the text (rare — e.g. an outlined glyph). Same
+    // idiom as the shapes: colour + mapped width, opacity baked in. sw stays
+    // 0 when there's no stroke, and the backend then skips the stroke pass.
+    text_stroke = utils.resolve_stroke_color(style)
+    text_sw = 0.0
+    if string.length(text_stroke) > 0 {
+        tsw_raw = utils.style_num_default(style, "stroke-width", 1.0)
+        tsmap = rendering.map_stroke_width(ctx, tsw_raw)
+        text_sw = rendering.stroke_width(tsmap)
+        tsop = rendering.stroke_opacity_factor(tsmap)
+        if tsop < 1.0 {
+            text_stroke = utils.apply_opacity_to_color(text_stroke, tsop)
+        }
+    }
+
     // No baseline correction: SVG's `y` IS the text baseline, and the
     // backend (cairo_show_text via canvas_fill_text) already treats the
     // origin as the baseline-left point. The old `text_size * 1.07`
@@ -968,7 +983,7 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
         emit_tspans(ctx, backend, node_h, attrs,
                     text_size, baseline_offset,
                     fill_color, alignment, bold, italic, monospace,
-                    base_font_size)
+                    base_font_size, text_stroke, text_sw)
         maybe_pop_transform(ctx, did_push)
         el = element.element_new(null)
         return el
@@ -999,7 +1014,8 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
     if string.equals(alignment, "trailing") == 1 { dx = mx - adv }
 
     opts = mk_text_opts(content, dx, my - baseline_offset, fill_color,
-                       text_size, alignment, bold, italic, monospace)
+                       text_size, alignment, bold, italic, monospace,
+                       text_stroke, text_sw)
     underlying = dispatch.dispatch_text(backend, opts)
 
     maybe_pop_transform(ctx, did_push)
@@ -1015,7 +1031,8 @@ shape_text(ctx: ptr, backend: ptr, node_h: ptr) -> ptr {
 // real backend implementations consume these directly.
 mk_text_opts(content: string, x: float, y: float, color: string,
              text_size: float, alignment: string,
-             bold: int, italic: int, monospace: int) -> ptr {
+             bold: int, italic: int, monospace: int,
+             stroke_color: string, stroke_width: float) -> ptr {
     opts = map.new()
     opt_set_s(opts, "text",      content)
     opt_set_f(opts, "x",         x)
@@ -1026,6 +1043,15 @@ mk_text_opts(content: string, x: float, y: float, color: string,
     opt_set_s(opts, "bold",      int_to_str(bold))
     opt_set_s(opts, "italic",    int_to_str(italic))
     opt_set_s(opts, "monospace", int_to_str(monospace))
+    // Stroked text (SVG stroke on <text>): the backend paints a stroke pass
+    // over the fill when strokeWidth > 0. Absent for the common no-stroke
+    // case, so the fill-only fast path is unchanged.
+    if string.length(stroke_color) > 0 {
+        if stroke_width > 0.0 {
+            opt_set_s(opts, "strokeColor", stroke_color)
+            opt_set_f(opts, "strokeWidth", stroke_width)
+        }
+    }
     return opts
 }
 
@@ -1048,7 +1074,7 @@ emit_tspans(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr,
             text_size: float, baseline_offset: float,
             color: string, alignment: string,
             bold: int, italic: int, monospace: int,
-            base_font_size: float) {
+            base_font_size: float, stroke_color: string, stroke_width: float) {
     base_x = rendering.parse_len_x(ctx, attr_str_or(attrs, "x", "0"))
     base_y = rendering.parse_len_y(ctx, attr_str_or(attrs, "y", "0"))
     cur_x = base_x
@@ -1081,7 +1107,8 @@ emit_tspans(ctx: ptr, backend: ptr, node_h: ptr, attrs: ptr,
                 my = transform.pt_y(p)
 
                 opts = mk_text_opts(t_text, mx, my - baseline_offset, color,
-                                   text_size, alignment, bold, italic, monospace)
+                                   text_size, alignment, bold, italic, monospace,
+                                   stroke_color, stroke_width)
                 _ = dispatch.dispatch_text(backend, opts)
             }
         }

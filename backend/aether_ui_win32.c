@@ -2480,6 +2480,17 @@ void aether_ui_canvas_fill_text_impl(int canvas_id, const char* text,
     canvas_add_cmd(canvas_id, c);
 }
 
+// Stroke (outline) text — STUB. GDI text-outline needs a Path via
+// BeginPath/TextOut/EndPath then StrokePath; deferred to when we're next on
+// winbaz. No-op keeps the ABI linkable (the GTK4 backend is real).
+void aether_ui_canvas_stroke_text_impl(int canvas_id, const char* text,
+                                        double x, double y, double font_size,
+                                        double line_width,
+                                        double r, double g, double b, double a) {
+    (void)canvas_id; (void)text; (void)x; (void)y; (void)font_size;
+    (void)line_width; (void)r; (void)g; (void)b; (void)a;
+}
+
 // Text metrics — STUB (returns zeros). Win32 has real metrics via GDI
 // (GetTextExtentPoint32 / GetTextMetrics); wiring them is deferred to when
 // we're next on winbaz. Zeros keep the ABI linkable so vg.text_extent

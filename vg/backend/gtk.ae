@@ -460,6 +460,16 @@ canvas_text(p: ptr, opts: ptr) -> ptr {
 
     ui.canvas_fill_text(cid, text, x, y, size,
         color_r01(color), color_g01(color), color_b01(color), color_a01(color))
+
+    // Stroked text (SVG stroke on <text>): paint the outline over the fill.
+    sw = opt_f(opts, "strokeWidth", 0.0)
+    if sw > 0.0 {
+        sc = opt_s(opts, "strokeColor")
+        if string.length(sc) > 0 {
+            ui.canvas_stroke_text(cid, text, x, y, size, sw,
+                color_r01(sc), color_g01(sc), color_b01(sc), color_a01(sc))
+        }
+    }
     return fresh_handle()
 }
 
