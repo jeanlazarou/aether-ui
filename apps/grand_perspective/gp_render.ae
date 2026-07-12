@@ -20,7 +20,7 @@ import std.list
 import vg
 import gp_model
 import gp_model (FileEntry, TypeStat, to_float, fmt_size, one_dp, clip_name,
-    clip_list_name, ext_label, ext_of, find_tstat, pct_of_parent)
+    ext_label, ext_of, find_tstat, pct_of_parent)
 import gp_layout
 import gp_layout (Rect, NEST_INSET)
 import gp_state
@@ -164,9 +164,10 @@ draw_treemap(root: ptr, s: *AppState) {
         i = i + 1
     }
 
-    // Labels: top-level tiles big enough to carry one. 16-unit font; the
-    // renderer draws at (y - baseline≈17), so baseline y+44 clears the top
-    // edge; gate h>50 so it never spills past the bottom.
+    // Labels: top-level tiles big enough to carry one. 16px font; seat the
+    // baseline at tile_top + ascent + a small pad so the cap line clears the
+    // tile edge. gate h>50 so it never spills past the bottom.
+    label_base = 6.0 + vg.font_ascent(16.0)
     i = 0
     while i < n {
         rp, _ = list.get(rects, i); r = rp as *Rect
@@ -174,7 +175,7 @@ draw_treemap(root: ptr, s: *AppState) {
             if r.h > 50.0 {
                 if r.w > 44.0 {
                     nm = clip_name(r.entry.name)
-                    tx = vg.text_sized(root, r.x + 8.0, r.y + 44.0, 16.0, nm)
+                    tx = vg.text_sized(root, r.x + 8.0, r.y + label_base, 16.0, nm)
                     vg.fill(tx, "#ffffff")
                 }
             }
@@ -212,17 +213,27 @@ list_chip_color(s: *AppState, e: *FileEntry) -> string {
     return "#bbbbbb"
 }
 
+// Baseline offset (from a row's top) that vertically centres `size`px text
+// in a row of `row_h`px, using real font metrics: centre the glyph box
+// (ascent+descent) in the row, then the baseline is that top + ascent.
+row_baseline(size: float, row_h: float) -> float {
+    asc = vg.font_ascent(size)
+    desc = vg.font_descent(size)
+    return (row_h - (asc + desc)) / 2.0 + asc
+}
+
 draw_list(root: ptr, s: *AppState) {
     bg = vg.rect(root, 0.0, 0.0, gp_model.LIST_W(), gp_model.CANVAS_H())
     vg.fill(bg, "#fafafa"); vg.stroke(bg, "#cccccc", 1.0)
-    // Header: the current directory + its rollup. The renderer draws text at
-    // a fixed ~17px above the given baseline, so a 16px header at y=24 had
-    // its ascenders cut by the viewport clip — sit the block lower.
-    hd = vg.text_sized(root, 10.0, 30.0, 16.0, clip_name(s.current.name))
+    // Header: the current directory + its rollup. Baselines are seated from
+    // the font ascent so the cap line clears the top edge (no clipping) and
+    // the three lines stack by their natural heights.
+    h16 = vg.font_ascent(16.0)
+    hd = vg.text_sized(root, 10.0, 8.0 + h16, 16.0, clip_name(s.current.name))
     vg.fill(hd, "#000000")
     sub0 = fmt_size(s.current.total_size)
     sub = "${sub0}   ${s.current.file_count} files"
-    hs = vg.text_sized(root, 10.0, 48.0, 12.0, sub)
+    hs = vg.text_sized(root, 10.0, 8.0 + h16 + 18.0, 12.0, sub)
     vg.fill(hs, "#666666")
     // Scan-info strip: duration of the last scan + freed-space rollup
     // (GrandPerspective's info panel, folded into the header).
@@ -237,13 +248,15 @@ draw_list(root: ptr, s: *AppState) {
         info = string.concat(info, string.concat("freed ", fr))
     }
     if string.length(info) > 0 {
-        inf = vg.text_sized(root, 10.0, 62.0, 12.0, info)
+        inf = vg.text_sized(root, 10.0, 8.0 + h16 + 32.0, 12.0, info)
         vg.fill(inf, "#999999")
     }
 
-    // ".." row (when not at the root of the drill stack).
+    // ".." row (when not at the root of the drill stack). Its click zone is
+    // LIST_TOP-20 .. LIST_TOP-2; centre the 14px baseline within it.
     if list.size(s.stack) > 1 {
-        up = vg.text_sized(root, 12.0, gp_model.LIST_TOP() + 11.0, 14.0, "..")
+        up_y = gp_model.LIST_TOP() - 20.0 + row_baseline(14.0, 18.0)
+        up = vg.text_sized(root, 12.0, up_y, 14.0, "..")
         vg.fill(up, "#333333")
     }
 
@@ -262,9 +275,13 @@ draw_list(root: ptr, s: *AppState) {
         }
         chip = vg.rect(root, 8.0, ry + 2.0, 12.0, 12.0)
         vg.fill(chip, list_chip_color(s, e)); vg.stroke(chip, "#888888", 0.8)
-        nm = vg.text_sized(root, 26.0, ry + 30.0, 13.0, clip_list_name(e.name))
+        nm_base = ry + row_baseline(13.0, gp_model.LIST_ROW_H())
+        // Ellipsize to the name column width (x 26 → size column at 150) by
+        // real pixel width, not character count.
+        nm_txt = vg.ellipsize(13.0, e.name, 118.0)
+        nm = vg.text_sized(root, 26.0, nm_base, 13.0, nm_txt)
         vg.fill(nm, "#000000")
-        sz = vg.text_sized(root, 150.0, ry + 30.0, 12.0, fmt_size(e.total_size))
+        sz = vg.text_sized(root, 150.0, ry + row_baseline(12.0, gp_model.LIST_ROW_H()), 12.0, fmt_size(e.total_size))
         vg.fill(sz, "#333333")
         // %-of-current mini bar, WinDirStat's Teilbaum-Anteil column.
         p = pct_of_parent(e)
@@ -279,7 +296,8 @@ draw_list(root: ptr, s: *AppState) {
     }
     if n > shown {
         more = n - shown
-        mrow = vg.text_sized(root, 12.0, gp_model.LIST_TOP() + gp_model.LIST_ROW_H() * (shown / 1.0) + 30.0, 12.0, "+ ${more} more…")
+        mrow_y = gp_model.LIST_TOP() + gp_model.LIST_ROW_H() * (shown / 1.0) + row_baseline(12.0, gp_model.LIST_ROW_H())
+        mrow = vg.text_sized(root, 12.0, mrow_y, 12.0, "+ ${more} more…")
         vg.fill(mrow, "#888888")
     }
 }
@@ -293,7 +311,7 @@ draw_list(root: ptr, s: *AppState) {
 draw_legend(root: ptr, s: *AppState) {
     bg = vg.rect(root, gp_model.LEGEND_X(), 0.0, gp_model.LEGEND_W(), gp_model.CANVAS_H())
     vg.fill(bg, "#fafafa"); vg.stroke(bg, "#cccccc", 1.0)
-    ti = vg.text_sized(root, gp_model.LEGEND_X() + 12.0, 30.0, 17.0, "File types (click to highlight)")
+    ti = vg.text_sized(root, gp_model.LEGEND_X() + 12.0, 8.0 + vg.font_ascent(17.0), 17.0, "File types (click to highlight)")
     vg.fill(ti, "#000000")
 
     n = list.size(s.tstats)
@@ -319,14 +337,14 @@ draw_legend(root: ptr, s: *AppState) {
         ry = gp_model.LEG_TOP() + gp_model.LEG_ROW_H() * (i / 1.0)
         chip = vg.rect(root, gp_model.LEGEND_X() + 12.0, ry, 16.0, 16.0)
         vg.fill(chip, hsl_rgb(t.hue, 0.70, 0.55)); vg.stroke(chip, "#888888", 1.0)
-        // Row text baselines carry the renderer's fixed ~17px offset (it
-        // draws that far above the requested baseline) or the labels float
-        // a full line above their colour chips.
-        lb = vg.text_sized(root, gp_model.LEGEND_X() + 38.0, ry + 31.0, 14.0, ext_label(t.ext))
+        // Baselines centred against the 16px chip via real metrics, so the
+        // row text sits beside its chip (not a line above it).
+        lb14 = ry + row_baseline(14.0, 16.0)
+        lb = vg.text_sized(root, gp_model.LEGEND_X() + 38.0, lb14, 14.0, ext_label(t.ext))
         vg.fill(lb, "#000000")
-        sz = vg.text_sized(root, gp_model.LEGEND_X() + 150.0, ry + 31.0, 14.0, fmt_size(t.bytes))
+        sz = vg.text_sized(root, gp_model.LEGEND_X() + 150.0, lb14, 14.0, fmt_size(t.bytes))
         vg.fill(sz, "#000000")
-        fc = vg.text_sized(root, gp_model.LEGEND_X() + 232.0, ry + 31.0, 12.0, "${t.files} files")
+        fc = vg.text_sized(root, gp_model.LEGEND_X() + 232.0, ry + row_baseline(12.0, 16.0), 12.0, "${t.files} files")
         vg.fill(fc, "#666666")
         if s.hl_on == 1 {
             if string.equals(s.hl_ext, t.ext) == 1 {
@@ -340,11 +358,12 @@ draw_legend(root: ptr, s: *AppState) {
         ry2 = gp_model.LEG_TOP() + gp_model.LEG_ROW_H() * (shown / 1.0)
         chip2 = vg.rect(root, gp_model.LEGEND_X() + 12.0, ry2, 16.0, 16.0)
         vg.fill(chip2, "#bbbbbb"); vg.stroke(chip2, "#888888", 1.0)
-        lb2 = vg.text_sized(root, gp_model.LEGEND_X() + 38.0, ry2 + 31.0, 14.0, "other")
+        lb2_14 = ry2 + row_baseline(14.0, 16.0)
+        lb2 = vg.text_sized(root, gp_model.LEGEND_X() + 38.0, lb2_14, 14.0, "other")
         vg.fill(lb2, "#000000")
-        sz2 = vg.text_sized(root, gp_model.LEGEND_X() + 150.0, ry2 + 31.0, 14.0, fmt_size(other_bytes))
+        sz2 = vg.text_sized(root, gp_model.LEGEND_X() + 150.0, lb2_14, 14.0, fmt_size(other_bytes))
         vg.fill(sz2, "#000000")
-        fc2 = vg.text_sized(root, gp_model.LEGEND_X() + 232.0, ry2 + 31.0, 12.0, "${other_files} files")
+        fc2 = vg.text_sized(root, gp_model.LEGEND_X() + 232.0, ry2 + row_baseline(12.0, 16.0), 12.0, "${other_files} files")
         vg.fill(fc2, "#666666")
     }
 }

@@ -174,7 +174,11 @@ for t in "${AEVG_TESTS[@]}"; do
         FAIL=$((FAIL + 1))
         continue
     fi
-    if ! gcc "$cfile" $(ae cflags) -o "$bin" >> "/tmp/ci_aevg_${t}.log" 2>&1; then
+    # vg/module.ae declares the cairo text-metric externs; pure-Aether tests
+    # link no GTK backend, so a zero-returning stub resolves those symbols
+    # (tests importing vg never call them — test_text_metrics uses the real
+    # backend via AEVG_GTK_TESTS below).
+    if ! gcc "$cfile" vg/test/text_metrics_stub.c $(ae cflags) -o "$bin" >> "/tmp/ci_aevg_${t}.log" 2>&1; then
         echo "  FAIL $t (link)"
         tail -15 "/tmp/ci_aevg_${t}.log" | sed 's/^/       /'
         FAIL=$((FAIL + 1))
