@@ -31,6 +31,8 @@ The ranking below is by (foundation-ness × evidence), not by shininess.
 
 ### 1. In-window overlay layer — the Swing z-layer, aimed at our sorest wound
 
+**Hand-off brief: `briefs/overlay.md`** (2026-07-12, ready for execution).
+
 **Borrowed from:** Swing `JLayeredPane` (POPUP_LAYER / MODAL_LAYER / glass
 pane) — its menus worked everywhere *because they were drawn in-window*,
 not compositor popups. Flutter `Overlay` + `OverlayEntry` is the modern
