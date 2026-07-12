@@ -16,15 +16,20 @@ OS="$(uname -s)"
 # Build the driver app for whichever platform we're on.
 case "$OS" in
     MINGW*|MSYS*|CYGWIN*)
+        # Backend sources live under backend/ (post-re-namespace). Link flags
+        # mirror build.sh's Windows branch — notably -lbcrypt (libaether's
+        # BCryptGenRandom) and -lmsimg32.
+        mkdir -p "$ROOT/build"
         gcc -O2 \
-            -I"$ROOT" \
+            -I"$ROOT" -I"$ROOT/backend" \
             "$SCRIPT_DIR/test_driver_app.c" \
-            "$ROOT/aether_ui_win32.c" \
-            "$ROOT/aether_ui_test_server.c" \
+            "$ROOT/backend/aether_ui_win32.c" \
+            "$ROOT/backend/aether_ui_test_server.c" \
+            "$ROOT/backend/aether_ui_system_extras.c" \
             -o "$ROOT/build/test_driver_app.exe" \
-            -luser32 -lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 \
+            -luser32 -lgdi32 -lgdiplus -lmsimg32 -lcomctl32 -lcomdlg32 \
             -lshell32 -lole32 -luuid -ldwmapi -luxtheme \
-            -lws2_32 -pthread -lm
+            -lws2_32 -lbcrypt -pthread -lm
         APP="$ROOT/build/test_driver_app.exe"
         ;;
     *)
@@ -173,6 +178,12 @@ if CURL -s -o "$SS_FILE" "http://127.0.0.1:$PORT/screenshot"; then
 else
     fail "/screenshot request" "curl failed"
 fi
+
+# /overlays — the in-window overlay layer's driver route. Win32 overlays are
+# stubs, so this reports an empty list; the assertion is that the route EXISTS
+# (matches the GTK4 backend) rather than 404ing.
+BODY=$(CURL -s "http://127.0.0.1:$PORT/overlays")
+assert_contains "/overlays route responds" "$BODY" '"count":0'
 
 echo
 if [ "$FAIL" -eq 0 ]; then

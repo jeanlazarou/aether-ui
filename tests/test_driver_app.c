@@ -2,7 +2,7 @@
 // the AetherUIDriver on the port given by AETHER_UI_TEST_PORT. Used by
 // test_driver.sh to verify the HTTP test server works cross-platform.
 
-#include "../aether_ui_backend.h"
+#include "../backend/aether_ui_backend.h"
 #include <windows.h>
 #include <stdlib.h>
 
