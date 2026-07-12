@@ -77,28 +77,38 @@ the ~86% librsvg parity number guards against regressions here).
 needle; the compare harness is the gate. **Depends on:** nothing.
 **Unlocks:** items 4 and 9; honest labels everywhere.
 
-### 3. Dynamic children — `each` (QML Repeater / SwiftUI ForEach)
+### 3. Dynamic children — `each` (smaller than a QML Repeater)
 
-**Borrowed from:** QML's `Repeater`/model-delegate split is the most
-markup-native of the three; Flutter `ListView.builder`; SwiftUI
-`ForEach(items, id:)`.
+**Borrowed from:** QML's `Repeater`/model-delegate split — but Aether
+needs LESS than QML did, on two counts verified 2026-07-12:
 
-**Evidence:** widgets cannot be created after window build — the
-breadcrumb *pool* (8 pre-made buttons, relabelled, hidden, with a sliding
-"…" window) is the workaround pattern, and it will metastasize into
-every data-driven app.
+1. **The construction half already exists in the language.** Trailing
+   blocks are *immediate* (inline code with the builder-context stack
+   active), so first-class `while`/`for`/`if` inside a `window {}` block
+   IS a build-time Repeater — grand_perspective already wires its crumb
+   context-menus in a `while` loop inside the window block. QML needed
+   `Repeater` because QML isn't an imperative language; Aether's DSL is
+   ("DSL with scope" — see aether's closures-and-builder-dsl.md).
+2. **Runtime creation + attach WORKS** (probed on GTK4): capture
+   `here = builder_context()` inside the immediate block, and a later
+   callback can do `aether_ui_text_create(...)` +
+   `aether_ui_widget_add_child_ctx(here, h)` — the new widget appears in
+   the live window and the driver's widget tree. The long-held "widgets
+   can't be created post-build" belief (which forced the breadcrumb
+   *pool* of 8 pre-made buttons) is STALE — probably true pre-ae-0.252,
+   never retested.
 
-**Shape:** `ui.each(list_state) callback |item| { btn(item.label) … }`
-with reconciliation on change (identity by index first; track-by later —
-vg.grammar.bind already has `bind_trackby` as prior art in-repo). Needs
-backend add/remove-child-at-runtime, which GTK4/AppKit/Win32 all support;
-the DSL's builder `_ctx` injection is the part to prototype carefully.
+**What's actually missing:** (a) child REMOVE/INSERT-AT in the backends
+(append exists; removal doesn't), (b) a small reconciler that re-runs a
+per-item `callback |item|` when a list state changes (identity by index
+first; track-by later — vg.grammar.bind has `bind_trackby` as in-repo
+prior art), and (c) an ergonomic `with_ctx(parent) { … }` wrapper so the
+item closure builds children declaratively instead of calling externs.
 
-**Effort:** L (the reconciler is the work; backend child add/remove is
-small). **Risk:** medium — interacts with the deferred-build surface
-model and `_ctx`; prototype on GTK4 first, stub the others like
-`toggle_group` did. **Depends on:** nothing. **Unlocks:** item 4, real
-breadcrumbs, dynamic forms.
+**Effort:** M, downgraded from L (the two hard-looking halves turned out
+to exist). **Risk:** low-medium — removal must release closures/handles
+correctly (the widget registry is append-only today). **Depends on:**
+nothing. **Unlocks:** item 4, real breadcrumbs, dynamic forms.
 
 ### 4. Table / list / tree widgets
 
@@ -260,7 +270,7 @@ it gets its own re-namespace.md-style comparison doc first.
 |-------|------|------|----------------|
 | 1 | Overlay layer (+ drawn dropdown) | M | Retires a live platform bug; foundation for menus/toasts/modals |
 | 2 | Typography | M | Foundation for 4 & 9; deletes the +17 debt while it's still findable |
-| 3 | `each` (dynamic children) | L | Architectural unblock; everything data-driven waits on it |
+| 3 | `each` (dynamic children) | M | Loops/ifs are first-class + runtime attach probed working; only remove/insert + reconciler to build |
 | 4 | Table/list | L–XL | The flagship widget; needs 2 & 3 |
 | 5 | Shadows + group opacity | S–M | Cheap, visible, pairs with 1 |
 | 6 | Implicit transitions | S–M | Perceived quality; machinery exists in vg |
