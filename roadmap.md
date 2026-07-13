@@ -312,9 +312,23 @@ wrapping GtkPaned/NSSplitView/Win32 splitter; `ui.wrap {}` flow
 container; `on_layout(handle) callback |w,h|` (generalizing the canvas
 resize hook). **Effort:** M. **Risk:** low. **Depends on:** nothing.
 
-### 8. Declarative bindings + typed state
+### 8. Declarative bindings + typed state ✅ DONE (2026-07-13)
 
-**Hand-off brief: `briefs/bindings.md`** (2026-07-12 — Phase A is a design memo).
+**Shipped** (43efb7f memo, b71bba4 D1+D2, d22b84a gp, 0d4372f
+win32/macOS routes): docs/design/reactivity-unification.md is the
+decision record — push for widgets, pull for scenes, ONE bind_*
+vocabulary; vg untouched. Typed state = one handle space of tagged
+cells; ui_state_s/i/b + get/set alongside the untouched float facet
+(byte-compatible /state JSON for float cells; typed shapes additive;
+both driver servers). bind_text / bind_text_fmt(decimals) /
+bind_enabled(invert) / bind_hidden — data-carrying PropBindings, no
+stored closures; text_bound is now a TEXT PropBinding. Proving
+consumers: bindings_demo (ci Phase 5j, 6/6 — one bool flips three
+properties both directions) and gp, whose Stop/Rescan ghosting pair
+collapsed to one bound bool. Recorded for later: list-typed state
+(each_bind/table_bind), two-way, computed. The calculator already
+rendered 42 — the wound predated the smart int-valued-float default.
+Detail below is the original proposal, kept for the reasoning.
 
 **Borrowed from:** SwiftUI `@State`/`@Binding`; QML property bindings
 (the whole language is bindings); our own vg.grammar.bind
@@ -402,5 +416,5 @@ format: comparisons, verdict, phased ci-gated migration).
 | 5 | Shadows + group opacity ✅ | S–M | DONE 2026-07-13 (2ebec4a) — vg.shadow cached + true group opacity + chrome shadows; backdrop blur deferred |
 | 6 | Implicit transitions ✅ | S–M | DONE 2026-07-13 (e427da6) — ui.transition (GTK CSS engine) + vg.behavior (existing anim manager) + chrome fade-ins; Phase 5h tween proof; NO_ANIMATION ci discipline |
 | 7 | Flex/split/on_layout ✅ | M | DONE 2026-07-13 (d842744/e96b52e/679ed33/45420e9) — splitview + on_layout + weight + wrap; AeuiFlexLayout opt-in manager; cold-Xvfb window-pin discipline for geometry specs |
-| 8 | Bindings + typed state | M | Unify ui/vg reactivity |
+| 8 | Bindings + typed state ✅ | M | DONE 2026-07-13 (43efb7f/b71bba4/d22b84a/0d4372f) — memo + tagged cells + PropBindings; gp ghosting = one bound bool |
 | 9 | Focus/shortcuts | M | Polish + testability |
