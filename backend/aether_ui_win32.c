@@ -3079,7 +3079,11 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
         }
         switch (ctx->action) {
             case AETHER_DRV_CLICK:
-                if (w->kind == WK_BUTTON) invoke_closure(w->on_click);
+                // Buttons and ANY widget with an on_click handler (listbox
+                // rows are plain containers) — mirrors the GTK4 server's
+                // gesture-closure fallback: invoke the handler a real click
+                // would run.
+                if (w->kind == WK_BUTTON || w->on_click) invoke_closure(w->on_click);
                 break;
             case AETHER_DRV_SET_TEXT:
                 if (w->kind == WK_TEXT || w->kind == WK_TEXTFIELD
