@@ -43,6 +43,24 @@ main() {
             ok2 = gp_driver.wait_crumbs_gone("sub", 20)
             aeocha.assert_true(ok2, "'..' returned to root")
         }
+
+        aeocha.it("Ctrl+R rescans and Delete arms the trash flow (shortcuts)") callback {
+            fired = uidriver.window_key("Ctrl+R")
+            aeocha.assert_eq(fired, 1, "Ctrl+R handled")
+            ok = gp_driver.wait_status_contains("Scan complete", 40)
+            aeocha.assert_true(ok, "rescan completed via shortcut")
+            // Re-select a row so Delete has a target, then ONE press: the
+            // two-click confirm arms and says so (no second press — the
+            // spec must not actually trash the fixture here).
+            lbl = uidriver.widget_id_by_text("big.bin")
+            r = uidriver.widget_int_field_by_id(lbl, "parent")
+            uidriver.post_ok("/widget/${r}/click", "select big.bin")
+            _w1 = gp_driver.wait_status_contains("big.bin", 20)
+            fired2 = uidriver.window_key("Delete")
+            aeocha.assert_eq(fired2, 1, "Delete handled")
+            ok2 = gp_driver.wait_status_contains("press Delete again to confirm", 20)
+            aeocha.assert_true(ok2, "delete flow armed by the shortcut")
+        }
     }
     aeocha.run_summary(fw)
 }

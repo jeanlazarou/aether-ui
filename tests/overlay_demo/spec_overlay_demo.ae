@@ -99,6 +99,26 @@ main() {
             p = uidriver.get_body("/window/pick?x=${cx}&y=${cy}")
             aeocha.assert_contains(p, "\"type\":\"button\"", "button reachable again")
         }
+
+        aeocha.it("Escape dismisses a re-opened modal (item 9 wiring)") callback {
+            c = uidriver.widget_id_by_text("Confirm")
+            uidriver.post_ok("/widget/${c}/click", "open modal again")
+            b = uidriver.widget_id_by_text("Bump counter")
+            bx = uidriver.widget_int_field_by_id(b, "x")
+            by = uidriver.widget_int_field_by_id(b, "y")
+            bw = uidriver.widget_int_field_by_id(b, "w")
+            bh = uidriver.widget_int_field_by_id(b, "h")
+            cx = bx + bw / 2
+            cy = by + bh / 2
+            okup = uidriver.wait_body_contains("/window/pick?x=${cx}&y=${cy}",
+                                               "\"on_scrim\":1", 30)
+            aeocha.assert_true(okup, "modal scrim up again")
+            fired = uidriver.window_key("Escape")
+            aeocha.assert_eq(fired, 1, "Escape handled by the overlay layer")
+            okdown = uidriver.wait_body_contains("/window/pick?x=${cx}&y=${cy}",
+                                                 "\"on_scrim\":0", 30)
+            aeocha.assert_true(okdown, "scrim gone via Escape")
+        }
     }
     aeocha.run_summary(fw)
 }

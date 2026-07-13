@@ -78,7 +78,7 @@ import ui
 import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_key, timer,
     toggle, toggle_group, each, each_parent, scrollview, width, transition,
-    ui_state_b, ui_set_b, bind_enabled,
+    ui_state_b, ui_set_b, bind_enabled, shortcut, context_menu_item_accel,
     table_cols, table_col, table, table_on_select,
     context_menu_item, clipboard_write, margin_of)
 import vg.live (vg, canvas_region, vg_flush_live, region_set_animated)
@@ -186,6 +186,12 @@ main() {
             toggle_group(st.scheme_btn1, st.scheme_btn0)
             toggle_group(st.scheme_btn2, st.scheme_btn0)
         }
+        // Keyboard (item 9): Ctrl+R rescans and Delete runs the two-click
+        // trash flow from ANYWHERE in the window (the canvas arrow-key nav
+        // is focus-scoped; these are not). Escape stays with the canvas
+        // handler — the global Escape only claims open overlays.
+        shortcut("Ctrl+R") callback { start_rescan(st, st.current) }
+        shortcut("Delete") callback { do_delete(st) }
         // Stop/Rescan ghosting: one bool state, declared bindings (item 8).
         // Stop is live while scanning; Rescan is the inverse.
         st.scan_state = ui_state_b(0)
@@ -336,7 +342,7 @@ main() {
             cwid = aether_ui_canvas_get_widget(cid)
             context_menu_item(cwid, "Open") callback { do_open(st) }
             context_menu_item(cwid, "Reveal in file manager") callback { do_reveal(st) }
-            context_menu_item(cwid, "Move to Trash") callback {
+            _mt = context_menu_item_accel(cwid, "Move to Trash", "Delete") callback {
                 tsel = op_target(st)
                 if tsel != null {
                     if st.selected == null { select_entry(st, tsel) }
