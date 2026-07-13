@@ -14,10 +14,10 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: legend + colour schemes") {
         aeocha.it("legend row click toggles a type highlight") callback {
-            uidriver.click(1100.0, 65.0)
+            uidriver.click(820.0, 65.0)
             ok = gp_driver.wait_status_contains("Highlighting", 20)
             aeocha.assert_true(ok, "highlight on")
-            uidriver.click(1100.0, 65.0)
+            uidriver.click(820.0, 65.0)
             ok2 = gp_driver.wait_status_contains("Highlight off", 20)
             aeocha.assert_true(ok2, "highlight off")
         }

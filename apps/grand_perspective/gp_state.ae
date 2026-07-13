@@ -39,6 +39,13 @@ struct AppState {
     // fixed pool of 8, and its "widgets can't be created post-build" belief,
     // died with ui.each — roadmap item 3.)
     crumbs: ptr      // each-handle (ui.each), or null before the window builds
+    // Directory list pane — a ui.table (item 4 D3; was ~100 lines of
+    // hand-drawn canvas rows + hit-testing in gp_render/gp_nav).
+    table: ptr       // ui.table handle, or null before the window builds
+    hdr_name: int    // list header: current dir name
+    hdr_sub: int     //   size + file-count rollup
+    hdr_info: int    //   scan-duration / freed strip
+    up_btn: int      // ".." (drill up); hidden at the root
     selected: *FileEntry   // clicked tile (file OR dir, any depth), or null
     watch: ptr       // fs.watch handle on current.path, or null
     pending: ptr     // list of *FileEntry dirs awaiting expansion
@@ -98,7 +105,7 @@ struct AppState {
 // caller (main) runs gp_nav.relayout + gp_nav.retarget_watch right after,
 // keeping this module free of upward dependencies.
 mk_state(root: *FileEntry) -> *AppState {
-    s = malloc(320) as *AppState
+    s = malloc(384) as *AppState
     s.root = root
     s.current = root
     s.stack = list.new()
@@ -108,6 +115,8 @@ mk_state(root: *FileEntry) -> *AppState {
     s.total = root.total_size
     s.status = 0
     s.crumbs = null
+    s.table = null
+    s.hdr_name = 0; s.hdr_sub = 0; s.hdr_info = 0; s.up_btn = 0
     s.selected = null as *FileEntry
     s.watch = null
     s.pending = list.new()

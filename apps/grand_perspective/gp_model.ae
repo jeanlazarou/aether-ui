@@ -20,8 +20,8 @@ exports (
     sort_desc_by_size, to_float, low_int, fmt_size, one_dp, round_i,
     clip_name, clip_list_name, ext_label, dbg_on,
     // pane geometry (viewBox units)
-    LIST_W, MAP_X, CANVAS_W, CANVAS_H, LEGEND_X, LEGEND_W, TOTAL_W,
-    TOP_TYPES, LIST_TOP, LIST_ROW_H, LIST_MAX, LEG_TOP, LEG_ROW_H, CRUMBS
+    MAP_X, CANVAS_W, CANVAS_H, LEGEND_X, LEGEND_W, TOTAL_W,
+    TOP_TYPES, LEG_TOP, LEG_ROW_H, CRUMBS
 )
 
 import std.string
@@ -33,17 +33,14 @@ extern lrint(x: float) -> long           // round-to-nearest; narrows at an int 
 extern string_retain(s: string)          // keep a heap string alive in a struct field
 
 // ─── Pane geometry (viewBox units; the canvas viewBox is TOTAL_W x CANVAS_H) ──
-LIST_W() -> float   { return 280.0 }     // directory list pane (left)
-MAP_X() -> float    { return 288.0 }     // treemap area origin
+MAP_X() -> float    { return 8.0 }       // treemap area origin (list pane is
+                                         // a WIDGET column now — item 4 D3)
 CANVAS_W() -> float { return 760.0 }     // treemap area width (canvas px)
 CANVAS_H() -> float { return 600.0 }
-LEGEND_X() -> float { return 1056.0 }    // type-legend pane (right of the map)
+LEGEND_X() -> float { return 776.0 }     // type-legend pane (right of the map)
 LEGEND_W() -> float { return 300.0 }
-TOTAL_W() -> float  { return 1356.0 }    // full canvas: list + treemap + legend
+TOTAL_W() -> float  { return 1076.0 }    // full canvas: treemap + legend
 TOP_TYPES() -> int  { return 12 }        // legend rows with their own colour
-LIST_TOP() -> float   { return 82.0 }    // list rows start here; ".." sits above
-LIST_ROW_H() -> float { return 25.0 }
-LIST_MAX() -> int     { return 20 }      // rows shown before "+N more…"
 LEG_TOP() -> float   { return 52.0 }
 LEG_ROW_H() -> float { return 27.0 }
 CRUMBS() -> int { return 8 }             // visible breadcrumb cap (deeper paths ellipsize)

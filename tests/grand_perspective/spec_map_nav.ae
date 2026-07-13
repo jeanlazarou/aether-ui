@@ -15,9 +15,9 @@ main() {
         aeocha.it("double-click drills into a dir tile; root crumb returns") callback {
             // sub's tile sits in the lower-right of the map at the default
             // 1356x600 canvas (big.bin left half, mid.bin top right).
-            uidriver.click(860.0, 450.0)
+            uidriver.click(580.0, 450.0)
             sleep(120)
-            uidriver.click(860.0, 450.0)
+            uidriver.click(580.0, 450.0)
             ok = gp_driver.wait_crumbs_contains("sub", 20)
             aeocha.assert_true(ok, "double-click drilled into sub")
             rb = uidriver.widget_id_by_text(gp_driver.root_crumb_label())

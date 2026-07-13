@@ -3526,6 +3526,77 @@ static gboolean screenshot_idle_cb(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+
+// ---------------------------------------------------------------------------
+// Widget-JSON building must run ON THE GTK THREAD. It walks the live widget
+// tree (types, text, visibility, allocation, compute_bounds); with dynamic
+// children (ui.each / listbox rebuild rows at scan rate) a server-thread walk
+// races the mutation and trips GTK's css-node global parent cache — the app
+// aborts with gtkcssnode.c:321 "node->cache == NULL" (seen live in gp's
+// fileops spec once the list pane became widgets). Same discipline as
+// test_action_idle: fill a request, g_idle_add, spin for done.
+// mode 0: all widgets (with optional type/text filters)
+// mode 1: single widget by id
+// mode 2: children of id
+typedef struct {
+    int mode;
+    int id;
+    char ft[128];
+    char fx[128];
+    char* out;      // malloc'd JSON (caller frees); NULL => 404
+    int done;
+} WidgetsJsonReq;
+
+static gboolean widgets_json_idle(gpointer data) {
+    WidgetsJsonReq* rq = (WidgetsJsonReq*)data;
+    if (rq->mode == 1) {
+        if (rq->id >= 1 && rq->id <= widget_count && aether_ui_get_widget(rq->id)) {
+            rq->out = malloc(512);
+            widget_to_json(rq->id, rq->out, 512);
+        }
+    } else if (rq->mode == 2) {
+        GtkWidget* w = aether_ui_get_widget(rq->id);
+        if (w) {
+            char* body = malloc((size_t)widget_count * 512 + 64);
+            int pos = 0;
+            int first = 1;
+            pos += sprintf(body + pos, "[");
+            for (GtkWidget* child = gtk_widget_get_first_child(w);
+                 child; child = gtk_widget_get_next_sibling(child)) {
+                int ch = handle_for_widget(child);
+                if (ch > 0) {
+                    if (!first) pos += sprintf(body + pos, ",");
+                    first = 0;
+                    pos += widget_to_json(ch, body + pos, 512);
+                }
+            }
+            pos += sprintf(body + pos, "]");
+            rq->out = body;
+        }
+    } else {
+        char* body = malloc((size_t)widget_count * 512 + 64);
+        int pos = 0;
+        int first = 1;
+        pos += sprintf(body + pos, "[");
+        for (int i = 1; i <= widget_count; i++) {
+            GtkWidget* w = aether_ui_get_widget(i);
+            if (!w) continue;
+            if (rq->ft[0] && strcmp(widget_type_name(w), rq->ft) != 0) continue;
+            if (rq->fx[0]) {
+                const char* t = widget_text_content(w);
+                if (!t || strcmp(t, rq->fx) != 0) continue;
+            }
+            if (!first) pos += sprintf(body + pos, ",");
+            first = 0;
+            pos += widget_to_json(i, body + pos, 512);
+        }
+        pos += sprintf(body + pos, "]");
+        rq->out = body;
+    }
+    rq->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
 static void handle_test_request(int client_fd) {
     char req[4096];
     int n = (int)read(client_fd, req, sizeof(req) - 1);
@@ -3560,25 +3631,14 @@ static void handle_test_request(int client_fd) {
             char* amp = strchr(fx_buf, '&'); if (amp) *amp = '\0';
         }
 
-        char* body = malloc(widget_count * 512 + 64);
-        int pos = 0;
-        int first = 1;
-        pos += sprintf(body + pos, "[");
-        for (int i = 1; i <= widget_count; i++) {
-            GtkWidget* w = aether_ui_get_widget(i);
-            if (!w) continue;
-            if (ft_buf[0] && strcmp(widget_type_name(w), ft_buf) != 0) continue;
-            if (fx_buf[0]) {
-                const char* t = widget_text_content(w);
-                if (!t || strcmp(t, fx_buf) != 0) continue;
-            }
-            if (!first) pos += sprintf(body + pos, ",");
-            first = 0;
-            pos += widget_to_json(i, body + pos, 512);
-        }
-        pos += sprintf(body + pos, "]");
-        send_response(client_fd, 200, "OK", "application/json", body);
-        free(body);
+        WidgetsJsonReq rq = {0};
+        rq.mode = 0;
+        strncpy(rq.ft, ft_buf, sizeof(rq.ft) - 1);
+        strncpy(rq.fx, fx_buf, sizeof(rq.fx) - 1);
+        g_idle_add(widgets_json_idle, &rq);
+        while (!rq.done) usleep(1000);
+        send_response(client_fd, 200, "OK", "application/json", rq.out ? rq.out : "[]");
+        free(rq.out);
         close(client_fd);
         return;
     }
@@ -3595,22 +3655,13 @@ static void handle_test_request(int client_fd) {
                 close(client_fd);
                 return;
             }
-            char* body = malloc(widget_count * 64 + 64);
-            int pos = 0;
-            int first = 1;
-            pos += sprintf(body + pos, "[");
-            for (GtkWidget* child = gtk_widget_get_first_child(w);
-                 child; child = gtk_widget_get_next_sibling(child)) {
-                int ch = handle_for_widget(child);
-                if (ch > 0) {
-                    if (!first) pos += sprintf(body + pos, ",");
-                    first = 0;
-                    pos += widget_to_json(ch, body + pos, 512);
-                }
-            }
-            pos += sprintf(body + pos, "]");
-            send_response(client_fd, 200, "OK", "application/json", body);
-            free(body);
+            WidgetsJsonReq rq = {0};
+            rq.mode = 2;
+            rq.id = id;
+            g_idle_add(widgets_json_idle, &rq);
+            while (!rq.done) usleep(1000);
+            send_response(client_fd, 200, "OK", "application/json", rq.out ? rq.out : "[]");
+            free(rq.out);
             close(client_fd);
             return;
         }
@@ -3682,13 +3733,17 @@ static void handle_test_request(int client_fd) {
     // GET /widget/{id} — single widget info (no trailing slash/action)
     if (method == 0 && strncmp(path, "/widget/", 8) == 0 && strchr(path + 8, '/') == NULL) {
         int id = atoi(path + 8);
-        if (id < 1 || id > widget_count) {
+        WidgetsJsonReq rq = {0};
+        rq.mode = 1;
+        rq.id = id;
+        g_idle_add(widgets_json_idle, &rq);
+        while (!rq.done) usleep(1000);
+        if (rq.out) {
+            send_response(client_fd, 200, "OK", "application/json", rq.out);
+            free(rq.out);
+        } else {
             send_response(client_fd, 404, "Not Found", "application/json",
                           "{\"error\":\"widget not found\"}");
-        } else {
-            char buf[512];
-            widget_to_json(id, buf, sizeof(buf));
-            send_response(client_fd, 200, "OK", "application/json", buf);
         }
         close(client_fd);
         return;

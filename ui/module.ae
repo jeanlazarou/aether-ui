@@ -1264,8 +1264,11 @@ table(_ctx: ptr, cols: ptr, cell: fn) -> ptr {
     t.cell = box_closure(cell)
     t.sort_cb = null
     tp = t as ptr
+    // ONE widget into the parent: header + body wrapped in a vstack (a
+    // scrollview parent takes a single child; two attachments would clobber).
+    wrap = vstack(_ctx, 2)
     // Header row: one flat button per column, at the column's width.
-    hdr = hstack(_ctx, 8)
+    hdr = hstack(wrap, 8)
     nc = list.size(cols)
     ci = 0
     while ci < nc {
@@ -1276,7 +1279,7 @@ table(_ctx: ptr, cols: ptr, cell: fn) -> ptr {
         ci = ci + 1
     }
     // Body: a listbox whose row template renders one sized text per column.
-    t.lb = listbox(_ctx, 2) callback |item: ptr, i: int, row: int| {
+    t.lb = listbox(wrap, 2) callback |item: ptr, i: int, row: int| {
         cf = unbox_closure(t.cell)
         cj = 0
         n2 = list.size(t.cols)

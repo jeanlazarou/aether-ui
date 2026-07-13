@@ -77,7 +77,8 @@
 import ui
 import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_key, timer,
-    toggle, toggle_group, each, each_parent,
+    toggle, toggle_group, each, each_parent, scrollview, width,
+    table_cols, table_col, table, table_on_select,
     context_menu_item, clipboard_write, margin_of)
 import vg.live (vg, canvas_region, vg_flush_live, region_set_animated)
 import vg
@@ -95,10 +96,10 @@ import gp_state
 import gp_state (AppState, mk_state, op_target, hit)
 import gp_nav
 import gp_nav (relayout, retarget_watch, update_crumbs, jump_to, crumb_base, drill_up,
-    drill_deep, list_click, legend_click, handle_nav_key, select_entry,
+    drill_deep, legend_click, handle_nav_key, select_entry,
     set_scheme, scheme_buttons)
 import gp_render
-import gp_render (draw_list, draw_treemap, draw_legend)
+import gp_render (draw_treemap, draw_legend)
 import gp_scan
 import gp_scan (start_rescan, scan_step, stop_scan, scan_buttons)
 import gp_fileops
@@ -208,7 +209,41 @@ main() {
         // The crumb row sits 10px further in than the row above.
         _ = margin_of(each_parent(st.crumbs), 0, 0, 0, 10)
 
-        vg(view_box(0, 0, 1356, 600), 1356, 600) {
+        hstack(6) {
+          // ── Directory list pane: WIDGETS (item 4 D3) — a header block,
+          //    the ".." drill-up, and a ui.table of the current dir's
+          //    children (name / size / %-of-parent). Replaces ~100 lines of
+          //    hand-drawn canvas rows, hit-testing, and the "+N more…" fold
+          //    (all rows now just scroll). sync_list (gp_nav) refreshes it
+          //    from state after every relayout.
+          lpane = vstack(4) {
+            st.hdr_name = text("")
+            st.hdr_sub = text("")
+            st.hdr_info = text("")
+            st.up_btn = btn("..") callback { drill_up(st) }
+            lcols = table_cols()
+            table_col(lcols, "Name", 130)
+            table_col(lcols, "Size", 62)
+            table_col(lcols, "%", 56)
+            lsv = scrollview() {
+                st.table = table(lcols) callback |item: ptr, c: int| {
+                    e = item as *FileEntry
+                    if c == 1 { return fmt_size(e.total_size) }
+                    if c == 2 {
+                        p = pct_of_parent(e)
+                        return string.concat(string.from_int(p), "%")
+                    }
+                    return e.name
+                }
+                table_on_select(st.table) callback |i: int| {
+                    itp, _ie = list.get(st.lrows, i)
+                    if itp != null { select_entry(st, itp as *FileEntry) }
+                }
+            }
+          }
+          _lw = width(lpane, 280)
+
+          vg(view_box(0, 0, 1076, 600), 1076, 600) {
             // A BARE shape verb gets _ctx injected; derive the vg root from it.
             anchor = rect(0, 0, 0, 0)
             root_node = vg.vg_root(vg.node_scene(anchor))
@@ -220,8 +255,7 @@ main() {
 
             // DRAW region: renders the treemap from `st` whenever the tick
             // flushes (dirty), not on a fixed frame clock.
-            treg = canvas_region(root_node, 0.0, 0.0, 1356.0, 600.0) callback |rn: ptr, t: float| {
-                draw_list(rn, st)
+            treg = canvas_region(root_node, 0.0, 0.0, 1076.0, 600.0) callback |rn: ptr, t: float| {
                 draw_treemap(rn, st)
                 draw_legend(rn, st)
             }
@@ -262,20 +296,14 @@ main() {
                     legend_click(st, cx, cy)
                 }
                 else {
-                    if cx < gp_model.LIST_W() {
-                        if dbg_on() == 1 { println("gp-click: -> list pane") }
-                        list_click(st, cx, cy, dbl)
+                    e = hit(st, cx, cy)
+                    if dbg_on() == 1 {
+                        if e == null { println("gp-click: -> map, hit NOTHING") }
+                        else { println("gp-click: -> map, hit ${e.path} is_dir=${e.is_dir}") }
                     }
-                    else {
-                        e = hit(st, cx, cy)
-                        if dbg_on() == 1 {
-                            if e == null { println("gp-click: -> map, hit NOTHING") }
-                            else { println("gp-click: -> map, hit ${e.path} is_dir=${e.is_dir}") }
-                        }
-                        if e != null {
-                            if dbl == 1 { drill_deep(st, e) }
-                            else { select_entry(st, e) }
-                        }
+                    if e != null {
+                        if dbl == 1 { drill_deep(st, e) }
+                        else { select_entry(st, e) }
                     }
                 }
                 st.last_click_t = st.frame_t
@@ -332,6 +360,7 @@ main() {
                     aether_ui_text_set_string(st.status, msg)
                 }
             }
+        }
         }
 
         // Hover status line at the BOTTOM.

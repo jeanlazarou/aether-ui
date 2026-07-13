@@ -16,7 +16,9 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: file operations") {
         aeocha.it("copies the selection's path from the map context menu") callback {
-            uidriver.click(100.0, 90.0)                       // select big.bin
+            lbl = uidriver.widget_id_by_text("big.bin")
+            rrow = uidriver.widget_int_field_by_id(lbl, "parent")
+            uidriver.post_ok("/widget/${rrow}/click", "select big.bin")
             _ = gp_driver.wait_status_contains("big.bin", 20)
             cw = uidriver.canvas_widget_id()
             aeocha.expect_http_post_status(uidriver.url_of("/widget/${cw}/context_menu/3"),
@@ -26,7 +28,9 @@ main() {
         }
         aeocha.it("Delete arms, confirms to trash, then guards with no selection") callback {
             del = uidriver.widget_id_by_text("Delete")
-            uidriver.click(100.0, 115.0)                      // select mid.bin (row 1)
+            lbl2 = uidriver.widget_id_by_text("mid.bin")
+            rrow2 = uidriver.widget_int_field_by_id(lbl2, "parent")
+            uidriver.post_ok("/widget/${rrow2}/click", "select mid.bin")
             _ = gp_driver.wait_status_contains("mid.bin", 20)
             uidriver.click_widget(del)
             sleep(300)

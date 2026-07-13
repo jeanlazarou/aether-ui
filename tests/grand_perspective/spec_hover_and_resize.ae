@@ -15,10 +15,10 @@ main() {
 
     aeocha.describe(fw, "grand_perspective: hover + resize") {
         aeocha.it("hover names the tile under the pointer; off-map clears") callback {
-            uidriver.move_to(400.0, 300.0)
+            uidriver.move_to(120.0, 300.0)
             ok = gp_driver.wait_status_contains("big.bin", 20)
             aeocha.assert_true(ok, "hover over big.bin names it")
-            uidriver.move_to(1300.0, 550.0)
+            uidriver.move_to(1020.0, 550.0)
             ok2 = gp_driver.wait_status_contains("—", 20)
             aeocha.assert_true(ok2, "hover off-map clears to em-dash")
         }
@@ -29,14 +29,14 @@ main() {
             // mapping the scene uses: px = vb*s + centered offset.
             cw = uidriver.canvas_w()
             ch = uidriver.canvas_h()
-            aeocha.assert_gt(cw, 1356, "canvas grew with the window")
-            sx = (cw / 1.0) / 1356.0
+            aeocha.assert_gt(cw, 1076, "canvas grew with the window")
+            sx = (cw / 1.0) / 1076.0
             sy = (ch / 1.0) / 600.0
             s = sx
             if sy < sx { s = sy }
-            ox = ((cw / 1.0) - 1356.0 * s) / 2.0
+            ox = ((cw / 1.0) - 1076.0 * s) / 2.0
             oy = ((ch / 1.0) - 600.0 * s) / 2.0
-            px = 860.0 * s + ox
+            px = 580.0 * s + ox
             py = 450.0 * s + oy
             uidriver.click(px, py)
             sleep(120)

@@ -11,7 +11,7 @@
 exports (
     relayout, clear_selection, select_entry, retarget_watch,
     crumb_base, update_crumbs, jump_to, drill_up, drill_deep,
-    list_click, legend_click, handle_nav_key, nav_drill, nav_move,
+    sync_list, legend_click, handle_nav_key, nav_drill, nav_move,
     set_scheme, scheme_buttons
 )
 
@@ -19,9 +19,10 @@ import std.list
 import std.string
 import std.math
 import std.fs
-import ui (set_button_label, set_hidden, set_toggle, each_update)
+import ui (set_button_label, set_hidden, set_toggle, each_update,
+    table_update, table_select, table_selected)
 import gp_model
-import gp_model (FileEntry, TypeStat, to_float, clip_name, ext_label, fmt_size,
+import gp_model (FileEntry, TypeStat, to_float, clip_name, ext_label, fmt_size, one_dp,
     pct_of_parent, dbg_on)
 import gp_layout
 import gp_layout (LayoutCtx, layout_treemap, RECT_BUDGET)
@@ -50,6 +51,7 @@ relayout(s: *AppState) {
     }
     gp_model.sort_desc_by_size(s.lrows)
     s.dirty = 1
+    sync_list(s)
 }
 
 // Drop the selection (outline + stale "Selected:" status text). Every
@@ -73,6 +75,23 @@ select_entry(s: *AppState, e: *FileEntry) {
     msg = string.concat(msg, string.concat("   ", fmt_size(e.total_size)))
     msg = string.concat(msg, "   (${pct}% of parent)")
     if s.status != 0 { aether_ui_text_set_string(s.status, msg) }
+    // Sync the list-pane table's selection (map clicks / keyboard arrive
+    // here first). table_select records the index BEFORE firing on_select,
+    // whose handler re-enters select_entry — the equality check below stops
+    // the loop on that second pass.
+    if s.table != null {
+        idx = 0 - 1
+        nl = list.size(s.lrows)
+        li = 0
+        while li < nl {
+            lit, _le = list.get(s.lrows, li)
+            if lit as *FileEntry == e { idx = li; li = nl }
+            li = li + 1
+        }
+        if idx >= 0 {
+            if table_selected(s.table) != idx { table_select(s.table, idx) }
+        }
+    }
 }
 
 // Point the fs.watch at the CURRENT directory (close any previous handle).
@@ -93,6 +112,32 @@ crumb_base(s: *AppState) -> int {
     n = list.size(s.stack)
     if n > gp_model.CRUMBS() { return n - gp_model.CRUMBS() }
     return 0
+}
+
+// Refresh the list-pane WIDGETS from state: header texts (current dir,
+// rollup, scan/freed strip), ".." visibility, and the table rows. Called
+// after relayout rebuilt s.lrows; no-op before the window is built.
+sync_list(s: *AppState) {
+    if s.table == null { return }
+    aether_ui_text_set_string(s.hdr_name, clip_name(s.current.name))
+    sub0 = fmt_size(s.current.total_size)
+    sub = "${sub0}   ${s.current.file_count} files"
+    aether_ui_text_set_string(s.hdr_sub, sub)
+    info = ""
+    if s.scan_secs > 0.0 {
+        secs = one_dp(s.scan_secs)
+        info = "scanned in ${secs}s"
+    }
+    if s.freed > 0 {
+        fr = fmt_size(s.freed)
+        if string.length(info) > 0 { info = string.concat(info, "   ") }
+        info = string.concat(info, string.concat("freed ", fr))
+    }
+    aether_ui_text_set_string(s.hdr_info, info)
+    up_hidden = 1
+    if list.size(s.stack) > 1 { up_hidden = 0 }
+    _ = set_hidden(s.up_btn, up_hidden)
+    table_update(s.table, s.lrows)
 }
 
 update_crumbs(s: *AppState) {
@@ -189,29 +234,6 @@ drill_deep(s: *AppState, e: *FileEntry) {
     retarget_watch(s)
 }
 
-// Click in the list pane. `dbl` = the shared double-click detection from the
-// canvas handler. Single click selects (syncs the treemap outline);
-// double-click drills into a directory row; ".." always drills up.
-list_click(s: *AppState, cx: float, cy: float, dbl: int) {
-    if list.size(s.stack) > 1 {
-        if cy >= gp_model.LIST_TOP() - 20.0 {
-            if cy < gp_model.LIST_TOP() - 2.0 { drill_up(s); return }
-        }
-    }
-    n = list.size(s.lrows)
-    shown = n
-    if shown > gp_model.LIST_MAX() { shown = gp_model.LIST_MAX() }
-    row = lrint(math.floor((cy - gp_model.LIST_TOP()) / gp_model.LIST_ROW_H()))
-    if row < 0 { return }
-    if row >= shown { return }
-    it, _ = list.get(s.lrows, row)
-    e = it as *FileEntry
-    if dbl == 1 {
-        if e.is_dir == 1 { drill_deep(s, e); return }
-    }
-    select_entry(s, e)
-}
-
 // Click in the legend: toggle the highlight for the clicked type row.
 // Clicking the active row (or "other") clears the highlight.
 legend_click(s: *AppState, cx: float, cy: float) {
@@ -277,7 +299,6 @@ nav_move(s: *AppState, delta: int) {
     n = list.size(s.lrows)
     if n == 0 { return }
     shown = n
-    if shown > gp_model.LIST_MAX() { shown = gp_model.LIST_MAX() }
     // Find the selected entry among the rows; -1 when none/elsewhere.
     idx = 0 - 1
     i = 0
