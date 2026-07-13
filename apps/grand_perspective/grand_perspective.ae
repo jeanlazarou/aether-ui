@@ -78,6 +78,7 @@ import ui
 import ui (window, vstack, hstack, btn, text, enable_test_server,
     canvas_on_click, canvas_on_move, canvas_on_key, timer,
     toggle, toggle_group, each, each_parent, scrollview, width, transition,
+    ui_state_b, ui_set_b, bind_enabled,
     table_cols, table_col, table, table_on_select,
     context_menu_item, clipboard_write, margin_of)
 import vg.live (vg, canvas_region, vg_flush_live, region_set_animated)
@@ -185,6 +186,11 @@ main() {
             toggle_group(st.scheme_btn1, st.scheme_btn0)
             toggle_group(st.scheme_btn2, st.scheme_btn0)
         }
+        // Stop/Rescan ghosting: one bool state, declared bindings (item 8).
+        // Stop is live while scanning; Rescan is the inverse.
+        st.scan_state = ui_state_b(0)
+        bind_enabled(st.stop_btn, st.scan_state, 0)
+        bind_enabled(st.rescan_btn, st.scan_state, 1)
         // Reflect the already-running initial scan in the fresh toolbar,
         // and tick the active colour scheme's radio.
         scan_buttons(st)

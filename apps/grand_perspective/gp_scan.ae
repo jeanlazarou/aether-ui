@@ -30,6 +30,7 @@ import gp_nav (relayout, clear_selection, update_crumbs, retarget_watch)
 
 extern aether_ui_text_set_string(handle: int, text: string)
 extern aether_ui_set_enabled(handle: int, enabled: int)
+extern aether_ui_state_set_b(handle: int, value: int)
 
 // expand_dir: read ONE directory — file sizes stream up the parent chain
 // immediately; subdirectories are queued onto `pending`. Returns the number
@@ -184,13 +185,11 @@ stop_scan(s: *AppState) {
     }
 }
 
-// Ghost the scan-lifecycle buttons to match state: Stop is clickable only
-// while a scan runs; Rescan only when idle. (No-op before the toolbar is
-// built — the initial scan starts ahead of the window.)
+// Mirror s.scanning into the bound scan_state (item 8): the Stop/Rescan
+// ghosting is DECLARED once at toolbar build (bind_enabled + inverted
+// bind_enabled on one bool state); this write fans out to both buttons.
+// (No-op before the toolbar is built — the initial scan starts ahead of
+// the window; handle 0 is a safe no-op in the state ABI.)
 scan_buttons(s: *AppState) {
-    if s.stop_btn == 0 { return }
-    live = 0
-    if s.scanning == 1 { live = 1 }
-    aether_ui_set_enabled(s.stop_btn, live)
-    aether_ui_set_enabled(s.rescan_btn, 1 - live)
+    aether_ui_state_set_b(s.scan_state, s.scanning)
 }

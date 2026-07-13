@@ -85,9 +85,12 @@ struct AppState {
     scan_start_t: float  // when the current scan started (frame clock)
     scan_secs: float     // duration of the last completed scan
     // Scan-lifecycle buttons ghost when inapplicable: Stop is live only
-    // while a scan drains; Rescan only when idle.
+    // while a scan drains; Rescan only when idle. The ghosting is a
+    // BINDING on scan_state (item 8): bind_enabled declared once at
+    // toolbar build; scan_buttons just writes the bool.
     stop_btn: int
     rescan_btn: int
+    scan_state: int
     // Last pointer-move position (canvas px). GTK re-synthesizes a motion
     // event at the parked pointer after every relayout; identical coords =
     // synthetic, and acting on them lets a repaint clobber status text.
@@ -147,6 +150,7 @@ mk_state(root: *FileEntry) -> *AppState {
     s.scan_secs = 0.0
     s.stop_btn = 0
     s.rescan_btn = 0
+    s.scan_state = 0
     s.hov_px_x = 0.0 - 1.0
     s.hov_px_y = 0.0 - 1.0
     s.scheme_btn0 = 0
