@@ -383,10 +383,26 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
     } else if (method == 0 && strncmp(path, "/state/", 7) == 0) {
         int id = extract_id_from_path(path, "/state/");
         if (id > 0) {
-            // JSON envelope matching the GTK driver: {"id":N,"value":F}.
-            char body[96];
-            snprintf(body, sizeof(body), "{\"id\":%d,\"value\":%.6f}",
-                     id, aether_ui_state_get(id));
+            // JSON envelope matching the GTK driver: float cells keep the
+            // original {"id":N,"value":F} byte shape; typed cells add
+            // "type" (docs/design/reactivity-unification.md §3).
+            char body[512];
+            int st = aether_ui_state_type(id);
+            if (st == 1) {
+                snprintf(body, sizeof(body), "{\"id\":%d,\"type\":\"int\",\"value\":%d}",
+                         id, aether_ui_state_get_i(id));
+            } else if (st == 2) {
+                snprintf(body, sizeof(body), "{\"id\":%d,\"type\":\"bool\",\"value\":%s}",
+                         id, aether_ui_state_get_b(id) ? "true" : "false");
+            } else if (st == 3) {
+                const char* sv = aether_ui_state_get_s(id);
+                snprintf(body, sizeof(body), "{\"id\":%d,\"type\":\"string\",\"value\":\"%s\"}",
+                         id, sv);
+                free((void*)sv);
+            } else {
+                snprintf(body, sizeof(body), "{\"id\":%d,\"value\":%.6f}",
+                         id, aether_ui_state_get(id));
+            }
             send_http(client_fd, 200, "OK", "application/json", body);
         } else {
             send_http(client_fd, 404, "Not Found", "application/json",
@@ -397,7 +413,10 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         ctx.action = AETHER_DRV_SET_STATE;
         ctx.handle = extract_id_from_path(path, "/state/");
         const char* v = extract_query_param(path, "v");
-        if (v) ctx.dval = atof(v);
+        if (v) {
+            ctx.dval = atof(v);
+            strncpy(ctx.sval, v, sizeof(ctx.sval) - 1);
+        }
         h->dispatch_action(&ctx);
         send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
 

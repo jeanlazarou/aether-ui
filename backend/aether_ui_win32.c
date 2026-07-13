@@ -3237,7 +3237,15 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
     if (msg == AE_WM_DRIVER) {
         AetherDriverActionCtx* ctx = (AetherDriverActionCtx*)lp;
         if (ctx->action == AETHER_DRV_SET_STATE) {
-            aether_ui_state_set(ctx->handle, ctx->dval);
+            // Typed dispatch (sval carries the raw v=); setters walk
+            // bindings, so this runs on the UI thread by construction.
+            switch (aether_ui_state_type(ctx->handle)) {
+                case 1: aether_ui_state_set_i(ctx->handle, atoi(ctx->sval)); break;
+                case 2: aether_ui_state_set_b(ctx->handle,
+                            (strcmp(ctx->sval, "true") == 0 || atoi(ctx->sval) != 0)); break;
+                case 3: aether_ui_state_set_s(ctx->handle, ctx->sval); break;
+                default: aether_ui_state_set(ctx->handle, ctx->dval);
+            }
             ctx->result = 0;
             ctx->done = 1;
             return 0;
