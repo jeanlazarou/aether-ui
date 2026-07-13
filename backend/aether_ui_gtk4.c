@@ -809,18 +809,34 @@ static int aeui_child_weight(GtkWidget* c, GtkOrientation orient) {
     return expands ? 1 : 0;
 }
 
+// The request-mode + for_size plumbing below is NOT optional polish:
+// GtkWindow computes its default size through the child's request mode,
+// and a manager that claims CONSTANT_SIZE makes the window ignore
+// set_default_size and snap to natural width (seen as the 187px-wide
+// split_demo under ci's xvfb-run).
+static GtkSizeRequestMode aeui_flex_layout_get_request_mode(GtkLayoutManager* lm,
+                                                            GtkWidget* widget) {
+    AeuiFlexLayout* self = (AeuiFlexLayout*)lm;
+    (void)widget;
+    return self->orient == GTK_ORIENTATION_VERTICAL
+        ? GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH
+        : GTK_SIZE_REQUEST_WIDTH_FOR_HEIGHT;
+}
+
 static void aeui_flex_layout_measure(GtkLayoutManager* lm, GtkWidget* widget,
                                      GtkOrientation orientation, int for_size,
                                      int* minimum, int* natural,
                                      int* minimum_baseline, int* natural_baseline) {
     AeuiFlexLayout* self = (AeuiFlexLayout*)lm;
-    (void)for_size;
+    // Main axis: children see the cross extent (for_size) — height-for-
+    // width for a vstack of wrapping labels. Cross axis: unconstrained.
+    int child_for = (orientation == self->orient) ? for_size : -1;
     int min_sum = 0, nat_sum = 0, min_max = 0, nat_max = 0, n = 0;
     for (GtkWidget* c = gtk_widget_get_first_child(widget); c;
          c = gtk_widget_get_next_sibling(c)) {
         if (!gtk_widget_should_layout(c)) continue;
         int cmin = 0, cnat = 0;
-        gtk_widget_measure(c, orientation, -1, &cmin, &cnat, NULL, NULL);
+        gtk_widget_measure(c, orientation, child_for, &cmin, &cnat, NULL, NULL);
         min_sum += cmin;
         nat_sum += cnat;
         if (cmin > min_max) min_max = cmin;
@@ -857,7 +873,9 @@ static void aeui_flex_layout_allocate(GtkLayoutManager* lm, GtkWidget* widget,
     (void)baseline;
     int axis_total = (self->orient == GTK_ORIENTATION_HORIZONTAL) ? width : height;
 
-    // Pass 1: total weight + natural size of unweighted children.
+    // Pass 1: total weight + natural size of unweighted children (measured
+    // against the cross extent, so wrapping labels report honest heights).
+    int cross_extent = (self->orient == GTK_ORIENTATION_HORIZONTAL) ? height : width;
     int total_weight = 0, fixed = 0, n = 0;
     for (GtkWidget* c = gtk_widget_get_first_child(widget); c;
          c = gtk_widget_get_next_sibling(c)) {
@@ -867,7 +885,7 @@ static void aeui_flex_layout_allocate(GtkLayoutManager* lm, GtkWidget* widget,
             total_weight += wgt;
         } else {
             int cmin = 0, cnat = 0;
-            gtk_widget_measure(c, self->orient, -1, &cmin, &cnat, NULL, NULL);
+            gtk_widget_measure(c, self->orient, cross_extent, &cmin, &cnat, NULL, NULL);
             fixed += cnat;
         }
         n++;
@@ -891,7 +909,7 @@ static void aeui_flex_layout_allocate(GtkLayoutManager* lm, GtkWidget* widget,
             weighted_used += size;
         } else {
             int cmin = 0, cnat = 0;
-            gtk_widget_measure(c, self->orient, -1, &cmin, &cnat, NULL, NULL);
+            gtk_widget_measure(c, self->orient, cross_extent, &cmin, &cnat, NULL, NULL);
             size = cnat;
         }
         int cw = (self->orient == GTK_ORIENTATION_HORIZONTAL) ? size : width;
@@ -924,6 +942,7 @@ static void aeui_flex_layout_allocate(GtkLayoutManager* lm, GtkWidget* widget,
 
 static void aeui_flex_layout_class_init(AeuiFlexLayoutClass* klass) {
     GtkLayoutManagerClass* lm = GTK_LAYOUT_MANAGER_CLASS(klass);
+    lm->get_request_mode = aeui_flex_layout_get_request_mode;
     lm->measure = aeui_flex_layout_measure;
     lm->allocate = aeui_flex_layout_allocate;
 }
@@ -932,17 +951,33 @@ static void aeui_flex_layout_init(AeuiFlexLayout* self) {
     self->spacing = 0;
 }
 
+// A box's orientation, flex-aware. GtkBox DELEGATES its GtkOrientable to
+// its GtkBoxLayout, so once the flex manager is installed the stock getter
+// warns ("invalid cast from 'AeuiFlexLayout'") and returns garbage — every
+// box-orientation read in this file must come through here.
+static GtkOrientation aeui_box_orientation(GtkWidget* box) {
+    GtkLayoutManager* lm = gtk_widget_get_layout_manager(box);
+    if (lm && G_TYPE_CHECK_INSTANCE_TYPE(lm, aeui_flex_layout_get_type())) {
+        return ((AeuiFlexLayout*)lm)->orient;
+    }
+    return gtk_orientable_get_orientation(GTK_ORIENTABLE(box));
+}
+
 // Swap a GtkBox's stock layout manager for the flex one (idempotent).
-// Returns NULL if w isn't a box.
+// Returns NULL if w isn't a box. Orientation + spacing are captured from
+// the stock GtkBoxLayout BEFORE the swap (they live in the layout, not
+// the box).
 static AeuiFlexLayout* aeui_ensure_flex_layout(GtkWidget* w) {
     if (!w || !GTK_IS_BOX(w)) return NULL;
     GtkLayoutManager* cur = gtk_widget_get_layout_manager(w);
     if (cur && G_TYPE_CHECK_INSTANCE_TYPE(cur, aeui_flex_layout_get_type())) {
         return (AeuiFlexLayout*)cur;
     }
+    GtkOrientation orient = gtk_orientable_get_orientation(GTK_ORIENTABLE(w));
+    int spacing = gtk_box_get_spacing(GTK_BOX(w));
     AeuiFlexLayout* fl = g_object_new(aeui_flex_layout_get_type(), NULL);
-    fl->orient = gtk_orientable_get_orientation(GTK_ORIENTABLE(w));
-    fl->spacing = gtk_box_get_spacing(GTK_BOX(w));
+    fl->orient = orient;
+    fl->spacing = spacing;
     gtk_widget_set_layout_manager(w, GTK_LAYOUT_MANAGER(fl));
     return fl;
 }
@@ -1692,8 +1727,7 @@ void aether_ui_set_distribution(int handle, int distribution) {
 void aether_ui_set_alignment(int handle, int alignment) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (!w || !GTK_IS_BOX(w)) return;
-    int is_vertical = (gtk_orientable_get_orientation(GTK_ORIENTABLE(w))
-                       == GTK_ORIENTATION_VERTICAL);
+    int is_vertical = (aeui_box_orientation(w) == GTK_ORIENTATION_VERTICAL);
     GtkAlign align;
     if (is_vertical) {
         switch (alignment) {
@@ -3405,7 +3439,7 @@ static const char* widget_type_name(GtkWidget* w) {
     if (GTK_IS_DRAWING_AREA(w)) return "canvas";
     if (GTK_IS_IMAGE(w)) return "image";
     if (GTK_IS_BOX(w)) {
-        GtkOrientation o = gtk_orientable_get_orientation(GTK_ORIENTABLE(w));
+        GtkOrientation o = aeui_box_orientation(w);
         return o == GTK_ORIENTATION_VERTICAL ? "vstack" : "hstack";
     }
     return "widget";
@@ -4583,7 +4617,7 @@ void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle) {
     if (!parent || !child) return;
 
     if (GTK_IS_BOX(parent)) {
-        if (gtk_orientable_get_orientation(GTK_ORIENTABLE(parent)) == GTK_ORIENTATION_HORIZONTAL) {
+        if (aeui_box_orientation(parent) == GTK_ORIENTATION_HORIZONTAL) {
             if (gtk_widget_get_hexpand(child) && gtk_widget_get_vexpand(child)) {
                 gtk_widget_set_vexpand(child, FALSE);
             }

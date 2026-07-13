@@ -89,6 +89,14 @@ run_server_test() {
     # run the given test script against it, kill the binary, propagate status.
     local bin="$1" script="$2" name="$3"
     echo "--- launching $bin ---"
+    # Refuse to launch into a squatted port: a stray app from an earlier
+    # run answers the spec's requests and every assertion interrogates the
+    # WRONG process (stale binary, mutated state) — seen as inexplicable
+    # geometry failures. Fail loudly instead.
+    if curl -sf -o /dev/null "http://127.0.0.1:$PORT/widgets" 2>/dev/null; then
+        echo "  FAIL: $name — port $PORT already answering (stray app?)"
+        return 1
+    fi
     AETHER_UI_TEST_PORT="$PORT" $LAUNCH_PREFIX "$bin" > "/tmp/ci_${name}.app.log" 2>&1 &
     local pid=$!
 

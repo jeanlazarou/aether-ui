@@ -25,6 +25,13 @@ main() {
 
     aeocha.describe(fw, "splitview over AetherUIDriver") {
         aeocha.it("both panes render as real widgets") callback {
+            // Pin the window size first: GTK4 on a cold Xvfb sometimes maps
+            // at NATURAL size (CSD-min 187px wide), ignoring the app's
+            // 640x400 default — a startup race, not an app bug. Every
+            // geometry assertion below assumes 640, so make it true.
+            uidriver.resize_window(640, 400)
+            okg = uidriver.wait_body_contains("/widgets", "geometry: 640x", 30)
+            aeocha.assert_true(okg, "window pinned at 640 wide")
             lp = pane_of("left pane")
             rp = pane_of("right pane")
             aeocha.assert_gt(lp, 0, "left pane found")
