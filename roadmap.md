@@ -202,9 +202,20 @@ GTK4 first via GtkColumnView; a vg-drawn fallback is plan B where native
 tables fight us. **Risk:** medium. **Depends on:** 3 (models), 2 (cell
 text measurement).
 
-### 5. Effects: shadow, opacity groups, (later) backdrop blur
+### 5. Effects: shadow, opacity groups, (later) backdrop blur ✅ DONE (2026-07-13) — backdrop blur later
 
-**Hand-off brief: `briefs/effects.md`** (2026-07-12, ready for execution).
+**Shipped** (commit 2ebec4a): vg.shadow(dx,dy,sigma,color) on rects/
+circles — silhouette → the existing gaussian blur → tinted raster drawn
+under the shape, CACHED per element (position moves reuse the mask; idle
+zero); vg.group_begin(alpha)/group_end — TRUE group opacity via cairo
+push/pop group (overlaps composite once; proven at the PIXEL level by the
+new canvas_read_pixel + GET /canvas/{id}/pixel primitives); ui.style_shadow
+(CSS box-shadow via a new public apply-css ABI); toast + overlay-card
+chrome shadowed. test_effects (12 asserts) + test_group_pixels in ci.sh;
+SVG conformance unchanged (198/8/2). gp tiles deliberately NOT shadowed:
+per-frame draw-region elements defeat the cache (documented; bevel
+stays). Not done: paths/text shadows, backdrop blur (backlog). Detail
+below is the original proposal, kept for the reasoning.
 
 **Borrowed from:** SwiftUI `.shadow(radius:x:y:)`; Flutter `BoxShadow`/
 `elevation`; QML GraphicalEffects (`DropShadow`, `FastBlur`); QML's
@@ -353,7 +364,7 @@ format: comparisons, verdict, phased ci-gated migration).
 | 2 | Typography ✅ | M | DONE 2026-07-12 (9e55d0c/12c32cc/aa78062/f299b06) — +17 debt gone, metrics API + driver route shipped |
 | 3 | `each` ✅ | M | DONE 2026-07-13 (7216239/a552550 + aether PRs #1125/#1127) — verb + spec + gp crumb pool retired |
 | 4 | Table/list ✅ | L | DONE 2026-07-13 (345a916/04f9daf/4b5762c) — listbox + table + gp left pane migrated; virtualization/delegate cells deferred |
-| 5 | Shadows + group opacity | S–M | Cheap, visible, pairs with 1 |
+| 5 | Shadows + group opacity ✅ | S–M | DONE 2026-07-13 (2ebec4a) — vg.shadow cached + true group opacity + chrome shadows; backdrop blur deferred |
 | 6 | Implicit transitions | S–M | Perceived quality; machinery exists in vg |
 | 7 | Flex/split/on_layout | M | Unblocks real multi-pane apps |
 | 8 | Bindings + typed state | M | Unify ui/vg reactivity |
