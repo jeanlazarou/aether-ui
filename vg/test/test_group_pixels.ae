@@ -1,0 +1,46 @@
+// test_group_pixels.ae — the PIXEL truth of group opacity (GTK-linked).
+//
+// Two overlapping opaque rects inside group_begin(0.5)/group_end must NOT
+// double-darken: the group composites offscreen and paints ONCE at alpha,
+// so the overlap pixel equals the single-coverage pixel. Without the group
+// (two rects each at 50% alpha) the overlap IS darker — asserted too, as
+// the control. Headless: offscreen replay via canvas_read_pixel.
+
+import ui
+import std.string
+
+extern exit(code: int)
+
+assert_true(label: string, ok: int) {
+    if ok == 1 { println("  PASS: ${label}") }
+    else { println("  FAIL: ${label}"); exit(1) }
+}
+
+main() {
+    println("=== test_group_pixels ===")
+
+    // Grouped: opaque black rects at 0.5 group alpha.
+    c1 = 1
+    ui.canvas_create(0, 200, 100)
+    ui.canvas_group_begin(c1)
+    ui.canvas_fill_rect(c1, 10.0, 10.0, 80.0, 80.0, 0.0, 0.0, 0.0, 1.0)
+    ui.canvas_fill_rect(c1, 50.0, 10.0, 80.0, 80.0, 0.0, 0.0, 0.0, 1.0)
+    ui.canvas_group_end(c1, 0.5)
+    single = ui.canvas_read_pixel(c1, 20, 50, 200, 100)   // only rect 1
+    overlap = ui.canvas_read_pixel(c1, 60, 50, 200, 100)  // both rects
+    println("  grouped: single=${single} overlap=${overlap}")
+    assert_true("grouped overlap == single (no double-darken)", single == overlap)
+
+    // Control: the same two rects each drawn at 0.5 alpha, NO group —
+    // the overlap must be darker (higher premultiplied alpha byte).
+    c2 = 2
+    ui.canvas_create(0, 200, 100)
+    ui.canvas_fill_rect(c2, 10.0, 10.0, 80.0, 80.0, 0.0, 0.0, 0.0, 0.5)
+    ui.canvas_fill_rect(c2, 50.0, 10.0, 80.0, 80.0, 0.0, 0.0, 0.0, 0.5)
+    s2 = ui.canvas_read_pixel(c2, 20, 50, 200, 100)
+    o2 = ui.canvas_read_pixel(c2, 60, 50, 200, 100)
+    println("  ungrouped: single=${s2} overlap=${o2}")
+    assert_true("ungrouped overlap differs (the disease exists)", s2 != o2)
+
+    println("=== test_group_pixels passed ===")
+}

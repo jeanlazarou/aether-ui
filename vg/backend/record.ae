@@ -41,7 +41,8 @@ exports (
     backend_new, backend_call_count, backend_kind,
     backend_opt_get, backend_opt_has, backend_clear,
     canvas_circle, canvas_rectangle, canvas_line,
-    canvas_path, canvas_text, canvas_raster, canvas_tappable_raster
+    canvas_path, canvas_text, canvas_raster, canvas_tappable_raster,
+    canvas_group_begin, canvas_group_end
 )
 
 import std.list
@@ -90,6 +91,8 @@ backend_new() -> ptr {
         if op == 3 { return canvas_path(be, opts) }
         if op == 4 { return canvas_text(be, opts) }
         if op == 5 { return canvas_raster(be, opts) }
+        if op == 7 { return canvas_group_begin(be, opts) }
+        if op == 8 { return canvas_group_end(be, opts) }
         return canvas_tappable_raster(be, opts)
     }
 }
@@ -178,3 +181,5 @@ canvas_path(p: ptr, opts: ptr) -> ptr            { return record_one(p, "path", 
 canvas_text(p: ptr, opts: ptr) -> ptr            { return record_one(p, "text", opts) }
 canvas_raster(p: ptr, opts: ptr) -> ptr          { return record_one(p, "raster", opts) }
 canvas_tappable_raster(p: ptr, opts: ptr) -> ptr { return record_one(p, "tappable_raster", opts) }
+canvas_group_begin(p: ptr, opts: ptr) -> ptr     { return record_one(p, "group_begin", opts) }
+canvas_group_end(p: ptr, opts: ptr) -> ptr       { return record_one(p, "group_end", opts) }

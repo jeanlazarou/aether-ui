@@ -1656,6 +1656,7 @@ static void aeui_overlay_css_once(void) {
         ".aui-toast {"
         "  background-color: rgba(30,30,30,0.92); color: white;"
         "  padding: 10px 18px; border-radius: 8px; margin: 24px;"
+        "  box-shadow: 0 3px 10px rgba(0,0,0,0.45);"
         "}"
         ".aui-tooltip {"
         "  background-color: rgba(20,20,20,0.95); color: white;"
@@ -1669,6 +1670,7 @@ static void aeui_overlay_css_once(void) {
         "  background-color: @theme_bg_color;"
         "  border: 1px solid alpha(currentColor, 0.2); border-radius: 10px;"
         "  padding: 20px;"
+        "  box-shadow: 0 6px 22px rgba(0,0,0,0.35);"
         "}"
         ".aui-row-selected {"
         "  background-color: alpha(@theme_selected_bg_color, 0.85);"
@@ -2024,7 +2026,9 @@ typedef enum {
     CANVAS_DRAW_IMAGE,  // blit an RGBA buffer at (x, y), size w×h
     CANVAS_FILL_LINEAR, // fill current path with a linear gradient
     CANVAS_FILL_RADIAL, // fill current path with a radial gradient
-    CANVAS_CLIP_RECT    // intersect the clip region with rect (x,y,w,h)
+    CANVAS_CLIP_RECT,   // intersect the clip region with rect (x,y,w,h)
+    CANVAS_GROUP_BEGIN, // cairo_push_group — composite following cmds offscreen
+    CANVAS_GROUP_END    // pop group, paint at alpha (x) — TRUE group opacity
 } CanvasCmdType;
 
 typedef struct {
@@ -2287,6 +2291,16 @@ static void canvas_replay(cairo_t* cr, CanvasState* cs) {
             }
             case CANVAS_CLEAR:
                 break;
+            case CANVAS_GROUP_BEGIN:
+                // Composite everything until GROUP_END into an offscreen
+                // group, then paint it ONCE at the group alpha — overlapping
+                // children don't double-darken (the reason this exists).
+                cairo_push_group(cr);
+                break;
+            case CANVAS_GROUP_END:
+                cairo_pop_group_to_source(cr);
+                cairo_paint_with_alpha(cr, c->x);
+                break;
         }
     }
 }
@@ -2332,6 +2346,43 @@ int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
     cairo_status_t st = cairo_surface_write_to_png(surf, path);
     cairo_surface_destroy(surf);
     return st == CAIRO_STATUS_SUCCESS ? 1 : 0;
+}
+
+// Group-opacity command pair (see CANVAS_GROUP_BEGIN/END replay cases).
+void aether_ui_canvas_group_begin_impl(int canvas_id) {
+    CanvasCmd cmd = { .type = CANVAS_GROUP_BEGIN };
+    canvas_add_cmd(canvas_id, cmd);
+}
+
+void aether_ui_canvas_group_end_impl(int canvas_id, double alpha) {
+    CanvasCmd cmd = { .type = CANVAS_GROUP_END, .x = alpha };
+    canvas_add_cmd(canvas_id, cmd);
+}
+
+// Read one pixel of the canvas's CURRENT command buffer, rendered offscreen
+// (same replay as canvas_write_png). Returns packed 0xAARRGGBB, or -1 on
+// error. The honest primitive for pixel assertions (group opacity, shadows)
+// in headless tests and the driver's /canvas/{id}/pixel route.
+int aether_ui_canvas_read_pixel_impl(int canvas_id, int px, int py,
+                                     int width, int height) {
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || px < 0 || py < 0 || px >= width || py >= height) return -1;
+    cairo_surface_t* surf = cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, width, height);
+    if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surf);
+        return -1;
+    }
+    cairo_t* cr = cairo_create(surf);
+    canvas_replay(cr, cs);
+    cairo_destroy(cr);
+    cairo_surface_flush(surf);
+    unsigned char* data = cairo_image_surface_get_data(surf);
+    int stride = cairo_image_surface_get_stride(surf);
+    // ARGB32 is premultiplied, native-endian 32-bit.
+    unsigned int v = *(unsigned int*)(data + py * stride + px * 4);
+    cairo_surface_destroy(surf);
+    return (int)v;
 }
 
 int aether_ui_canvas_create_impl(int width, int height) {
@@ -2924,6 +2975,14 @@ static void aeui_track_class(GtkWidget* w, const char* cls, int add) {
     g_string_free(out, TRUE);
 }
 
+// Public CSS-fragment ABI (ui.style_shadow and friends): route through the
+// same per-widget class+provider machinery the style_* setters use.
+void aether_ui_widget_apply_css_impl(int handle, const char* property_css) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !property_css || !property_css[0]) return;
+    aether_ui_apply_css(handle, w, property_css);
+}
+
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (!w || !cls || !cls[0]) return;
@@ -3097,6 +3156,16 @@ static const char* widget_type_name(GtkWidget* w) {
 // resolves to the scrim (a full-window widget above the app), NOT the button —
 // proving the glass pane eats clicks. Unlike /widget/{id}/click (which invokes
 // the handler directly, bypassing hit-testing), pick sees the real z-order.
+typedef struct { int canvas_id, x, y, w, h, result, done; } PixelReq;
+
+static gboolean pixel_req_idle(gpointer data) {
+    PixelReq* rq = (PixelReq*)data;
+    rq->result = aether_ui_canvas_read_pixel_impl(rq->canvas_id, rq->x, rq->y,
+                                                  rq->w, rq->h);
+    rq->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
 typedef struct { double x, y; int done; int handle; char type[32]; int on_scrim; } PickAction;
 
 static gboolean window_pick_idle(gpointer data) {
@@ -3707,6 +3776,30 @@ static void handle_test_request(int client_fd) {
                 aether_ui_overlay_is_live_impl(i));
         }
         snprintf(buf + off, sizeof(buf) - off, "]}");
+        send_response(client_fd, 200, "OK", "application/json", buf);
+        close(client_fd);
+        return;
+    }
+
+    // GET /canvas/{id}/pixel?x=&y=&w=&h= — read one rendered pixel (packed
+    // 0xAARRGGBB, premultiplied) from an offscreen replay at w×h. The honest
+    // pixel-assertion primitive (group opacity, shadows). GTK-thread-idled:
+    // the command buffer is written on the GTK thread.
+    if (method == 0 && strncmp(path, "/canvas/", 8) == 0 && strstr(path, "/pixel")) {
+        PixelReq prq = {0};
+        prq.canvas_id = atoi(path + 8);
+        const char* xs = extract_query_param(path, "x");
+        const char* ys = extract_query_param(path, "y");
+        const char* ws = extract_query_param(path, "w");
+        const char* hs = extract_query_param(path, "h");
+        prq.x = xs ? atoi(xs) : 0;
+        prq.y = ys ? atoi(ys) : 0;
+        prq.w = ws ? atoi(ws) : 400;
+        prq.h = hs ? atoi(hs) : 300;
+        g_idle_add(pixel_req_idle, &prq);
+        while (!prq.done) usleep(1000);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"pixel\":%d}", prq.result);
         send_response(client_fd, 200, "OK", "application/json", buf);
         close(client_fd);
         return;

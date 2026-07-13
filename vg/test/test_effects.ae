@@ -1,0 +1,99 @@
+// test_effects.ae — vg.shadow + vg.group_begin/group_end (roadmap item 5).
+//
+// Headless, recording backend. Asserts:
+//  - a shadowed rect flushes a RASTER (the blurred mask) BEFORE the rect,
+//    at the offset position, expanded by 3*sigma*scale each side;
+//  - the mask is CACHED: a re-flush emits the identical encoded pixels;
+//  - group_begin/end markers flush as backend ops in order around their
+//    children, carrying the alpha.
+
+import std.string
+import vg
+import vg.grammar.context
+import vg.backend.record
+import vg.geom.transform
+
+fail_count_cell() -> ptr { return malloc(8) }
+extern malloc(size: int) -> ptr
+extern exit(code: int)
+
+assert_true(label: string, ok: int) {
+    if ok == 1 { println("  PASS: ${label}") }
+    else { println("  FAIL: ${label}"); exit(1) }
+}
+assert_eq_str(label: string, got: string, want: string) {
+    if string.equals(got, want) == 1 { println("  PASS: ${label}") }
+    else { println("  FAIL: ${label} — got '${got}' want '${want}'"); exit(1) }
+}
+assert_near(label: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d < 0.001 { println("  PASS: ${label}") }
+    else { println("  FAIL: ${label} — got ${got} want ${want}"); exit(1) }
+}
+
+mk_ctx() -> ptr {
+    id = transform.affine_identity()
+    m = context.mapping_new(0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 1.0, 0.0, 0.0, id)
+    return context.new_context(m)
+}
+
+main() {
+    println("=== test_effects ===")
+
+    // ── shadow: raster-before-shape, position, expansion ─────────
+    ctx = mk_ctx()
+    bk = record.backend_new()
+    scene = vg.scene_new(ctx, bk)
+    vg.scene_set_deferred(scene, 1)
+    root = vg.vg_root(scene)
+
+    rn = vg.rect(root, 20.0, 30.0, 40.0, 10.0)
+    vg.fill(rn, "#3366cc")
+    vg.shadow(rn, 3.0, 4.0, 2.0, "#000000")
+    vg.vg_flush(scene)
+
+    assert_eq_str("shadow raster flushes first", record.backend_kind(bk, 0), "raster")
+    assert_eq_str("the rect flushes after its shadow", record.backend_kind(bk, 1), "rectangle")
+    // sigma 2.0 at scale 1 → expand = ceil(6) = 6 px each side
+    wshadow = record.backend_opt_get(bk, 0, "w")
+    wv, _we = string.to_double(wshadow)
+    assert_near("mask width = rect w + 2*3sigma", wv, 52.0)
+    xshadow = record.backend_opt_get(bk, 0, "x")
+    xv, _xe = string.to_double(xshadow)
+    assert_near("mask x = rect x + dx - expand", xv, 17.0)
+    px1 = record.backend_opt_get(bk, 0, "rawPixels")
+    assert_true("mask has pixels", string.length(px1) > 0)
+
+    // ── shadow cache: re-flush re-uses the encoded mask ─────────
+    record.backend_clear(bk)
+    vg.vg_flush(scene)
+    px2 = record.backend_opt_get(bk, 0, "rawPixels")
+    assert_eq_str("re-flush kind 0 is the shadow", record.backend_kind(bk, 0), "raster")
+    assert_true("cached mask identical across flushes", string.equals(px1, px2))
+
+    // ── group opacity markers ─────────────────────────────────────
+    ctx2 = mk_ctx()
+    bk2 = record.backend_new()
+    scene2 = vg.scene_new(ctx2, bk2)
+    vg.scene_set_deferred(scene2, 1)
+    root2 = vg.vg_root(scene2)
+
+    vg.group_begin(root2, 0.5)
+    r1 = vg.rect(root2, 10.0, 10.0, 30.0, 30.0)
+    vg.fill(r1, "#ff0000")
+    r2 = vg.rect(root2, 25.0, 25.0, 30.0, 30.0)
+    vg.fill(r2, "#ff0000")
+    vg.group_end(root2, 0.5)
+    vg.vg_flush(scene2)
+
+    assert_eq_str("group_begin first", record.backend_kind(bk2, 0), "group_begin")
+    assert_eq_str("child 1 inside", record.backend_kind(bk2, 1), "rectangle")
+    assert_eq_str("child 2 inside", record.backend_kind(bk2, 2), "rectangle")
+    assert_eq_str("group_end last", record.backend_kind(bk2, 3), "group_end")
+    av = record.backend_opt_get(bk2, 3, "alpha")
+    a, _ae2 = string.to_double(av)
+    assert_near("group alpha carried", a, 0.5)
+
+    println("=== test_effects passed ===")
+}

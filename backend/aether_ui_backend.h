@@ -146,8 +146,13 @@ int aether_ui_overlay_is_live_impl(int overlay_handle);
 int aether_ui_overlay_count_impl(void);
 int aether_ui_overlay_is_modal_impl(int overlay_handle);
 int aether_ui_toast_impl(int win_handle, const char* text, int ms);
+void aether_ui_widget_apply_css_impl(int handle, const char* property_css);
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls);
 void aether_ui_widget_remove_css_class_impl(int handle, const char* cls);
+void aether_ui_canvas_group_begin_impl(int canvas_id);
+void aether_ui_canvas_group_end_impl(int canvas_id, double alpha);
+int aether_ui_canvas_read_pixel_impl(int canvas_id, int px, int py,
+                                     int width, int height);
 int aether_ui_vg_tooltip_show_impl(int canvas_id, const char* text,
                                    double cx, double cy);
 void aether_ui_vg_tooltip_hide_impl(void);

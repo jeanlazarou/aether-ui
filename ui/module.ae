@@ -36,7 +36,7 @@ exports (
     alert, clipboard_write, open_url, is_dark_mode,
     timer, timer_cancel,
     window_create, window_set_body, window_show, window_close,
-    overlay, overlay_modal, dismiss_overlay, overlay_is_live, toast,
+    overlay, overlay_modal, dismiss_overlay, overlay_is_live, toast, style_shadow,
     vg_tooltip_show, vg_tooltip_hide, vg_tooltip_drawn,
     each, each_update, each_count, each_parent,
     listbox, listbox_update, listbox_select, listbox_selected, listbox_count,
@@ -48,6 +48,7 @@ exports (
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clip_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text, canvas_stroke_text,
+    canvas_group_begin, canvas_group_end, canvas_read_pixel,
     canvas_draw_image, canvas_draw_image_scaled, canvas_fill_linear_gradient, canvas_fill_radial_gradient,
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
@@ -215,8 +216,12 @@ extern aether_ui_overlay_is_live_impl(overlay_handle: int) -> int
 extern aether_ui_overlay_count_impl() -> int
 extern aether_ui_overlay_is_modal_impl(overlay_handle: int) -> int
 extern aether_ui_toast_impl(win_handle: int, text: string, ms: int) -> int
+extern aether_ui_widget_apply_css_impl(handle: int, property_css: string)
 extern aether_ui_widget_add_css_class_impl(handle: int, cls: string)
 extern aether_ui_widget_remove_css_class_impl(handle: int, cls: string)
+extern aether_ui_canvas_group_begin_impl(canvas_id: int)
+extern aether_ui_canvas_group_end_impl(canvas_id: int, alpha: float)
+extern aether_ui_canvas_read_pixel_impl(canvas_id: int, px: int, py: int, width: int, height: int) -> int
 // Drawn tooltip for vg scenes (a styled overlay near the pointer, replacing
 // the native GtkTooltip that sommelier can't display).
 extern aether_ui_vg_tooltip_show_impl(canvas_id: int, text: string, cx: float, cy: float) -> int
@@ -1210,6 +1215,31 @@ on_select(lbp: ptr, cb: fn) {
 
 // Generic CSS-class styling (the selection-visual primitive, exported for
 // apps too; GTK-only — no-op stubs elsewhere).
+// style_shadow(handle, dx, dy, blur, css_color) — a CSS box-shadow on a
+// native widget (GTK; no-op elsewhere). The vg-side sibling is vg.shadow.
+style_shadow(handle: int, dx: int, dy: int, blur: int, color: string) -> int {
+    css = "box-shadow: ${dx}px ${dy}px ${blur}px "
+    css = string.concat(css, color)
+    css = string.concat(css, ";")
+    aether_ui_widget_apply_css_impl(handle, css)
+    return handle
+}
+
+// Canvas group-opacity pair: composite the commands between begin/end
+// offscreen and paint ONCE at alpha — overlapping shapes don't double-darken.
+canvas_group_begin(canvas_id: int) {
+    aether_ui_canvas_group_begin_impl(canvas_id)
+}
+canvas_group_end(canvas_id: int, alpha: float) {
+    aether_ui_canvas_group_end_impl(canvas_id, alpha)
+}
+
+// Read one rendered pixel (offscreen replay at w×h) — packed 0xAARRGGBB
+// premultiplied, -1 on error. The pixel-assertion primitive for tests.
+canvas_read_pixel(canvas_id: int, px: int, py: int, w: int, h: int) -> int {
+    return aether_ui_canvas_read_pixel_impl(canvas_id, px, py, w, h)
+}
+
 add_css_class(handle: int, cls: string) {
     aether_ui_widget_add_css_class_impl(handle, cls)
 }

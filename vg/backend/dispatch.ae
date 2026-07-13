@@ -23,7 +23,8 @@ exports (
     backend_make, backend_self,
     OP_CIRCLE, OP_RECT, OP_LINE, OP_PATH, OP_TEXT, OP_RASTER, OP_TAPPABLE,
     dispatch_circle, dispatch_rectangle, dispatch_line,
-    dispatch_path, dispatch_text, dispatch_raster, dispatch_tappable_raster
+    dispatch_path, dispatch_text, dispatch_raster, dispatch_tappable_raster,
+    dispatch_group_begin, dispatch_group_end
 )
 
 import std.string
@@ -71,6 +72,8 @@ dispatch_path(p: ptr, opts: ptr) -> ptr            { return run(p, 3, opts) }
 dispatch_text(p: ptr, opts: ptr) -> ptr            { return run(p, 4, opts) }
 dispatch_raster(p: ptr, opts: ptr) -> ptr          { return run(p, 5, opts) }
 dispatch_tappable_raster(p: ptr, opts: ptr) -> ptr { return run(p, 6, opts) }
+dispatch_group_begin(p: ptr, opts: ptr) -> ptr     { return run(p, 7, opts) }
+dispatch_group_end(p: ptr, opts: ptr) -> ptr       { return run(p, 8, opts) }
 
 run(p: ptr, op: int, opts: ptr) -> ptr {
     d = p as *Dispatch

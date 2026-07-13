@@ -1224,11 +1224,23 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle) { (void)overlay_handle; 
 int aether_ui_toast_impl(int win_handle, const char* text, int ms) {
     (void)win_handle; (void)text; (void)ms; return 0;
 }
+void aether_ui_widget_apply_css_impl(int handle, const char* property_css) {
+    (void)handle; (void)property_css;
+}
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls) {
     (void)handle; (void)cls;
 }
 void aether_ui_widget_remove_css_class_impl(int handle, const char* cls) {
     (void)handle; (void)cls;
+}
+void aether_ui_canvas_group_begin_impl(int canvas_id) { (void)canvas_id; }
+void aether_ui_canvas_group_end_impl(int canvas_id, double alpha) {
+    (void)canvas_id; (void)alpha;
+}
+int aether_ui_canvas_read_pixel_impl(int canvas_id, int px, int py,
+                                     int width, int height) {
+    (void)canvas_id; (void)px; (void)py; (void)width; (void)height;
+    return -1;
 }
 int aether_ui_vg_tooltip_show_impl(int canvas_id, const char* text,
                                    double cx, double cy) {

@@ -70,8 +70,23 @@ gtk_backend_new(canvas_id: int) -> ptr {
         if op == 3 { return canvas_path(be, opts) }
         if op == 4 { return canvas_text(be, opts) }
         if op == 5 { return canvas_raster(be, opts) }
+        if op == 7 { return canvas_group_begin_op(be) }
+        if op == 8 { return canvas_group_end_op(be, opts) }
         return canvas_tappable_raster(be, opts)
     }
+}
+
+// Group-opacity pair: composite following commands offscreen, paint once at
+// alpha at group_end (cairo push/pop group — overlaps don't double-darken).
+canvas_group_begin_op(p: ptr) -> ptr {
+    b = p as *GtkBackend
+    ui.canvas_group_begin(b.canvas_id)
+    return fresh_handle()
+}
+canvas_group_end_op(p: ptr, opts: ptr) -> ptr {
+    b = p as *GtkBackend
+    ui.canvas_group_end(b.canvas_id, opt_f(opts, "alpha", 1.0))
+    return fresh_handle()
 }
 
 // The canvas id / redraw helpers unwrap the dispatch ptr back to the

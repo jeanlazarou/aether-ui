@@ -65,6 +65,9 @@ exports (
     element_on_right_click, element_right_click_handler,
 
     // Tooltip, cursor, when, visibility, destroyed
+    element_set_shadow, element_shadow_on, element_shadow_dx,
+    element_shadow_dy, element_shadow_sigma, element_shadow_color,
+    element_shadow_cache, element_set_shadow_cache,
     element_set_tooltip, element_tooltip,
     element_set_cursor, element_cursor,
     element_set_when, element_when_predicate,
@@ -151,6 +154,15 @@ struct AevgElement {
     tooltip_str: string
     cursor_str: string
 
+    // Drop shadow (vg.shadow modifier): offset, blur sigma, colour.
+    // sh_cache is an opaque *ShadowCache owned by render_as_raster.
+    sh_on: int
+    sh_dx: float
+    sh_dy: float
+    sh_sigma: float
+    sh_color: string
+    sh_cache: ptr
+
     // Visibility / destroyed flags
     visible: int            // 1 = visible (default)
     destroyed: int
@@ -212,7 +224,7 @@ element_new(underlying: ptr) -> ptr {
     //   1 last_pos_props ptr = 8
     //   shape_type int + 4 geo floats ≈ 40 with pad
     // Sum ≈ 320 with padding. malloc(384) keeps a safe margin.
-    e = malloc(384) as *AevgElement
+    e = malloc(448) as *AevgElement
     e.underlying = underlying
     e.context = null
     e.name_str = ""
@@ -230,6 +242,12 @@ element_new(underlying: ptr) -> ptr {
     e.pos_binding = null
     e.when_predicate = null
     e.tooltip_str = ""
+    e.sh_on = 0
+    e.sh_dx = 0.0
+    e.sh_dy = 0.0
+    e.sh_sigma = 0.0
+    e.sh_color = ""
+    e.sh_cache = null
     e.cursor_str = ""
     e.visible = 1
     e.destroyed = 0
@@ -364,6 +382,22 @@ element_right_click_handler(p: ptr) -> ptr {
 }
 
 // ─── Tooltip / cursor / when / visibility / destroyed ────────────
+
+element_set_shadow(p: ptr, dx: float, dy: float, sigma: float, color: string) {
+    e = p as *AevgElement
+    e.sh_on = 1
+    e.sh_dx = dx
+    e.sh_dy = dy
+    e.sh_sigma = sigma
+    e.sh_color = color
+}
+element_shadow_on(p: ptr) -> int      { e = p as *AevgElement; return e.sh_on }
+element_shadow_dx(p: ptr) -> float    { e = p as *AevgElement; return e.sh_dx }
+element_shadow_dy(p: ptr) -> float    { e = p as *AevgElement; return e.sh_dy }
+element_shadow_sigma(p: ptr) -> float { e = p as *AevgElement; return e.sh_sigma }
+element_shadow_color(p: ptr) -> string { e = p as *AevgElement; return e.sh_color }
+element_shadow_cache(p: ptr) -> ptr   { e = p as *AevgElement; return e.sh_cache }
+element_set_shadow_cache(p: ptr, c: ptr) { e = p as *AevgElement; e.sh_cache = c }
 
 element_set_tooltip(p: ptr, t: string) {
     e = p as *AevgElement

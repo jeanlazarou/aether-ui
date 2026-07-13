@@ -43,6 +43,7 @@ exports (
     fill, stroke, opacity, transform, linecap, linejoin,
     // Interaction modifiers (attach a handler to the shape's element).
     on_click, on_hover, on_double_click, on_right_click, cursor, tooltip,
+    shadow, group_begin, group_end,
     on_click_recolor, visible_when,
     bind_fill, bind_stroke, bind_opacity, bind_text, bind_pos,
     // Re-exported element mutators so a handler can recolor the element it
@@ -75,6 +76,8 @@ import vg.grammar.context
 import vg.grammar.shapes
 import vg.grammar.element
 import vg.grammar.events
+import vg.raster.render_as_raster
+import vg.backend.dispatch
 import vg.grammar.reactive
 import vg.grammar.bind
 import vg.grammar.animations
@@ -396,6 +399,52 @@ text_anchored(_ctx: ptr, x: float, y: float, size: float, anchor: string, conten
 // runs `body`, then pops. Here the block IS the body, so we expose g as a
 // trailing-block builder whose pushed _ctx lets children draw, and the
 // style-stack push/pop is driven by group_open/group_close around the block.
+// group_begin(alpha) … shapes … group_end() — TRUE group opacity: the
+// backend composites everything between the pair offscreen and paints it
+// ONCE at alpha, so overlapping children don't double-darken. An explicit
+// pair (not a block) for the same reason g()'s style cascade is deferred:
+// a regular trailing block has no after-block hook (see g's comment).
+group_begin(_ctx: ptr, alpha: float) {
+    scene = node_scene(_ctx)
+    if scene_is_deferred(scene) == 1 {
+        record_group_marker(scene, 5, alpha)
+        return
+    }
+    opts = map.new()
+    put_f(opts, "alpha", alpha)
+    _gb = dispatch.dispatch_group_begin(scene_backend(scene), opts)
+    map.free(opts)
+}
+
+group_end(_ctx: ptr, alpha: float) {
+    scene = node_scene(_ctx)
+    if scene_is_deferred(scene) == 1 {
+        record_group_marker(scene, 6, alpha)
+        return
+    }
+    opts = map.new()
+    put_f(opts, "alpha", alpha)
+    _ge = dispatch.dispatch_group_end(scene_backend(scene), opts)
+    map.free(opts)
+}
+
+// A group marker pending: kind 5 (begin) / 6 (end); alpha rides in tx.
+record_group_marker(scene: ptr, kind: int, alpha: float) {
+    s = scene as *VgScene
+    if s.pending == null { s.pending = list.new() }
+    pend = malloc(80) as *VgPending
+    pend.kind = kind
+    pend.attrs = null
+    pend.element = element.element_new(null)
+    pend.tx = alpha
+    pend.ty = 0.0
+    pend.content = ""
+    pend.font_size = 0.0
+    pend.anchor = ""
+    pend.tracked = 0
+    _gm = list.add(s.pending, pend as ptr)
+}
+
 g(_ctx: ptr) -> ptr {
     scene = node_scene(_ctx)
     // First cut: g() is a passthrough scope that threads the scene so
@@ -404,6 +453,15 @@ g(_ctx: ptr) -> ptr {
     // to children) is deferred — it needs an after-block pop hook, which a
     // regular trailing block lacks; it lands when g moves to a builder form.
     return mk_node(scene, null)
+}
+
+// Read a float attr recorded by a shape verb (put_f wrote the string).
+attr_f(a: ptr, key: string) -> float {
+    v, _af = map.get(a, key)
+    if v == null { return 0.0 }
+    parsed, e = string.to_double(v)
+    if e != "" { return 0.0 }
+    return parsed
 }
 
 // ─── in-block modifiers ──────────────────────────────────────────
@@ -415,6 +473,16 @@ fill(_ctx: ptr, color: string) {
     el = node_payload(_ctx)
     if el != null {
         element.element_set_fill(el, color)
+    }
+}
+
+// shadow(dx, dy, blur_sigma, color) — drop shadow under this shape (rects
+// and circles v1; the blurred mask is cached per element and re-used until
+// geometry/sigma/colour/scale change). Drawn at flush, before the shape.
+shadow(_ctx: ptr, dx: float, dy: float, blur: float, color: string) {
+    el = node_payload(_ctx)
+    if el != null {
+        element.element_set_shadow(el, dx, dy, blur, color)
     }
 }
 
@@ -901,6 +969,55 @@ flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
     // redraws from the original static attrs and clobbers the move.
     if element.element_pos_binding(el) != null {
         sync_attrs_from_geo(a, el, pend.kind)
+    }
+    // Group-opacity markers: emit the backend op, nothing else.
+    if pend.kind == 5 {
+        gopts = map.new()
+        put_f(gopts, "alpha", pend.tx)
+        _g5 = dispatch.dispatch_group_begin(be, gopts)
+        map.free(gopts)
+        return
+    }
+    if pend.kind == 6 {
+        gopts2 = map.new()
+        put_f(gopts2, "alpha", pend.tx)
+        _g6 = dispatch.dispatch_group_end(be, gopts2)
+        map.free(gopts2)
+        return
+    }
+    // Drop shadow (vg.shadow): draw the cached blurred mask UNDER the shape.
+    // Rects (kind 1) and circles (kind 0) v1.
+    if element.element_shadow_on(el) == 1 {
+        sbx = 0.0
+        sby = 0.0
+        sbw = 0.0
+        sbh = 0.0
+        ok_sh = 0
+        if pend.kind == 1 {
+            sbx = attr_f(a, "x")
+            sby = attr_f(a, "y")
+            sbw = attr_f(a, "width")
+            sbh = attr_f(a, "height")
+            ok_sh = 1
+        }
+        if pend.kind == 0 {
+            scx = attr_f(a, "cx")
+            scy = attr_f(a, "cy")
+            sr = attr_f(a, "r")
+            sbx = scx - sr
+            sby = scy - sr
+            sbw = sr * 2.0
+            sbh = sr * 2.0
+            ok_sh = 1
+        }
+        if ok_sh == 1 {
+            nc = render_as_raster.render_shadow(ctx, be, pend.kind,
+                sbx, sby, sbw, sbh,
+                element.element_shadow_dx(el), element.element_shadow_dy(el),
+                element.element_shadow_sigma(el), element.element_shadow_color(el),
+                element.element_shadow_cache(el))
+            element.element_set_shadow_cache(el, nc)
+        }
     }
     drawn = null
     if pend.kind == 0 { drawn = shapes.shape_circle(ctx, be, a) }

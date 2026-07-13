@@ -38,7 +38,7 @@
 // codegen bug (aether/fn_bare_name_env_shift.md). The convention is
 // to always pass a `callback { ... }` block, which works correctly.
 
-exports ( render_as_raster )
+exports ( render_as_raster, render_shadow )
 
 import std.bytes
 import std.string
@@ -245,4 +245,121 @@ invoke_shape_filler(cb: fn, buf: ptr, w: int, h: int,
                     off_x: float, off_y: float,
                     r: int, g: int, b: int, a: int) {
     cb(buf, w, h, off_x, off_y, r, g, b, a)
+}
+
+
+// ─── render_shadow ───────────────────────────────────────────────
+//
+// Drop shadow for a rect/circle element (vg.shadow modifier): fill the
+// shape's silhouette in the shadow colour into an offscreen RGBA buffer,
+// gaussian-blur it, and dispatch it as a raster at the element's position
+// offset by (dx, dy) — drawn BEFORE the element itself, so it sits under.
+//
+// The blurred buffer is CACHED per element (house rule: idle must cost
+// zero): the fill+blur+base64 only reruns when geometry (bw/bh), sigma,
+// colour, kind, or the px mapping scale change. Position (bx/by/dx/dy) is
+// NOT in the key — a moved element reuses its mask at the new spot.
+// Returns the (possibly fresh) cache ptr for the caller to store back on
+// the element. kind: 0 = circle (bw==bh==2r), 1 = rect.
+
+struct ShadowCache {
+    b64: string
+    out_w: int
+    out_h: int
+    expand: float      // px padding around the silhouette (3 sigma)
+    key_w: float
+    key_h: float
+    key_sigma: float
+    key_scale: float
+    key_kind: int
+    key_color: string
+}
+
+render_shadow(ctx: ptr, backend: ptr, kind: int,
+              bx: float, by: float, bw: float, bh: float,
+              dx: float, dy: float, sigma: float, color: string,
+              cache: ptr) -> ptr {
+    avg_scale = transform.affine_average_scale_p(rendering.current_transform(ctx))
+    scale = rendering.map_length(ctx, 1.0) * avg_scale
+
+    c = cache as *ShadowCache
+    hit = 0
+    if cache != null {
+        if c.key_w == bw {
+            if c.key_h == bh {
+                if c.key_sigma == sigma {
+                    if c.key_scale == scale {
+                        if c.key_kind == kind {
+                            if string.equals(c.key_color, color) == 1 { hit = 1 }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if hit == 0 {
+        px_sigma = sigma * scale
+        expand = math.ceil(3.0 * px_sigma)
+        px_w = bw * scale
+        px_h = bh * scale
+        buf_w = lrint(px_w + expand * 2.0)
+        buf_h = lrint(px_h + expand * 2.0)
+        if buf_w < 1 { buf_w = 1 }
+        if buf_h < 1 { buf_h = 1 }
+
+        n = buf_w * buf_h * 4
+        pixels = bytes.new(n)
+        bytes.set(pixels, n - 1, 0)
+
+        rgba = rasterize.parse_color_to_rgba(color)
+        scr = rasterize.rgba_r(rgba)
+        scg = rasterize.rgba_g(rgba)
+        scb = rasterize.rgba_b(rgba)
+        sca = rasterize.rgba_a(rgba)
+
+        if kind == 0 {
+            pr = px_w / 2.0
+            rasterize.fill_circle_in_buffer(pixels, buf_w, buf_h,
+                expand + pr, expand + pr, pr, scr, scg, scb, sca)
+        } else {
+            rasterize.fill_rect_in_buffer(pixels, buf_w, buf_h,
+                expand, expand, px_w, px_h, scr, scg, scb, sca)
+        }
+        if px_sigma > 0.0 {
+            blur.gaussian_blur(pixels, buf_w, buf_h, px_sigma, px_sigma)
+        }
+
+        pc = buf_w * buf_h * 4
+        enc = bytes.new(pc)
+        bytes.set(enc, pc - 1, 0)
+        cbb = bytes.copy_from_bytes(enc, 0, pixels, 0, pc)
+        if cbb < 0 { }
+        b64 = utils.base64_encode_bytes(enc, pc)
+
+        c = malloc(96) as *ShadowCache
+        c.b64 = b64
+        c.out_w = buf_w
+        c.out_h = buf_h
+        c.expand = expand
+        c.key_w = bw
+        c.key_h = bh
+        c.key_sigma = sigma
+        c.key_scale = scale
+        c.key_kind = kind
+        c.key_color = color
+    }
+
+    // Position (recomputed every call — cheap): element origin + offset.
+    pp = rendering.map_point(ctx, bx + dx, by + dy)
+    opts = map.new()
+    _o1 = map.put(opts, "x", string.from_float(transform.pt_x(pp) - c.expand))
+    _o2 = map.put(opts, "y", string.from_float(transform.pt_y(pp) - c.expand))
+    _o3 = map.put(opts, "w", string.from_int(c.out_w))
+    _o4 = map.put(opts, "h", string.from_int(c.out_h))
+    _o5 = map.put(opts, "rawPixels", c.b64)
+    drawn = dispatch.dispatch_raster(backend, opts)
+    map.free(opts)
+    if drawn != null { }
+    return c as ptr
 }
