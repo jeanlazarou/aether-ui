@@ -104,6 +104,9 @@ void aether_ui_split_set_position_impl(int handle, int px);
 // elsewhere.
 void aether_ui_widget_weight_impl(int handle, int n);
 void aether_ui_on_layout_impl(int handle, void* boxed_closure);
+// wrap: flow container, children wrap to the next line when width runs
+// out (GtkFlowBox; plain stack stub elsewhere).
+int aether_ui_wrap_create(void);
 int aether_ui_zstack_create(void);
 int aether_ui_form_create(void);
 int aether_ui_form_section_create(const char* title);

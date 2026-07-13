@@ -65,12 +65,42 @@ main() {
             aeocha.assert_true(ok, "splitter back at 320")
         }
 
+        aeocha.it("weight splits leftover 1:3, fixed child keeps natural size") callback {
+            fx = uidriver.widget_id_by_text("fixed")
+            wa = uidriver.widget_id_by_text("one")
+            wb = uidriver.widget_id_by_text("three")
+            fxw = uidriver.widget_int_field_by_id(fx, "w")
+            aw = uidriver.widget_int_field_by_id(wa, "w")
+            bw = uidriver.widget_int_field_by_id(wb, "w")
+            aeocha.assert_gt(fxw, 0, "fixed child has natural width")
+            aeocha.assert_gt(100, fxw, "fixed child stays natural (< 100)")
+            // 1:3 within integer-division slack.
+            diff = bw - aw * 3
+            if diff < 0 { diff = 0 - diff }
+            aeocha.assert_gt(4, diff, "weighted widths in 1:3 (|b-3a| < 4, a=${aw} b=${bw})")
+        }
+
+        aeocha.it("wrap flows chips to more lines when narrow") callback {
+            ca = uidriver.widget_id_by_text("chip-alpha")
+            cz = uidriver.widget_id_by_text("chip-zeta")
+            ya0 = uidriver.widget_int_field_by_id(ca, "y")
+            yz0 = uidriver.widget_int_field_by_id(cz, "y")
+            aeocha.assert_eq(ya0, yz0, "wide: all chips on one line")
+            uidriver.resize_window(300, 560)
+            ok = uidriver.wait_body_contains("/widgets", "geometry: 300x", 30)
+            aeocha.assert_true(ok, "narrow layout settled")
+            yz1 = uidriver.widget_int_field_by_id(cz, "y")
+            ya1 = uidriver.widget_int_field_by_id(ca, "y")
+            aeocha.assert_gt(yz1, ya1, "narrow: last chip wrapped below the first")
+        }
+
         aeocha.it("on_layout fires on window resize (GeometryReader)") callback {
             // The demo mirrors the root stack's size into the geometry
-            // label from inside on_layout. Initial allocation already
-            // fired it once; a resize must fire it again with new values.
-            ok0 = uidriver.wait_body_contains("/widgets", "geometry: 640x", 20)
-            aeocha.assert_true(ok0, "initial allocation reported")
+            // label from inside on_layout. The wrap test just left the
+            // window at 300 wide — the label must say so — and a resize
+            // must re-fire the hook with the new width.
+            ok0 = uidriver.wait_body_contains("/widgets", "geometry: 300x", 20)
+            aeocha.assert_true(ok0, "current allocation reported")
             uidriver.resize_window(760, 480)
             ok1 = uidriver.wait_body_contains("/widgets", "geometry: 760x", 30)
             aeocha.assert_true(ok1, "resize re-fired on_layout with the new width")

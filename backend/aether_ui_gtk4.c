@@ -967,6 +967,23 @@ void aether_ui_on_layout_impl(int handle, void* boxed_closure) {
     gtk_widget_queue_resize(w);
 }
 
+// wrap — GtkFlowBox: a flow container whose children wrap to the next
+// line when the width runs out. Children arrive via the GTK_IS_FLOW_BOX
+// arm in aether_ui_widget_add_child_ctx; GTK interposes a GtkFlowBoxChild
+// between the flowbox and each child ("wrapitem" in the widget JSON).
+int aether_ui_wrap_create(void) {
+    ensure_gtk_init();
+    GtkWidget* fb = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(fb), GTK_SELECTION_NONE);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(fb), FALSE);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(fb), 6);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(fb), 6);
+    // Without a cap GtkFlowBox happily stays on one line forever; a high
+    // cap keeps "wrap when narrow" while never forcing early wraps.
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(fb), 100);
+    return aether_ui_register_widget(fb);
+}
+
 // splitview — GtkPaned, the native user-draggable two-pane splitter. The
 // first two children attached become the start/end panes (see the
 // GTK_IS_PANED arm in aether_ui_widget_add_child_ctx). Panes resize with
@@ -3382,6 +3399,8 @@ static const char* widget_type_name(GtkWidget* w) {
     if (GTK_IS_SEPARATOR(w)) return "divider";
     if (GTK_IS_SCROLLED_WINDOW(w)) return "scrollview";
     if (GTK_IS_PANED(w)) return "splitview";
+    if (GTK_IS_FLOW_BOX(w)) return "wrap";
+    if (GTK_IS_FLOW_BOX_CHILD(w)) return "wrapitem";
     if (GTK_IS_OVERLAY(w)) return "zstack";
     if (GTK_IS_DRAWING_AREA(w)) return "canvas";
     if (GTK_IS_IMAGE(w)) return "image";
@@ -4578,6 +4597,8 @@ void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle) {
         } else {
             gtk_overlay_add_overlay(GTK_OVERLAY(parent), child);
         }
+    } else if (GTK_IS_FLOW_BOX(parent)) {
+        gtk_flow_box_insert(GTK_FLOW_BOX(parent), child, -1);
     } else if (GTK_IS_PANED(parent)) {
         // splitview: exactly two panes, in declaration order. A third
         // attach is silently dropped (documented in ui.splitview).

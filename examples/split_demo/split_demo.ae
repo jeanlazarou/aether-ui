@@ -10,8 +10,9 @@
 // /widget/{id}/split_position?px=).
 
 import ui
-import ui (window, vstack, text, btn, divider, splitview,
-    split_position, split_set_position, on_layout, enable_test_server)
+import ui (window, vstack, hstack, text, btn, divider, splitview,
+    split_position, split_set_position, on_layout, weight, wrap,
+    enable_test_server)
 import std.os (os_getenv)
 import std.string
 
@@ -33,6 +34,26 @@ main() {
                     _r1 = text("right pane")
                     _r2 = text("omega")
                 }
+            }
+            divider()
+            // weights: "one" and "three" split the row's leftover 1:3
+            // (the "fixed" label keeps its natural size).
+            wrow = hstack(0) {
+                _fx = text("fixed")
+                wa = text("one")
+                wb = text("three")
+                weight(wa, 1)
+                weight(wb, 3)
+            }
+            divider()
+            // wrap: chips flow onto more lines as the window narrows.
+            _wr = wrap() {
+                _c1 = text("chip-alpha")
+                _c2 = text("chip-beta")
+                _c3 = text("chip-gamma")
+                _c4 = text("chip-delta")
+                _c5 = text("chip-epsilon")
+                _c6 = text("chip-zeta")
             }
             _b = btn("Read position") callback {
                 p = split_position(sv)

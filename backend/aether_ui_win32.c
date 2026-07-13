@@ -1481,6 +1481,10 @@ void aether_ui_widget_weight_impl(int handle, int n) {
 void aether_ui_on_layout_impl(int handle, void* boxed_closure) {
     (void)handle; (void)boxed_closure;
 }
+int aether_ui_wrap_create(void) {
+    // Stub: a horizontal stack (no wrapping).
+    return create_stack(0, 6);
+}
 
 int aether_ui_progressbar_create(double fraction) {
     ensure_win_init();
