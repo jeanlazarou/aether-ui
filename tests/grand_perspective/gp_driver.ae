@@ -164,6 +164,12 @@ wait_crumbs_gone(needle: string, tries: int) -> int {
 // click during a transient early allocation lands on the wrong row).
 wait_for_app() {
     uidriver.wait_server()
+    // Pin the window to its requested size FIRST: GTK4 on a cold Xvfb
+    // sometimes maps at NATURAL size instead (larger than 1376 here),
+    // which puts Xvfb's centre-parked pointer INSIDE the canvas — GTK
+    // then synthesizes hover motion that rewrites the status line these
+    // specs assert on (the split_demo spec pins for the same reason).
+    uidriver.resize_window(1376, 680)
     _ = wait_status_contains("Scan complete", 40)
     pw = 0 - 1
     ph = 0 - 1
