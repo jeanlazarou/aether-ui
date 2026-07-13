@@ -42,7 +42,7 @@ import std.math
 import ui
 import vg.raster.rasterize
 import vg.backend.dispatch
-import std.cryptography
+import vg.grammar.utils
 import std.floatarr
 
 extern malloc(size: int) -> ptr
@@ -516,8 +516,10 @@ canvas_raster(p: ptr, opts: ptr) -> ptr {
     if w <= 0 { return fresh_handle() }
     if h <= 0 { return fresh_handle() }
 
-    // base64_decode returns (bytes-as-string, length, err).
-    pixels, n, e = cryptography.base64_decode(raw_b64)
+    // base64_decode returns (bytes-as-string, length, err). Ours, not
+    // std.cryptography's — that one needs OpenSSL, absent on the
+    // winbaz MinGW libaether build.
+    pixels, n, e = utils.base64_decode(raw_b64)
     if e != "" {
         println("[aevg_gtk_backend] canvas_raster: base64 decode failed: ${e}")
         return fresh_handle()

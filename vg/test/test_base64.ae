@@ -1,0 +1,79 @@
+// vg/test/test_base64.ae — RFC 4648 vectors + binary round-trip for the
+// pure-Aether base64 in vg.grammar.utils (replaced std.cryptography's
+// OpenSSL-backed base64, which errors out on libaether builds without
+// OpenSSL — the winbaz MinGW build).
+import vg.grammar.utils
+import std.bytes
+import std.string
+
+extern exit(code: int)
+
+check(label: string, got: string, want: string) {
+    if got == want {
+        print("  PASS: ${label}")
+    } else {
+        print("  FAIL: ${label} got=[${got}] want=[${want}]")
+        exit(1)
+    }
+}
+
+main() {
+    // RFC 4648 vectors: "f" → "Zg==", "fo" → "Zm8=", "foo" → "Zm9v",
+    // "foob" → "Zm9vYg==", "fooba" → "Zm9vYmE=", "foobar" → "Zm9vYmFy"
+    vecs_in = "f,fo,foo,foob,fooba,foobar"
+    vecs_out = "Zg==,Zm8=,Zm9v,Zm9vYg==,Zm9vYmE=,Zm9vYmFy"
+    ins = string_split(vecs_in, ",")
+    outs = string_split(vecs_out, ",")
+    i = 0
+    while i < 6 {
+        sv = string_array_get(ins, i)
+        n = string.length(sv)
+        b = bytes.new(n)
+        bytes.set(b, n - 1, 0)
+        j = 0
+        while j < n {
+            bytes.set(b, j, string_char_at(sv, j))
+            j = j + 1
+        }
+        enc = utils.base64_encode_bytes(b, n)
+        want = string_array_get(outs, i)
+        check("encode ${sv}", enc, want)
+        dec, dn, de = utils.base64_decode(enc)
+        check("decode ${want}", dec, sv)
+        if de != "" {
+            print("  FAIL: decode err ${de}")
+            exit(1)
+        }
+        if dn != n {
+            print("  FAIL: decode len ${dn} != ${n}")
+            exit(1)
+        }
+        i = i + 1
+    }
+    // binary round-trip incl NUL and 255
+    m = 256
+    b2 = bytes.new(m)
+    bytes.set(b2, m - 1, 0)
+    k = 0
+    while k < m {
+        bytes.set(b2, k, k)
+        k = k + 1
+    }
+    enc2 = utils.base64_encode_bytes(b2, m)
+    dec2, dn2, de2 = utils.base64_decode(enc2)
+    ok = 1
+    k = 0
+    while k < m {
+        if string_char_at(dec2, k) != k { ok = 0 }
+        k = k + 1
+    }
+    if ok == 1 { print("  PASS: 0..255 binary round-trip (len ${dn2})") } else {
+        print("  FAIL: binary round-trip")
+        exit(1)
+    }
+    bad, bn, be = utils.base64_decode("Zm9v!")
+    if be != "" { print("  PASS: invalid char rejected (${be})") } else {
+        print("  FAIL: invalid char accepted")
+        exit(1)
+    }
+}

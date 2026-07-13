@@ -35,7 +35,7 @@ exports (
     parse_dy_em, parse_filter_region,
     extract_url_id, parse_preserve_aspect_ratio,
     points_to_path, ellipse_to_path, compute_path_bounds, apply_opacity_to_color,
-    base64_encode_bytes,
+    base64_encode_bytes, base64_decode,
     resolve_fill_color, resolve_stroke_color,
     effective_alpha, effective_stroke_alpha,
     style_num_default,
@@ -48,7 +48,6 @@ import std.string
 import std.map
 import std.regex
 import std.bytes
-import std.cryptography
 import vg.raster.rasterize
 
 extern malloc(size: int) -> ptr
@@ -449,22 +448,106 @@ std_list_for_format_color(r: int, g: int, b: int, opacity: float) -> ptr {
     return args
 }
 
-// ─── base64_encode_bytes ─────────────────────────────────────────
+// ─── base64_encode_bytes / base64_decode ─────────────────────────
 //
-// std.bytes buffer → base64 (RFC 4648, padded). Wraps
-// std.cryptography.base64_encode_padded by first finalising the bytes
-// buffer into a string. `len` is the logical pixel data length; the
-// buffer must contain that many bytes.
+// RFC 4648 (padded), pure Aether. std.cryptography's base64 is
+// OpenSSL-backed and returns "openssl unavailable" on libaether
+// builds without OpenSSL (the winbaz MinGW build) — which silently
+// emptied every shadow mask and raster hand-off on Windows. The
+// raster path is hot (live regions re-encode per frame), so both
+// directions are table lookups, not alphabet scans.
 
 base64_encode_bytes(buf: ptr, len: int) -> string {
-    // bytes.finish (a.k.a. aether_bytes_finish) hands back a heap
-    // string of the buffer's first `length` bytes. The buffer is
-    // consumed (don't reuse `buf` after). For non-consuming use,
-    // copy first.
-    s = bytes.finish(buf, len)
-    out, e = cryptography.base64_encode_padded(s, len)
-    if e != "" { return "" }
-    return out
+    // `buf` is consumed (freed) — same contract as the old
+    // bytes.finish-based version. For non-consuming use, copy first.
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    groups = (len + 2) / 3
+    out_len = groups * 4
+    if out_len == 0 {
+        bytes.free(buf)
+        return ""
+    }
+    out = bytes.new(out_len)
+    bytes.set(out, out_len - 1, 0)
+    i = 0
+    o = 0
+    while i < len {
+        b0 = bytes.get(buf, i)
+        b1 = 0
+        b2 = 0
+        n = 1
+        if i + 1 < len {
+            b1 = bytes.get(buf, i + 1)
+            n = 2
+        }
+        if i + 2 < len {
+            b2 = bytes.get(buf, i + 2)
+            n = 3
+        }
+        triple = b0 * 65536 + b1 * 256 + b2
+        bytes.set(out, o, string_char_at(alphabet, triple / 262144))
+        bytes.set(out, o + 1, string_char_at(alphabet, (triple / 4096) % 64))
+        c2 = 61  // '=' pad
+        if n > 1 { c2 = string_char_at(alphabet, (triple / 64) % 64) }
+        c3 = 61
+        if n > 2 { c3 = string_char_at(alphabet, triple % 64) }
+        bytes.set(out, o + 2, c2)
+        bytes.set(out, o + 3, c3)
+        i = i + 3
+        o = o + 4
+    }
+    bytes.free(buf)
+    return bytes.finish(out, out_len)
+}
+
+// base64 → (bytes-as-string, length, err). Same shape as
+// std.cryptography.base64_decode so call sites swap 1:1. Skips pad
+// and CR/LF; any other non-alphabet byte is an error.
+base64_decode(s: string) -> (string, int, string) {
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    slen = string.length(s)
+    // Reverse table: byte code → digit value + 1 (0 = invalid).
+    rt = bytes.new(256)
+    bytes.set(rt, 255, 0)
+    t = 0
+    while t < 64 {
+        bytes.set(rt, string_char_at(alphabet, t), t + 1)
+        t = t + 1
+    }
+    out_cap = (slen / 4) * 3 + 3
+    out = bytes.new(out_cap)
+    bytes.set(out, out_cap - 1, 0)
+    acc = 0
+    nbits = 0
+    o = 0
+    j = 0
+    while j < slen {
+        ch = string_char_at(s, j)
+        j = j + 1
+        if ch == 61 { continue }  // '='
+        if ch == 13 { continue }
+        if ch == 10 { continue }
+        v = bytes.get(rt, ch)
+        if v == 0 {
+            bytes.free(rt)
+            bytes.free(out)
+            return "", 0, "invalid base64 character (code ${ch})"
+        }
+        acc = acc * 64 + (v - 1)
+        nbits = nbits + 6
+        if nbits >= 8 {
+            nbits = nbits - 8
+            // acc holds nbits+8 bits; peel the top 8. nbits is 0/2/4.
+            shift = 1
+            if nbits == 2 { shift = 4 }
+            if nbits == 4 { shift = 16 }
+            bytes.set(out, o, acc / shift)
+            o = o + 1
+            acc = acc % shift
+        }
+    }
+    bytes.free(rt)
+    return bytes.finish(out, o), o, ""
 }
 
 // ─── Style-driven color resolution ───────────────────────────────

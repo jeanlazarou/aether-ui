@@ -3,7 +3,8 @@
 // render_as_raster encodes an RGBA buffer to base64 (via
 // utils.base64_encode_bytes) and dispatches it as the
 // `rawPixels` opt; the GTK adapter's canvas_raster decodes it back
-// (cryptography.base64_decode) and blits via canvas_draw_image.
+// (utils.base64_decode — pure Aether, no OpenSSL) and blits via
+// canvas_draw_image.
 //
 // This Phase-0 test verifies the encode→decode round-trip recovers
 // the exact bytes — the headless half of the raster path. The blit
@@ -11,7 +12,6 @@
 
 import std.bytes
 import std.string
-import std.cryptography
 import vg.grammar.utils
 
 extern exit(code: int)
@@ -44,7 +44,7 @@ main() {
     assert_eq_int("base64 non-empty", string.length(b64) > 0, 1)
 
     // Decode as the adapter does.
-    decoded, dn, e = cryptography.base64_decode(b64)
+    decoded, dn, e = utils.base64_decode(b64)
     assert_eq_int("decode ok (no err)", string.length(e), 0)
     assert_eq_int("decoded length = 16", dn, 16)
 
