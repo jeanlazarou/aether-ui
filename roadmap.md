@@ -159,9 +159,28 @@ to exist). **Risk:** low-medium — removal must release closures/handles
 correctly (the widget registry is append-only today). **Depends on:**
 nothing. **Unlocks:** item 4, real breadcrumbs, dynamic forms.
 
-### 4. Table / list / tree widgets
+### 4. Table / list / tree widgets ✅ DONE (2026-07-13) — tree mode later
 
-**Hand-off brief: `briefs/table.md`** (2026-07-12 — GATED on item 3 landing).
+**Shipped** (commits 345a916 listbox, 04f9daf table, 4b5762c gp
+migration): `ui.listbox` (each-backed real-widget rows, click +
+programmatic selection via .aui-row-selected, on_select, reset-on-update,
+200-row scale) and `ui.table` (column spec, header buttons firing
+on_sort(col) — the app sorts and updates, the widget never owns data —
+sized text cells from a |item,col|->string template). Proving consumer:
+gp's whole hand-drawn left pane (draw_list + list_click, ~100 lines +
+hit-testing + the "+N more…" fold) became a header block + ".." button +
+table in a scrollview; canvas shifted left 280px; all 5 gp specs green
+with clicks rewritten from canvas coords to widget rows. Driver-first
+throughout: generic /widget/{id}/click now fires gesture handlers on
+non-buttons, widget JSON gained "classes" (tracked, never read off-thread)
+and window-local x/y. Two deep infrastructure fixes forced en route:
+send_response write-all (>64KB bodies truncated on loopback), and ALL
+widget-JSON GET routes serialized through g_idle_add (off-thread tree
+walks trip GTK's css-node cache once rows churn — gtkcssnode.c:321
+abort). NOT done (later, own items): virtualization/GtkColumnView (the
+recycled-cell/handle-registry question stands), delegate cells (%-bars,
+chips), row double-click, multi-select, tree mode. Detail below is the
+original proposal, kept for the reasoning.
 
 **Borrowed from:** Swing's genuinely great contribution — `JTable`/
 `JTree` with the renderer/editor split and sortable columns. QML
@@ -333,7 +352,7 @@ format: comparisons, verdict, phased ci-gated migration).
 | 1 | Overlay layer ✅ | M | DONE 2026-07-12 (526bd6a/27ad331/a9d73dc) — host + toast + modal scrim + drawn tooltip + drawn dropdown; sommelier-proof by construction |
 | 2 | Typography ✅ | M | DONE 2026-07-12 (9e55d0c/12c32cc/aa78062/f299b06) — +17 debt gone, metrics API + driver route shipped |
 | 3 | `each` ✅ | M | DONE 2026-07-13 (7216239/a552550 + aether PRs #1125/#1127) — verb + spec + gp crumb pool retired |
-| 4 | Table/list | L–XL | The flagship widget; needs 2 & 3 |
+| 4 | Table/list ✅ | L | DONE 2026-07-13 (345a916/04f9daf/4b5762c) — listbox + table + gp left pane migrated; virtualization/delegate cells deferred |
 | 5 | Shadows + group opacity | S–M | Cheap, visible, pairs with 1 |
 | 6 | Implicit transitions | S–M | Perceived quality; machinery exists in vg |
 | 7 | Flex/split/on_layout | M | Unblocks real multi-pane apps |
