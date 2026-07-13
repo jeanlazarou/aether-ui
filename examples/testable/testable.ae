@@ -38,6 +38,13 @@ main() {
             println("Terms: ${active}")
         }
 
+        // Shortcuts (item 9): Ctrl+B bumps the counter by 10 — proves the
+        // accelerator fires regardless of focus (the spec focuses the
+        // entry first). Plain "b" must NOT fire it.
+        ui.shortcut("Ctrl+B") callback {
+            _sc = ui.ui_set(counter, ui.ui_get(counter) + 10)
+        }
+
         ui.spacer()
 
         // This button is sealed — AetherUIDriver cannot click it

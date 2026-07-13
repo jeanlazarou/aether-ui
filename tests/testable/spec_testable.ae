@@ -58,6 +58,31 @@ main() {
             ok = uidriver.wait_body_contains("/widget/${tf}", "automated", 20)
             aeocha.assert_true(ok, "textfield carries the new text")
         }
+
+        aeocha.it("focus routes: explicit grab + Tab walks the build order") callback {
+            tf = uidriver.widget_id_of("textfield", "")
+            uidriver.focus_widget(tf)
+            got = uidriver.focused_widget()
+            aeocha.assert_eq(got, tf, "GET /focus reports the grabbed textfield")
+            fired = uidriver.window_key("Tab")
+            aeocha.assert_eq(fired, 1, "Tab moved focus")
+            nxt = uidriver.focused_widget()
+            tg = uidriver.widget_id_of("toggle", "")
+            aeocha.assert_eq(nxt, tg, "Tab reached the NEXT widget in build order")
+        }
+
+        aeocha.it("shortcut fires while an entry has focus; plain key doesn't") callback {
+            tf = uidriver.widget_id_of("textfield", "")
+            uidriver.focus_widget(tf)
+            before = uidriver.state_value_int(1)
+            fired = uidriver.window_key("Ctrl+B")
+            aeocha.assert_eq(fired, 1, "Ctrl+B handled")
+            want = before + 10
+            ok = uidriver.wait_body_contains("/state/1", "${want}.0", 20)
+            aeocha.assert_true(ok, "counter bumped by 10 with entry focused")
+            nofire = uidriver.window_key("b")
+            aeocha.assert_eq(nofire, 0, "plain b is NOT a shortcut")
+        }
     }
     aeocha.run_summary(fw)
 }

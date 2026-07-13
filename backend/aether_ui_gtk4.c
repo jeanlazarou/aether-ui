@@ -451,12 +451,15 @@ int aether_ui_surface_diag_count_impl(int container_handle) {
     return s ? s->diag_count : 0;
 }
 
+static void aeui_attach_pending_shortcuts(void);
+
 static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     AppEntry* entry = (AppEntry*)user_data;
     GtkWidget* window = gtk_application_window_new(gtk_app);
     gtk_window_set_title(GTK_WINDOW(window), entry->title);
     gtk_window_set_default_size(GTK_WINDOW(window), entry->width, entry->height);
     primary_window = GTK_WINDOW(window);   // overlay layer resolves handle 0 here
+    aeui_attach_pending_shortcuts();       // item 9: queued ui.shortcut regs
 
     if (entry->root_handle > 0) {
         GtkWidget* root = aether_ui_get_widget(entry->root_handle);
@@ -814,6 +817,22 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
     }
     g_ptr_array_add(cm->labels, g_strdup(label ? label : ""));
     g_ptr_array_add(cm->closures, boxed_closure);
+}
+
+// Accelerator-labelled variant: the item DISPLAYS its combo ("Rescan
+// Ctrl+R"). Display only — wiring the combo is the app author also
+// calling ui.shortcut (auto-binding is a recorded follow-up).
+void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
+                                            const char* accel,
+                                            void* boxed_closure) {
+    char joined[256];
+    if (accel && accel[0]) {
+        snprintf(joined, sizeof(joined), "%s    %s",
+                 label ? label : "", accel);
+    } else {
+        snprintf(joined, sizeof(joined), "%s", label ? label : "");
+    }
+    aether_ui_context_menu_item_impl(handle, joined, boxed_closure);
 }
 
 static void on_button_clicked(GtkButton* btn, gpointer data) {
@@ -2240,6 +2259,171 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     return overlays[overlay_handle - 1].modal;
 }
 
+// ---------------------------------------------------------------------------
+// Shortcuts (item 9) — a window-scoped GLOBAL GtkShortcutController:
+// Swing InputMap WHEN_IN_FOCUSED_WINDOW semantics. Fires no matter which
+// widget has focus (an entry swallows plain keys but not modified combos;
+// controllers, never gestures — the sommelier focus-click lesson).
+// ui.shortcut can be called during the window block, BEFORE the GTK
+// window exists — registrations queue and attach at activate.
+// ---------------------------------------------------------------------------
+typedef struct {
+    char* combo;         // as the app wrote it ("Ctrl+R")
+    char* trigger_str;   // normalized GTK syntax ("<Control>r")
+    AeClosure* closure;
+    int attached;
+} AeuiShortcut;
+static AeuiShortcut* aeui_shortcuts = NULL;
+static int aeui_shortcut_count = 0, aeui_shortcut_capacity = 0;
+static GtkShortcutController* aeui_shortcut_ctl = NULL;
+
+static gboolean aeui_shortcut_activate(GtkWidget* widget, GVariant* args,
+                                       gpointer data) {
+    (void)widget; (void)args;
+    AeClosure* c = (AeClosure*)data;
+    if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+    return TRUE;
+}
+
+// "Ctrl+R" → "<Control>r". GTK's own syntax ("<Control>r") passes
+// through untouched. Named keys (Escape, Delete, F5…) keep their case.
+static char* aeui_normalize_combo(const char* combo) {
+    if (!combo) return strdup("");
+    if (combo[0] == '<') return strdup(combo);
+    char mods[128] = "";
+    char key[64] = "";
+    char tmp[192];
+    snprintf(tmp, sizeof(tmp), "%s", combo);
+    char* save = NULL;
+    for (char* tok = strtok_r(tmp, "+", &save); tok;
+         tok = strtok_r(NULL, "+", &save)) {
+        if (!g_ascii_strcasecmp(tok, "Ctrl") || !g_ascii_strcasecmp(tok, "Control")) {
+            strcat(mods, "<Control>");
+        } else if (!g_ascii_strcasecmp(tok, "Shift")) {
+            strcat(mods, "<Shift>");
+        } else if (!g_ascii_strcasecmp(tok, "Alt")) {
+            strcat(mods, "<Alt>");
+        } else if (!g_ascii_strcasecmp(tok, "Super") ||
+                   !g_ascii_strcasecmp(tok, "Cmd") ||
+                   !g_ascii_strcasecmp(tok, "Meta")) {
+            strcat(mods, "<Super>");
+        } else {
+            snprintf(key, sizeof(key), "%s", tok);
+        }
+    }
+    if (strlen(key) == 1 && key[0] >= 'A' && key[0] <= 'Z') key[0] += 32;
+    char out[256];
+    snprintf(out, sizeof(out), "%s%s", mods, key);
+    return strdup(out);
+}
+
+static void aeui_attach_shortcut(AeuiShortcut* s) {
+    if (!primary_window || s->attached) return;
+    if (!aeui_shortcut_ctl) {
+        aeui_shortcut_ctl = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());
+        gtk_shortcut_controller_set_scope(aeui_shortcut_ctl,
+                                          GTK_SHORTCUT_SCOPE_GLOBAL);
+        gtk_widget_add_controller(GTK_WIDGET(primary_window),
+                                  GTK_EVENT_CONTROLLER(aeui_shortcut_ctl));
+    }
+    GtkShortcutTrigger* trig =
+        gtk_shortcut_trigger_parse_string(s->trigger_str);
+    if (!trig) {
+        fprintf(stderr, "[aeui-shortcut] unparseable combo '%s' ('%s')\n",
+                s->combo, s->trigger_str);
+        return;
+    }
+    gtk_shortcut_controller_add_shortcut(aeui_shortcut_ctl,
+        gtk_shortcut_new(trig,
+            gtk_callback_action_new(aeui_shortcut_activate, s->closure, NULL)));
+    s->attached = 1;
+}
+
+void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
+    if (aeui_shortcut_count >= aeui_shortcut_capacity) {
+        aeui_shortcut_capacity = aeui_shortcut_capacity == 0
+            ? 16 : aeui_shortcut_capacity * 2;
+        aeui_shortcuts = realloc(aeui_shortcuts,
+                                 sizeof(AeuiShortcut) * aeui_shortcut_capacity);
+    }
+    AeuiShortcut* s = &aeui_shortcuts[aeui_shortcut_count++];
+    s->combo = strdup(combo ? combo : "");
+    s->trigger_str = aeui_normalize_combo(combo);
+    s->closure = (AeClosure*)boxed_closure;
+    s->attached = 0;
+    aeui_attach_shortcut(s);   // no-op before the window exists
+}
+
+// Escape dismisses the TOPMOST live overlay (runs its on_dismiss path via
+// overlay_close). Registered as an internal shortcut at activate; when no
+// overlay is open it reports unhandled so Escape propagates normally.
+static gboolean aeui_escape_overlays(GtkWidget* widget, GVariant* args,
+                                     gpointer data) {
+    (void)widget; (void)args; (void)data;
+    for (int i = overlay_count - 1; i >= 0; i--) {
+        if (overlays[i].live) {
+            aether_ui_overlay_close_impl(i + 1);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+// Called from on_activate once primary_window exists.
+static void aeui_attach_pending_shortcuts(void) {
+    for (int i = 0; i < aeui_shortcut_count; i++) {
+        aeui_attach_shortcut(&aeui_shortcuts[i]);
+    }
+    if (!aeui_shortcut_ctl) {
+        aeui_shortcut_ctl = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());
+        gtk_shortcut_controller_set_scope(aeui_shortcut_ctl,
+                                          GTK_SHORTCUT_SCOPE_GLOBAL);
+        gtk_widget_add_controller(GTK_WIDGET(primary_window),
+                                  GTK_EVENT_CONTROLLER(aeui_shortcut_ctl));
+    }
+    gtk_shortcut_controller_add_shortcut(aeui_shortcut_ctl,
+        gtk_shortcut_new(gtk_shortcut_trigger_parse_string("Escape"),
+            gtk_callback_action_new(aeui_escape_overlays, NULL, NULL)));
+}
+
+// The driver's /window/key: activate the registered shortcut whose
+// normalized trigger matches — the SAME closure the controller would run;
+// no fake input events, no seat/keymap dependency (works headless).
+// Tab / Shift+Tab move focus through the real GTK focus chain. Escape
+// runs the overlay-dismiss path. Returns 1 if something handled it.
+int aeui_window_key_fire(const char* combo) {
+    char* want = aeui_normalize_combo(combo);
+    int fired = 0;
+    for (int i = 0; i < aeui_shortcut_count; i++) {
+        if (strcmp(aeui_shortcuts[i].trigger_str, want) == 0) {
+            AeClosure* c = aeui_shortcuts[i].closure;
+            if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+            fired = 1;
+        }
+    }
+    if (!fired && primary_window) {
+        if (strcmp(want, "Tab") == 0) {
+            fired = gtk_widget_child_focus(GTK_WIDGET(primary_window),
+                                           GTK_DIR_TAB_FORWARD);
+        } else if (strcmp(want, "<Shift>Tab") == 0) {
+            fired = gtk_widget_child_focus(GTK_WIDGET(primary_window),
+                                           GTK_DIR_TAB_BACKWARD);
+        } else if (strcmp(want, "Escape") == 0) {
+            fired = aeui_escape_overlays(NULL, NULL, NULL);
+        }
+    }
+    free(want);
+    return fired;
+}
+
+// ui.focus(handle) — explicit focus. The default Tab order is GTK's
+// focus chain over the build order; this is the override for when a
+// flow needs it (dialog primary field etc.).
+void aether_ui_focus_impl(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (w) gtk_widget_grab_focus(w);
+}
+
 // Toast — a self-contained styled label opened as a bottom-center overlay,
 // auto-dismissed after `ms` via a one-shot timer. Returns the overlay handle.
 // (A convenience over overlay_open; the chrome lives in the .aui-toast CSS.)
@@ -3600,6 +3784,30 @@ static gboolean pixel_req_idle(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+typedef struct { int done; int handle; char type[32]; } FocusQuery;
+
+static gboolean focus_query_idle(gpointer data) {
+    FocusQuery* fq = (FocusQuery*)data;
+    fq->handle = 0;
+    strcpy(fq->type, "none");
+    if (primary_window) {
+        GtkWidget* f = gtk_window_get_focus(primary_window);
+        // The registry tracks OUR widgets; GTK may focus an internal child
+        // (e.g. the GtkText inside a GtkEntry) — walk up to a tracked one.
+        while (f) {
+            int h = handle_for_widget(f);
+            if (h > 0) {
+                fq->handle = h;
+                snprintf(fq->type, sizeof(fq->type), "%s", widget_type_name(f));
+                break;
+            }
+            f = gtk_widget_get_parent(f);
+        }
+    }
+    fq->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
 typedef struct { double x, y; int done; int handle; char type[32]; int on_scrim; } PickAction;
 
 static gboolean window_pick_idle(gpointer data) {
@@ -3778,6 +3986,15 @@ static gboolean test_action_idle(gpointer data) {
     TestAction* ta = (TestAction*)data;
     GtkWidget* w = aether_ui_get_widget(ta->handle);
 
+    if (ta->action == 9) {
+        // Window key — not a widget action; fire the combo through the
+        // shortcut dispatch (or Tab/Escape special handling).
+        ta->retval = aeui_window_key_fire(ta->sval);
+        ta->result = 0;
+        ta->done = 1;
+        return G_SOURCE_REMOVE;
+    }
+
     if (ta->action == 4) {
         // State set — not a widget action. Dispatch on the cell's type
         // (sval carries the raw v= for typed cells; typed setters walk
@@ -3849,6 +4066,9 @@ static gboolean test_action_idle(gpointer data) {
             }
             ta->retval = GTK_IS_PANED(w)
                 ? gtk_paned_get_position(GTK_PANED(w)) : -1;
+            break;
+        case 8: // focus — grab keyboard focus
+            ta->retval = gtk_widget_grab_focus(w) ? 1 : 0;
             break;
     }
     ta->result = 0;
@@ -4258,6 +4478,21 @@ static void handle_test_request(int client_fd) {
     }
 
     // GET /window/pick?x=&y= — hit-test at a window-local point (real z-order).
+    // GET /focus — who has keyboard focus. GTK-thread-idled (house rule:
+    // no GTK reads off the GTK thread). handle 0 = nothing focused or the
+    // focused widget isn't registry-tracked.
+    if (method == 0 && strncmp(path, "/focus", 6) == 0 && path[6] != '_') {
+        FocusQuery fq = {0};
+        g_idle_add(focus_query_idle, &fq);
+        while (!fq.done) usleep(1000);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"handle\":%d,\"type\":\"%s\"}",
+                 fq.handle, fq.type);
+        send_response(client_fd, 200, "OK", "application/json", buf);
+        close(client_fd);
+        return;
+    }
+
     if (method == 0 && strncmp(path, "/window/pick", 12) == 0) {
         PickAction pa = {0};
         const char* xs = extract_query_param(path, "x");
@@ -4407,6 +4642,45 @@ static void handle_test_request(int client_fd) {
         return;
     }
 
+    // POST /window/key?combo=Ctrl+R — fire a key combo through the
+    // shortcut dispatch (the same closures the GtkShortcutController
+    // runs; Tab/Shift+Tab move real focus; Escape dismisses overlays).
+    // Honest and headless-safe: no XTest, no seat/keymap.
+    if (method == 1 && strncmp(path, "/window/key", 11) == 0) {
+        const char* combo = extract_query_param(path, "combo");
+        if (!combo || !combo[0]) {
+            send_response(client_fd, 400, "Bad Request", "application/json",
+                          "{\"error\":\"need combo=\"}");
+            close(client_fd);
+            return;
+        }
+        ta.action = 9;
+        // %XX-decode into sval ('+' stays literal — it separates combo
+        // parts); stop at a following query param.
+        {
+            const char* p = combo;
+            char* o = ta.sval;
+            char* end = ta.sval + sizeof(ta.sval) - 1;
+            while (*p && *p != '&' && *p != ' ' && o < end) {
+                if (p[0] == '%' && g_ascii_isxdigit(p[1]) && g_ascii_isxdigit(p[2])) {
+                    *o++ = (char)((g_ascii_xdigit_value(p[1]) << 4) |
+                                  g_ascii_xdigit_value(p[2]));
+                    p += 3;
+                } else {
+                    *o++ = *p++;
+                }
+            }
+            *o = '\0';
+        }
+        g_idle_add(test_action_idle, &ta);
+        while (!ta.done) usleep(1000);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"fired\":%s}", ta.retval ? "true" : "false");
+        send_response(client_fd, 200, "OK", "application/json", buf);
+        close(client_fd);
+        return;
+    }
+
     // POST /window/resize?w=..&h=.. — resize the app's top-level window.
     if (method == 1 && strncmp(path, "/window/resize", 14) == 0) {
         WindowResizeAction ra = {0};
@@ -4487,6 +4761,9 @@ static void handle_test_request(int client_fd) {
                 ta.action = 7;
                 const char* v = extract_query_param(path, "px");
                 ta.ival = v ? atoi(v) : -1;
+            } else if (strncmp(action_part, "/focus", 6) == 0) {
+                // POST /widget/{id}/focus — grab keyboard focus.
+                ta.action = 8;
             } else {
                 send_response(client_fd, 400, "Bad Request", "application/json",
                               "{\"error\":\"unknown action\"}");

@@ -545,6 +545,27 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
     (void)handle; (void)label; (void)boxed_closure;
 }
 
+// Shortcuts + focus stubs (item 9) — keep the cross-platform ABI green;
+// real accelerators/focus wiring is follow-up work on this backend.
+void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
+    (void)combo; (void)boxed_closure;
+}
+void aether_ui_focus_impl(int handle) {
+    (void)handle;
+}
+void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
+                                            const char* accel,
+                                            void* boxed_closure) {
+    char joined[256];
+    if (accel && accel[0]) {
+        snprintf(joined, sizeof(joined), "%s    %s", label ? label : "", accel);
+    } else {
+        snprintf(joined, sizeof(joined), "%s", label ? label : "");
+    }
+    aether_ui_context_menu_item_impl(handle, joined, boxed_closure);
+}
+
+
 // ---------------------------------------------------------------------------
 // Button click target — holds an AeClosure and dispatches to it.
 // ---------------------------------------------------------------------------

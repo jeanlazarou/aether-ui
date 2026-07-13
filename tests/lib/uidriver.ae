@@ -17,6 +17,7 @@ exports (
     url_of, get_body, post_ok, post_status, post_body,
     text_width, font_ascent,
     click, click_widget, toggle_widget, key, move_to, resize_window,
+    window_key, focus_widget, focused_widget,
     set_state, state_value_int,
     widget_id_by_text, widget_id_of, widget_text_by_id, widget_bool_by_text,
     widget_int_field_by_id, field_str, field_int,
@@ -98,6 +99,27 @@ move_to(x: float, y: float) {
 }
 
 resize_window(w: int, h: int) { post_ok("/window/resize?w=${w}&h=${h}", "POST window resize") }
+
+// ─── Focus + shortcuts (item 9) ──────────────────────────────────
+
+// Fire a key combo through the window's shortcut dispatch ("Ctrl+R",
+// "Tab", "Escape"). Returns 1 if something handled it.
+window_key(combo: string) -> int {
+    body = post_body("/window/key?combo=${combo}")
+    return string.contains(body, "\"fired\":true")
+}
+
+focus_widget(id: int) { post_ok("/widget/${id}/focus", "POST widget focus") }
+
+// The handle that currently has keyboard focus (0 = none tracked).
+focused_widget() -> int {
+    body = get_body("/focus")
+    v, _jerr = json.parse(body)
+    if v == null { return 0 }
+    r = field_int(v, "handle")
+    json.json_free(v)
+    return r
+}
 
 // ─── Reactive state ──────────────────────────────────────────────
 

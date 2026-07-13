@@ -354,4 +354,15 @@ void aether_ui_bind_text_impl(int state_handle, int widget_handle, int decimals)
 void aether_ui_bind_enabled_impl(int state_handle, int widget_handle, int invert);
 void aether_ui_bind_hidden_impl(int state_handle, int widget_handle, int invert);
 
+// Shortcuts + focus (item 9). shortcut: window-scoped accelerator,
+// combo "Ctrl+R" (or GTK "<Control>r"); fires regardless of focus.
+// focus: explicit keyboard-focus grab (Tab order is the build order —
+// GTK's default focus chain; that default IS the feature).
+// GTK4 real; win32/macOS no-op stubs.
+void aether_ui_shortcut_impl(const char* combo, void* boxed_closure);
+void aether_ui_focus_impl(int handle);
+void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
+                                            const char* accel,
+                                            void* boxed_closure);
+
 #endif
