@@ -344,9 +344,29 @@ to the same refresh machinery vg uses; driver `/state` grows typed
 routes. **Effort:** M. **Risk:** low-medium (unifying two reactivity
 systems is the design work, not the code).
 
-### 9. Focus, tab order, shortcuts
+### 9. Focus, tab order, shortcuts ✅ DONE (2026-07-13) — the ranked roadmap is COMPLETE
 
-**Hand-off brief: `briefs/focus.md`** (2026-07-12, ready for execution).
+**Shipped** (9f3d0d3 D1-D3, 16c3874 D4): ui.shortcut("Ctrl+R") callback
+— window-scoped GLOBAL GtkShortcutController (Swing InputMap
+WHEN_IN_FOCUSED_WINDOW): fires with an entry focused, plain keys don't;
+pre-window registrations queue and attach at activate. ui.focus(handle)
+explicit grab; Tab order = the build order (GTK's default focus chain
+verified across mixed stacks — the default IS the feature, no
+focus_group API). Driver: GET /focus (GTK-thread-idled, walks up from
+GTK-internal focus children), POST /widget/{id}/focus, POST
+/window/key?combo= — activates the SAME closures the controller runs
+(no fake input, no seat/keymap; Tab/Shift+Tab move real focus).
+context_menu_item_accel displays combos. Escape dismisses the topmost
+overlay (the overlay brief's stretch item, retired) and propagates when
+none is open — gp's canvas Escape keeps working. Consumers: gp Ctrl+R
+rescan + Delete arms the two-click trash flow from anywhere in the
+window; specs in testable (7/7), overlay_demo (7/7),
+gp scan_and_list (4/4). win32/macOS stubs. Not done: per-widget scopes,
+chords, auto menu↔shortcut binding. Detail below is the original
+proposal, kept for the reasoning.
+
+With this, all nine ranked items are DONE — what remains of this
+document is the backlog and the strategic-fork sections.
 
 **Borrowed from:** Swing's second great contribution: `InputMap`/
 `ActionMap` (declarative keystroke→action, per focus scope). SwiftUI
@@ -417,4 +437,4 @@ format: comparisons, verdict, phased ci-gated migration).
 | 6 | Implicit transitions ✅ | S–M | DONE 2026-07-13 (e427da6) — ui.transition (GTK CSS engine) + vg.behavior (existing anim manager) + chrome fade-ins; Phase 5h tween proof; NO_ANIMATION ci discipline |
 | 7 | Flex/split/on_layout ✅ | M | DONE 2026-07-13 (d842744/e96b52e/679ed33/45420e9) — splitview + on_layout + weight + wrap; AeuiFlexLayout opt-in manager; cold-Xvfb window-pin discipline for geometry specs |
 | 8 | Bindings + typed state ✅ | M | DONE 2026-07-13 (43efb7f/b71bba4/d22b84a/0d4372f) — memo + tagged cells + PropBindings; gp ghosting = one bound bool |
-| 9 | Focus/shortcuts | M | Polish + testability |
+| 9 | Focus/shortcuts ✅ | M | DONE 2026-07-13 (9f3d0d3/16c3874) — ui.shortcut GLOBAL controller + focus routes + /window/key; gp Ctrl+R/Delete; overlay Escape. RANKED ROADMAP COMPLETE |
