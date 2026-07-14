@@ -213,6 +213,11 @@ typedef struct {
 
     // Sealed flag (test server)
     int sealed;
+
+    // CSS-class mirror (item 4/8 parity): win32 has no CSS, but the class
+    // LIST is the driver's selection-visibility contract (.aui-row-selected)
+    // — tracked here, emitted in widget JSON. Space-separated, owned.
+    char* classes;
 } Widget;
 
 static Widget** widgets = NULL;
@@ -1311,7 +1316,8 @@ void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
     (void)combo; (void)boxed_closure;
 }
 void aether_ui_focus_impl(int handle) {
-    (void)handle;
+    Widget* w = widget_at(handle);
+    if (w) SetFocus(w->hwnd);
 }
 void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
                                             const char* accel,
@@ -2142,10 +2148,30 @@ void aether_ui_widget_apply_css_impl(int handle, const char* property_css) {
     (void)handle; (void)property_css;
 }
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls) {
-    (void)handle; (void)cls;
+    Widget* w = widget_at(handle);
+    if (!w || !cls || !cls[0]) return;
+    if (w->classes && strstr(w->classes, cls)) return;  // dedupe (name-safe: our classes don't prefix each other)
+    size_t need = (w->classes ? strlen(w->classes) + 1 : 0) + strlen(cls) + 1;
+    char* nc = (char*)malloc(need);
+    if (w->classes && w->classes[0]) {
+        sprintf(nc, "%s %s", w->classes, cls);
+    } else {
+        strcpy(nc, cls);
+    }
+    free(w->classes);
+    w->classes = nc;
 }
 void aether_ui_widget_remove_css_class_impl(int handle, const char* cls) {
-    (void)handle; (void)cls;
+    Widget* w = widget_at(handle);
+    if (!w || !w->classes || !cls || !cls[0]) return;
+    char* pos = strstr(w->classes, cls);
+    if (!pos) return;
+    size_t cl = strlen(cls);
+    // Close the gap incl. one separating space on either side.
+    char* from = pos + cl;
+    if (*from == ' ') from++;
+    else if (pos > w->classes && pos[-1] == ' ') pos--;
+    memmove(pos, from, strlen(from) + 1);
 }
 void aether_ui_canvas_group_begin_impl(int canvas_id) { (void)canvas_id; }
 void aether_ui_canvas_group_end_impl(int canvas_id, double alpha) {
@@ -3250,6 +3276,37 @@ static double hook_progressbar_fraction(int handle) {
     return (w && w->kind == WK_PROGRESSBAR) ? w->u.progressbar.fraction : 0.0;
 }
 
+static int hook_widget_enabled(int handle) {
+    Widget* w = widget_at(handle);
+    return (w && IsWindowEnabled(w->hwnd)) ? 1 : 0;
+}
+
+// Window-local rect (parity with the GTK server's x/y/w/h): position is
+// relative to the top-level window's CLIENT area.
+static int hook_widget_rect(int handle, int* x, int* y, int* wd, int* hgt) {
+    Widget* w = widget_at(handle);
+    if (!w) return -1;
+    RECT r;
+    if (!GetWindowRect(w->hwnd, &r)) return -1;
+    HWND top = GetAncestor(w->hwnd, GA_ROOT);
+    POINT tl = { r.left, r.top };
+    if (top) ScreenToClient(top, &tl);
+    *x = tl.x;
+    *y = tl.y;
+    *wd = r.right - r.left;
+    *hgt = r.bottom - r.top;
+    return 0;
+}
+
+static void hook_widget_classes_into(int handle, char* buf, int bufsize) {
+    Widget* w = widget_at(handle);
+    snprintf(buf, bufsize, "%s", (w && w->classes) ? w->classes : "");
+}
+
+static int hook_focused_widget(void) {
+    return handle_for_hwnd(GetFocus());
+}
+
 // dispatch_action: sends the ctx to the UI thread via AE_WM_DRIVER and
 // blocks until the WndProc fills in ctx->result. Runs on the server
 // thread — SendMessageW is synchronous so no explicit wait is needed.
@@ -3271,8 +3328,50 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
             ctx->done = 1;
             return 0;
         }
+        if (ctx->action == AETHER_DRV_WIN_RESIZE) {
+            // Resize the app's top-level window to the given CLIENT size
+            // (mirrors the GTK route's semantics).
+            if (app_count > 0 && apps[0].hwnd) {
+                RECT rc = { 0, 0, ctx->ival, ctx->ival2 };
+                AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0,
+                                         GetDpiForWindow(apps[0].hwnd));
+                SetWindowPos(apps[0].hwnd, NULL, 0, 0,
+                             rc.right - rc.left, rc.bottom - rc.top,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
+        if (ctx->action == AETHER_DRV_WIN_KEY) {
+            // Tab / Shift+Tab move REAL focus (the same walk a dialog
+            // does). Combos report fired:false — win32 has no accelerator
+            // wiring yet, and a fake green here would lie about it.
+            ctx->retval = 0;
+            if (app_count > 0 && apps[0].hwnd) {
+                if (strcmp(ctx->sval, "Tab") == 0 ||
+                    strcmp(ctx->sval, "Shift+Tab") == 0) {
+                    BOOL back = (ctx->sval[0] == 'S');
+                    HWND cur = GetFocus();
+                    HWND nxt = GetNextDlgTabItem(apps[0].hwnd, cur, back);
+                    if (nxt) {
+                        SetFocus(nxt);
+                        ctx->retval = 1;
+                    }
+                }
+            }
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
         Widget* w = widget_at(ctx->handle);
         if (!w) { ctx->result = 3; ctx->done = 1; return 0; }
+        if (ctx->action == AETHER_DRV_FOCUS) {
+            SetFocus(w->hwnd);
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
         if (ctx->handle == aether_ui_test_server_banner_handle()) {
             ctx->result = 2; ctx->done = 1; return 0;
         }
@@ -3412,6 +3511,10 @@ static const AetherDriverHooks win32_driver_hooks = {
     .progressbar_fraction = hook_progressbar_fraction,
     .dispatch_action      = hook_dispatch_action,
     .widget_children      = hook_widget_children,
+    .widget_enabled       = hook_widget_enabled,
+    .widget_rect          = hook_widget_rect,
+    .widget_classes_into  = hook_widget_classes_into,
+    .focused_widget       = hook_focused_widget,
     .screenshot_png       = hook_screenshot_png,
 };
 

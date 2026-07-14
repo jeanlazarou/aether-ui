@@ -196,6 +196,25 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
         is_banner ? "true" : "false",
         parent);
 
+    if (h->widget_enabled) {
+        n += snprintf(buf + n, bufsize - n, ",\"enabled\":%s",
+                      h->widget_enabled(handle) ? "true" : "false");
+    }
+    if (h->widget_rect) {
+        int rx = 0, ry = 0, rw = 0, rh = 0;
+        if (h->widget_rect(handle, &rx, &ry, &rw, &rh) == 0) {
+            n += snprintf(buf + n, bufsize - n,
+                          ",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d", rx, ry, rw, rh);
+        }
+    }
+    if (h->widget_classes_into) {
+        char cls[256] = "";
+        h->widget_classes_into(handle, cls, sizeof(cls));
+        if (cls[0]) {
+            n += snprintf(buf + n, bufsize - n, ",\"classes\":\"%s\"", cls);
+        }
+    }
+
     if (strcmp(type, "toggle") == 0) {
         n += snprintf(buf + n, bufsize - n, ",\"active\":%s",
                       h->toggle_active(handle) ? "true" : "false");
@@ -380,6 +399,50 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         const char* v = extract_query_param(path, "v");
         if (v) ctx.dval = atof(v);
         dispatch_and_reply(client_fd, h, &ctx, "set");
+    } else if (method == 0 && strncmp(path, "/focus", 6) == 0) {
+        // GET /focus — who has keyboard focus (parity with the GTK server).
+        if (h->focused_widget) {
+            int fh = h->focused_widget();
+            char body[128];
+            snprintf(body, sizeof(body), "{\"handle\":%d,\"type\":\"%s\"}",
+                     fh, fh > 0 ? h->widget_type(fh) : "none");
+            send_http(client_fd, 200, "OK", "application/json", body);
+        } else {
+            send_http(client_fd, 501, "Not Implemented", "application/json",
+                      "{\"error\":\"focus introspection not wired on this backend\"}");
+        }
+    } else if (method == 1 && strstr(path, "/widget/") && strstr(path, "/focus")) {
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_FOCUS;
+        ctx.handle = extract_id_from_path(path, "/widget/");
+        dispatch_and_reply(client_fd, h, &ctx, "focused");
+    } else if (method == 1 && strncmp(path, "/window/resize", 14) == 0) {
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_WIN_RESIZE;
+        const char* ws = extract_query_param(path, "w");
+        const char* hs = extract_query_param(path, "h");
+        ctx.ival = ws ? atoi(ws) : 0;
+        ctx.ival2 = hs ? atoi(hs) : 0;
+        if (ctx.ival > 0 && ctx.ival2 > 0) {
+            h->dispatch_action(&ctx);
+            send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        } else {
+            send_http(client_fd, 400, "Bad Request", "application/json",
+                      "{\"error\":\"need w>0, h>0\"}");
+        }
+    } else if (method == 1 && strncmp(path, "/window/key", 11) == 0) {
+        // Fire a combo through the backend's key dispatch. Honesty rule:
+        // backends WITHOUT real accelerator wiring answer fired:false for
+        // combos (win32 today) — Tab/Shift+Tab focus moves are real.
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_WIN_KEY;
+        const char* combo = extract_query_param(path, "combo");
+        if (combo) strncpy(ctx.sval, combo, sizeof(ctx.sval) - 1);
+        h->dispatch_action(&ctx);
+        char body[64];
+        snprintf(body, sizeof(body), "{\"fired\":%s}",
+                 ctx.retval ? "true" : "false");
+        send_http(client_fd, 200, "OK", "application/json", body);
     } else if (method == 0 && strncmp(path, "/state/", 7) == 0) {
         int id = extract_id_from_path(path, "/state/");
         if (id > 0) {

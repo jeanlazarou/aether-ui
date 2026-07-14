@@ -27,6 +27,9 @@ typedef enum {
     AETHER_DRV_TOGGLE    = 2,
     AETHER_DRV_SET_VALUE = 3,
     AETHER_DRV_SET_STATE = 4,
+    AETHER_DRV_FOCUS     = 5,
+    AETHER_DRV_WIN_RESIZE = 6,
+    AETHER_DRV_WIN_KEY   = 7,
 } AetherDriverActionKind;
 
 typedef struct {
@@ -34,6 +37,9 @@ typedef struct {
     int    handle;
     double dval;
     char   sval[512];
+    int    ival;    // WIN_RESIZE: width
+    int    ival2;   // WIN_RESIZE: height
+    int    retval;  // WIN_KEY: 1 = fired/handled
     // Output: 0=ok, 1=sealed, 2=banner, 3=not_found
     int    result;
     // Set by dispatch_action → 1 when the UI thread has finished. Used by
@@ -66,6 +72,15 @@ typedef struct {
     // pass NULL for out_handles to query the count only. Hooks that leave
     // this NULL cause GET /widget/{id}/children to return 501.
     int (*widget_children)(int handle, int* out_handles, int max);
+
+    // Optional introspection (item-9/8 parity; NULL = field omitted /
+    // route 501). widget_enabled: 1/0. widget_rect: window-local px, 0 on
+    // success. widget_classes_into: space-separated class list ("" none).
+    // focused_widget: handle with keyboard focus (0 none).
+    int  (*widget_enabled)(int handle);
+    int  (*widget_rect)(int handle, int* x, int* y, int* w, int* hgt);
+    void (*widget_classes_into)(int handle, char* buf, int bufsize);
+    int  (*focused_widget)(void);
 
     // Optional: capture the application's root window to a PNG byte buffer.
     // On success, set *out_data (caller-freed with free()) and *out_len,
