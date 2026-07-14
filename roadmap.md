@@ -23,10 +23,11 @@ the run_on=host aeb-agent.
 | Text metrics (`vg.text_extent` etc.) | cairo | stubbed → 0 | GDI / CoreText metrics |
 | splitview | GtkPaned | plain stack, no divider | Win32 splitter / NSSplitView |
 | weight / on_layout / wrap | AeuiFlexLayout, GtkFlowBox | no-op / plain hstack | per-backend layout pass |
-| shortcut / focus / /window/key | GtkShortcutController GLOBAL | no-op | accelerator tables / NSEvent monitors + focus APIs |
+| shortcut (accelerators) | GtkShortcutController GLOBAL | no-op (/window/key answers fired:false honestly) | accelerator tables / NSEvent monitors |
+| focus (grab / GET /focus / Tab) | full | **win32 DONE 2026-07-14** (SetFocus, GetGUIThreadInfo, GetNextDlgTabItem; NB Tab follows Windows dialog order, not build order) / macOS absent | macOS: firstResponder wiring |
 | Overlay layer (toast/modal/tooltip/dropdown) | GtkOverlay host | stubs | per-backend overlay host |
 | Menu accelerator display | drawn ctx-menu items | inherits (shared path) | native menu accel columns when real menus land |
-| GET /focus + /window/key routes | embedded GTK server | absent from shared test server | port routes to aether_ui_test_server.c |
+| Driver introspection (enabled/x/y/w/h/classes) + /focus /window/resize /window/key routes | embedded GTK server | **win32 DONE 2026-07-14** (shared-server hooks; classes = real selection mirror) / macOS has its OWN embedded server, still minimal | macOS server catch-up |
 
 Notes for whoever picks this up:
 - The **shared test server** (`backend/aether_ui_test_server.c`) is the
@@ -37,7 +38,18 @@ Notes for whoever picks this up:
   transplanted verbatim into all three backends, proven live on winbaz).
 - macOS has had one full bring-up pass (AppKit backend green, driver
   17/17, all examples build) — parity work is incremental from there,
-  not a bring-up.
+  not a bring-up. NB macOS does NOT use the shared test server (it has
+  its own embedded one, minimal) — the "both-servers rule" is really a
+  three-servers rule when macOS driver parity starts.
+
+**Windows spec-matrix baseline (2026-07-14, winbaz):** the Linux Aeocha
+suites now RUN on Windows (run_spec.sh path-separator fix). Green:
+calculator 9/9, each 6/6, listbox 6/6, table 4/4, bindings 6/6.
+Documented red: testable 3 (2 = shortcuts honestly unwired, 1 = Tab
+order is Windows-native dialog order, not GTK build order);
+split 0/17 + overlay 1/13 (stub features, honestly red until real
+Win32 splitter/overlay land). Re-run: ~/aether-ui + win_spec_matrix.sh
+pattern (see session scratchpad / memory).
 
 ## 2. Deferred from the ranked items (recorded at each closeout)
 
