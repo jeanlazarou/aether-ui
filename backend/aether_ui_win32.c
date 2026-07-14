@@ -2032,9 +2032,15 @@ void aether_ui_clipboard_write_impl(const char* text) {
 }
 
 // Timer: each user timer is keyed by (hwnd, id). We use the first live app
-// window as the timer host. Callbacks live in a flat array.
+// window as the timer host — but ui.timer is usually called INSIDE the
+// window block, BEFORE app_run creates the hwnd. SetTimer(NULL, id, …)
+// then runs as a THREAD timer and Windows IGNORES the passed id,
+// assigning its own — so a callback matching on our id never fires (gp's
+// whole 30Hz heartbeat was dead on win32). Track the SYSTEM id + host.
 typedef struct {
     int id;
+    UINT_PTR sys_id;   // what WM_TIMER actually reports
+    HWND host;         // NULL = thread timer
     AeClosure* closure;
     int alive;
 } TimerEntry;
@@ -2046,7 +2052,7 @@ static int next_timer_id = 100;
 static void CALLBACK timer_cb(HWND hwnd, UINT msg, UINT_PTR id, DWORD now) {
     (void)hwnd; (void)msg; (void)now;
     for (int i = 0; i < timer_count; i++) {
-        if (timers[i].alive && (UINT_PTR)timers[i].id == id) {
+        if (timers[i].alive && timers[i].sys_id == id) {
             invoke_closure(timers[i].closure);
             return;
         }
@@ -2059,12 +2065,16 @@ int aether_ui_timer_create_impl(int interval_ms, void* boxed_closure) {
         timers = (TimerEntry*)realloc(timers, sizeof(TimerEntry) * timer_capacity);
     }
     int id = next_timer_id++;
+    HWND host = (app_count > 0) ? apps[0].hwnd : NULL;
+    UINT_PTR sys_id = SetTimer(host, id, interval_ms, (TIMERPROC)timer_cb);
     timers[timer_count].id = id;
+    // With a window host SetTimer returns the id we passed; with a NULL
+    // host it returns the system-assigned thread-timer id.
+    timers[timer_count].sys_id = host ? (UINT_PTR)id : sys_id;
+    timers[timer_count].host = host;
     timers[timer_count].closure = (AeClosure*)boxed_closure;
     timers[timer_count].alive = 1;
     timer_count++;
-    HWND host = (app_count > 0) ? apps[0].hwnd : NULL;
-    SetTimer(host, id, interval_ms, (TIMERPROC)timer_cb);
     return id;
 }
 
@@ -2072,8 +2082,7 @@ void aether_ui_timer_cancel_impl(int timer_id) {
     for (int i = 0; i < timer_count; i++) {
         if (timers[i].id == timer_id) {
             timers[i].alive = 0;
-            HWND host = (app_count > 0) ? apps[0].hwnd : NULL;
-            KillTimer(host, timer_id);
+            KillTimer(timers[i].host, timers[i].sys_id);
             return;
         }
     }
