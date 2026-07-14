@@ -64,7 +64,14 @@ main() {
     ok = 1
     k = 0
     while k < m {
-        if string_char_at(dec2, k) != k { ok = 0 }
+        // Mask to 0..255: string_char_at is declared `char` in libaether but
+        // prototyped `int` by codegen, and only AL is defined for a char
+        // return on x86-64 — gcc zero-extends, Apple clang sign-extends, so
+        // every byte >= 128 read back negative on macOS. The base64 was fine;
+        // the read was not. A byte is unsigned.
+        bk = string_char_at(dec2, k)
+        if bk < 0 { bk = bk + 256 }
+        if bk != k { ok = 0 }
         k = k + 1
     }
     if ok == 1 { print("  PASS: 0..255 binary round-trip (len ${dn2})") } else {

@@ -121,6 +121,10 @@ main() {
 
     canvas_clear(cid)
     vg_flush_live(scene, cid, 0.0)
-    ok = canvas_write_png(cid, out, 250, 250)
-    if ok == 1 { println("wrote ${out}") } else { println("PNG fail") }
+    // NB not `ok` — that name is already bound to the string error-slot of
+    // string.to_double() above, so reusing it here types this int as a
+    // const char*. gcc lets that through with a warning; Apple clang makes
+    // -Wint-conversion an error, so on macOS it failed to build outright.
+    png_ok = canvas_write_png(cid, out, 250, 250)
+    if png_ok == 1 { println("wrote ${out}") } else { println("PNG fail") }
 }

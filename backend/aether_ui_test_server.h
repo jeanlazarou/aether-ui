@@ -30,16 +30,29 @@ typedef enum {
     AETHER_DRV_FOCUS     = 5,
     AETHER_DRV_WIN_RESIZE = 6,
     AETHER_DRV_WIN_KEY   = 7,
+    // Added when macOS adopted this server. These were previously reachable
+    // only on GTK4's embedded server, which is why split/overlay/canvas specs
+    // were red on BOTH win32 and macOS. A backend that cannot honour one sets
+    // ctx->result = 3 and the route answers 404 honestly.
+    AETHER_DRV_SPLIT_POS    = 8,   // handle=splitview, ival=px (<0 reads), retval=position
+    AETHER_DRV_CANVAS_CLICK = 9,   // handle=canvas, dval=x, dval2=y
+    AETHER_DRV_CANVAS_MOVE  = 10,  // handle=canvas, dval=x, dval2=y
+    AETHER_DRV_CANVAS_KEY   = 11,  // handle=canvas, sval=key name
+    AETHER_DRV_PICK         = 12,  // ival=x, ival2=y → retval=handle, ival2=on_scrim
+    AETHER_DRV_SHUTDOWN     = 13,  // close the top-level; app exits via the user-close path
+    AETHER_DRV_CTX_MENU     = 14,  // handle=widget → retval=1 if it has a menu
+    AETHER_DRV_CTX_ACTIVATE = 15,  // handle=widget, ival=item index → retval=1 if fired
 } AetherDriverActionKind;
 
 typedef struct {
     AetherDriverActionKind action;
     int    handle;
     double dval;
+    double dval2;   // CANVAS_CLICK/MOVE: y (dval carries x)
     char   sval[512];
-    int    ival;    // WIN_RESIZE: width
-    int    ival2;   // WIN_RESIZE: height
-    int    retval;  // WIN_KEY: 1 = fired/handled
+    int    ival;    // WIN_RESIZE: width. SPLIT_POS: px. PICK: x
+    int    ival2;   // WIN_RESIZE: height. PICK: y in, on_scrim out
+    int    retval;  // WIN_KEY: 1 = fired. SPLIT_POS: position. PICK: handle
     // Output: 0=ok, 1=sealed, 2=banner, 3=not_found
     int    result;
     // Set by dispatch_action → 1 when the UI thread has finished. Used by

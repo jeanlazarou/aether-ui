@@ -53,6 +53,22 @@ typedef int aether_sock_t;
 // backend defines these; used directly for /state/{id} endpoints).
 extern double aether_ui_state_get(int handle);
 
+// Backend ABI functions this server calls straight from the HTTP thread.
+// They are pure reads over backend-side tables (no widget-tree traversal),
+// which is the same latitude GTK4's embedded server takes for /text_extent
+// and /state. Anything that touches the widget tree goes through
+// dispatch_action instead.
+extern double aether_ui_text_measure(double size, const char* text);
+extern double aether_ui_font_ascent(double size);
+extern double aether_ui_font_descent(double size);
+extern double aether_ui_font_height(double size);
+extern int    aether_ui_overlay_count_impl(void);
+extern int    aether_ui_overlay_is_live_impl(int overlay_handle);
+extern int    aether_ui_overlay_is_modal_impl(int overlay_handle);
+extern void   aether_ui_overlay_close_impl(int overlay_handle);
+extern int    aether_ui_split_position_impl(int handle);
+extern int    aether_ui_picker_get_selected(int handle);
+
 // ---------------------------------------------------------------------------
 // Sealed widget list + banner handle.
 // ---------------------------------------------------------------------------
@@ -134,6 +150,26 @@ static void url_decode(char* s) {
             in += 2;
         } else if (*in == '+') {
             *out++ = ' ';
+        } else {
+            *out++ = *in;
+        }
+    }
+    *out = '\0';
+}
+
+// As url_decode, but '+' stays a literal '+' instead of becoming a space.
+// Accelerator combos are the one place where that matters: "Ctrl+B" must
+// survive the round trip, and form-style decoding would hand the backend
+// "Ctrl B" and silently never match.
+static void url_decode_keep_plus(char* s) {
+    char* out = s;
+    for (char* in = s; *in; in++) {
+        if (*in == '%' && in[1] && in[2]) {
+            int hi = in[1], lo = in[2];
+            hi = hi >= 'a' ? hi - 'a' + 10 : hi >= 'A' ? hi - 'A' + 10 : hi - '0';
+            lo = lo >= 'a' ? lo - 'a' + 10 : lo >= 'A' ? lo - 'A' + 10 : lo - '0';
+            *out++ = (char)(hi * 16 + lo);
+            in += 2;
         } else {
             *out++ = *in;
         }
@@ -224,6 +260,16 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
     } else if (strcmp(type, "progressbar") == 0) {
         n += snprintf(buf + n, bufsize - n, ",\"value\":%.2f",
                       h->progressbar_fraction(handle));
+    } else if (strcmp(type, "picker") == 0) {
+        n += snprintf(buf + n, bufsize - n, ",\"selected\":%d",
+                      aether_ui_picker_get_selected(handle));
+    } else if (strcmp(type, "splitview") == 0) {
+        // Both of these are plain ABI reads, which is why they can be answered
+        // here rather than through a hook. They were previously emitted ONLY by
+        // GTK4's embedded server — which is why every split and picker spec was
+        // red on win32 and macOS regardless of how good the backend was.
+        n += snprintf(buf + n, bufsize - n, ",\"splitPosition\":%d",
+                      aether_ui_split_position_impl(handle));
     }
     n += snprintf(buf + n, bufsize - n, "}");
     return n;
@@ -371,12 +417,18 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
             send_http(client_fd, 404, "Not Found", "text/plain",
                       "widget not found");
         }
-    } else if (method == 1 && strstr(path, "/click")) {
+    // NB every widget action below is anchored on the /widget/ prefix, not on
+    // strstr(verb) alone. Without the anchor, "/canvas/1/click" matches the
+    // "/click" arm, gets read as widget id 0, and answers 404 "widget not
+    // found" — a canvas click that looks like a missing widget.
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/click")) {
         AetherDriverActionCtx ctx = {0};
         ctx.action = AETHER_DRV_CLICK;
         ctx.handle = extract_id_from_path(path, "/widget/");
         dispatch_and_reply(client_fd, h, &ctx, "clicked");
-    } else if (method == 1 && strstr(path, "/set_text")) {
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/set_text")) {
         AetherDriverActionCtx ctx = {0};
         ctx.action = AETHER_DRV_SET_TEXT;
         ctx.handle = extract_id_from_path(path, "/widget/");
@@ -387,18 +439,73 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
             url_decode(ctx.sval);
         }
         dispatch_and_reply(client_fd, h, &ctx, "set");
-    } else if (method == 1 && strstr(path, "/toggle")) {
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/toggle")) {
         AetherDriverActionCtx ctx = {0};
         ctx.action = AETHER_DRV_TOGGLE;
         ctx.handle = extract_id_from_path(path, "/widget/");
         dispatch_and_reply(client_fd, h, &ctx, "toggled");
-    } else if (method == 1 && strstr(path, "/set_value")) {
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/set_value")) {
         AetherDriverActionCtx ctx = {0};
         ctx.action = AETHER_DRV_SET_VALUE;
         ctx.handle = extract_id_from_path(path, "/widget/");
         const char* v = extract_query_param(path, "v");
         if (v) ctx.dval = atof(v);
         dispatch_and_reply(client_fd, h, &ctx, "set");
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/context_menu")) {
+        // POST /widget/{id}/context_menu          → {"mapped":1}
+        // POST /widget/{id}/context_menu/{idx}    → {"mapped":1,"activated":idx}
+        //
+        // Must be tested BEFORE the generic /widget/{id}/<action> arm, whose
+        // else-branch 400s. Activating drives the same closure a real
+        // right-click fires — there is no test-only path.
+        int id = extract_id_from_path(path, "/widget/");
+        const char* tail = strstr(path, "/context_menu");
+        const char* idx_s = tail ? strchr(tail + 1, '/') : NULL;
+
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_CTX_MENU;
+        ctx.handle = id;
+        h->dispatch_action(&ctx);
+        int mapped = ctx.retval;
+
+        if (!idx_s) {
+            char body[64];
+            snprintf(body, sizeof(body), "{\"mapped\":%d}", mapped);
+            send_http(client_fd, 200, "OK", "application/json", body);
+        } else {
+            int idx = atoi(idx_s + 1);
+            AetherDriverActionCtx act = {0};
+            act.action = AETHER_DRV_CTX_ACTIVATE;
+            act.handle = id;
+            act.ival = idx;
+            h->dispatch_action(&act);
+            if (!act.retval) {
+                send_http(client_fd, 404, "Not Found", "application/json",
+                          "{\"error\":\"no such context menu item\"}");
+            } else {
+                char body[96];
+                snprintf(body, sizeof(body),
+                         "{\"mapped\":%d,\"activated\":%d}", mapped, idx);
+                send_http(client_fd, 200, "OK", "application/json", body);
+            }
+        }
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/split_position")) {
+        // POST /widget/{id}/split_position?px=N — omit px (or pass <0) to
+        // read the divider without moving it. Answers the resulting
+        // position, or -1 when the handle is not a splitview.
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_SPLIT_POS;
+        ctx.handle = extract_id_from_path(path, "/widget/");
+        const char* px = extract_query_param(path, "px");
+        ctx.ival = px ? atoi(px) : -1;
+        h->dispatch_action(&ctx);
+        char body[64];
+        snprintf(body, sizeof(body), "{\"ok\":true,\"position\":%d}", ctx.retval);
+        send_http(client_fd, 200, "OK", "application/json", body);
     } else if (method == 0 && strncmp(path, "/focus", 6) == 0) {
         // GET /focus — who has keyboard focus (parity with the GTK server).
         if (h->focused_widget) {
@@ -437,12 +544,137 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         AetherDriverActionCtx ctx = {0};
         ctx.action = AETHER_DRV_WIN_KEY;
         const char* combo = extract_query_param(path, "combo");
-        if (combo) strncpy(ctx.sval, combo, sizeof(ctx.sval) - 1);
+        if (combo) {
+            strncpy(ctx.sval, combo, sizeof(ctx.sval) - 1);
+            char* amp = strchr(ctx.sval, '&');
+            if (amp) *amp = '\0';
+            url_decode_keep_plus(ctx.sval);
+        }
         h->dispatch_action(&ctx);
         char body[64];
         snprintf(body, sizeof(body), "{\"fired\":%s}",
                  ctx.retval ? "true" : "false");
         send_http(client_fd, 200, "OK", "application/json", body);
+    } else if (method == 0 && strncmp(path, "/window/pick", 12) == 0) {
+        // GET /window/pick?x=&y= — a REAL hit-test at window-local coords.
+        // This is what proves a modal scrim blocks input by z-order rather
+        // than by an honour system: pick the button under the scrim and the
+        // scrim must answer, not the button.
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_PICK;
+        const char* xs = extract_query_param(path, "x");
+        const char* ys = extract_query_param(path, "y");
+        ctx.ival = xs ? atoi(xs) : 0;
+        ctx.ival2 = ys ? atoi(ys) : 0;
+        h->dispatch_action(&ctx);
+        if (ctx.result == 3) {
+            send_http(client_fd, 501, "Not Implemented", "application/json",
+                      "{\"error\":\"window pick not wired on this backend\"}");
+        } else {
+            char body[160];
+            snprintf(body, sizeof(body),
+                     "{\"handle\":%d,\"type\":\"%s\",\"on_scrim\":%d}",
+                     ctx.retval,
+                     ctx.ival2 ? "scrim"
+                               : (ctx.retval > 0 ? h->widget_type(ctx.retval) : "none"),
+                     ctx.ival2 ? 1 : 0);
+            send_http(client_fd, 200, "OK", "application/json", body);
+        }
+    } else if (method == 0 && strncmp(path, "/text_extent", 12) == 0) {
+        // GET /text_extent?size=&s= — the metrics vg.text_extent() reports.
+        // Measured with the SAME font the canvas draws with, or centring
+        // math built on it would drift from what the user sees.
+        const char* sz = extract_query_param(path, "size");
+        const char* s  = extract_query_param(path, "s");
+        double size = sz ? atof(sz) : 16.0;
+        if (size <= 0) size = 16.0;
+        char text[512] = "";
+        if (s) {
+            strncpy(text, s, sizeof(text) - 1);
+            char* amp = strchr(text, '&');
+            if (amp) *amp = '\0';
+            url_decode(text);
+        }
+        char body[256];
+        snprintf(body, sizeof(body),
+                 "{\"width\":%.3f,\"ascent\":%.3f,\"descent\":%.3f,\"height\":%.3f}",
+                 aether_ui_text_measure(size, text),
+                 aether_ui_font_ascent(size),
+                 aether_ui_font_descent(size),
+                 aether_ui_font_height(size));
+        send_http(client_fd, 200, "OK", "application/json", body);
+    } else if (method == 0 && strcmp(path, "/overlays") == 0) {
+        // Overlay handles are 1-based and monotonic; the table is never
+        // compacted, so a closed overlay stays listed with "live":0. Specs
+        // rely on that (a toast must be observably dead, not merely absent).
+        int n = aether_ui_overlay_count_impl();
+        char body[4096];
+        int pos = snprintf(body, sizeof(body), "{\"count\":%d,\"overlays\":[", n);
+        for (int i = 1; i <= n && pos < (int)sizeof(body) - 64; i++) {
+            pos += snprintf(body + pos, sizeof(body) - pos,
+                            "%s{\"handle\":%d,\"modal\":%d,\"live\":%d}",
+                            i > 1 ? "," : "", i,
+                            aether_ui_overlay_is_modal_impl(i),
+                            aether_ui_overlay_is_live_impl(i));
+        }
+        snprintf(body + pos, sizeof(body) - pos, "]}");
+        send_http(client_fd, 200, "OK", "application/json", body);
+    } else if (method == 1 && strncmp(path, "/overlay/", 9) == 0
+               && strstr(path, "/dismiss")) {
+        int id = extract_id_from_path(path, "/overlay/");
+        aether_ui_overlay_close_impl(id);
+        send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+    } else if (method == 1 && strncmp(path, "/canvas/", 8) == 0) {
+        // POST /canvas/{id}/click|move|key — drive the canvas's registered
+        // hit-test closures. A backend with no handler answers 404, which is
+        // how a spec learns the difference between "missed" and "unwired".
+        AetherDriverActionCtx ctx = {0};
+        ctx.handle = extract_id_from_path(path, "/canvas/");
+        const char* what = "canvas event";
+        if (strstr(path, "/click")) {
+            ctx.action = AETHER_DRV_CANVAS_CLICK;
+            what = "no canvas click handler";
+        } else if (strstr(path, "/move")) {
+            ctx.action = AETHER_DRV_CANVAS_MOVE;
+            what = "no canvas move handler";
+        } else if (strstr(path, "/key")) {
+            ctx.action = AETHER_DRV_CANVAS_KEY;
+            what = "no canvas key handler";
+        } else {
+            send_http(client_fd, 400, "Bad Request", "application/json",
+                      "{\"error\":\"unknown canvas action\"}");
+            return;
+        }
+        const char* xs = extract_query_param(path, "x");
+        const char* ys = extract_query_param(path, "y");
+        const char* nm = extract_query_param(path, "name");
+        if (xs) ctx.dval  = atof(xs);
+        if (ys) ctx.dval2 = atof(ys);
+        if (nm) {
+            strncpy(ctx.sval, nm, sizeof(ctx.sval) - 1);
+            char* amp = strchr(ctx.sval, '&');
+            if (amp) *amp = '\0';
+            url_decode(ctx.sval);
+        }
+        h->dispatch_action(&ctx);
+        if (ctx.result == 3) {
+            char err[96];
+            snprintf(err, sizeof(err), "{\"error\":\"%s\"}", what);
+            send_http(client_fd, 404, "Not Found", "application/json", err);
+        } else {
+            send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        }
+    } else if (method == 1 && strcmp(path, "/shutdown") == 0) {
+        // Reply BEFORE closing: the app exits by the same path a user-close
+        // takes, so the port is released cleanly. Signal-killing instead
+        // leaves a zombie holding 9222 and the next suite in the matrix
+        // interrogates the previous app — a whole family of impossible
+        // failures.
+        send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        AetherDriverActionCtx ctx = {0};
+        ctx.action = AETHER_DRV_SHUTDOWN;
+        h->dispatch_action(&ctx);
+        return;
     } else if (method == 0 && strncmp(path, "/state/", 7) == 0) {
         int id = extract_id_from_path(path, "/state/");
         if (id > 0) {

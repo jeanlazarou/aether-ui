@@ -39,7 +39,13 @@ mk_ctx() -> ptr {
 // A recorder the draw callback writes to (capture-free closures get the region;
 // the recorder is a stable heap object, fine to capture).
 struct Rec { calls: int last_t: float drew: int }
-mk_rec() -> *Rec { r = malloc(16) as *Rec; r.calls = 0; r.last_t = 0.0; r.drew = 0; return r }
+// 24, not 16: {int, double, int} is 4 + 4 pad + 8 + 4 + 4 pad = 24, and `drew`
+// lands at offset 16 — exactly one past the end of a 16-byte block. glibc
+// rounds a 16-byte request up to a 32-byte bin so the overflow writes into
+// slack and nothing complains; macOS's allocator uses a 16-byte bin and the
+// write corrupts the free list, aborting the process several statements later.
+// A real heap overflow that only one libc was kind enough to hide.
+mk_rec() -> *Rec { r = malloc(24) as *Rec; r.calls = 0; r.last_t = 0.0; r.drew = 0; return r }
 
 main() {
     println("=== test_live_region ===")

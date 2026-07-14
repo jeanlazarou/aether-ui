@@ -3382,6 +3382,62 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
             ctx->done = 1;
             return 0;
         }
+        if (ctx->action == AETHER_DRV_SHUTDOWN) {
+            // Same exit path a user-close takes, so the port is released and
+            // the next spec in the matrix doesn't interrogate this app.
+            if (app_count > 0 && apps[0].hwnd) {
+                PostMessageW(apps[0].hwnd, WM_CLOSE, 0, 0);
+            } else {
+                PostQuitMessage(0);
+            }
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
+        if (ctx->action == AETHER_DRV_SPLIT_POS) {
+            // The Win32 splitview is still a plain stack (no divider), so
+            // split_position_impl answers -1. Report that rather than a
+            // fabricated 0 — a spec must be able to tell "unwired" from
+            // "the divider happens to sit at zero".
+            if (ctx->ival >= 0) aether_ui_split_set_position_impl(ctx->handle, ctx->ival);
+            ctx->retval = aether_ui_split_position_impl(ctx->handle);
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
+        if (ctx->action == AETHER_DRV_PICK) {
+            // Real hit-test against the client area. Win32 has no overlay
+            // layer yet, so nothing can be ON a scrim — on_scrim stays 0.
+            POINT pt = { ctx->ival, ctx->ival2 };  // read y BEFORE ival2 becomes the out-param
+            ctx->retval = 0;
+            ctx->ival2 = 0;
+            if (app_count > 0 && apps[0].hwnd) {
+                HWND hit = ChildWindowFromPointEx(apps[0].hwnd, pt,
+                    CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
+                if (hit && hit != apps[0].hwnd) ctx->retval = handle_for_hwnd(hit);
+            }
+            ctx->result = 0;
+            ctx->done = 1;
+            return 0;
+        }
+        if (ctx->action == AETHER_DRV_CANVAS_CLICK
+            || ctx->action == AETHER_DRV_CANVAS_MOVE
+            || ctx->action == AETHER_DRV_CANVAS_KEY) {
+            // Only on_move is wired on this backend (canvas_on_click/on_key
+            // are still stubs) — the others answer 404 honestly.
+            ctx->result = 3;
+            if (ctx->action == AETHER_DRV_CANVAS_MOVE
+                && ctx->handle >= 1 && ctx->handle <= canvas_count) {
+                Canvas* cv = &canvases[ctx->handle - 1];
+                if (cv->on_move && cv->on_move->fn) {
+                    ((void(*)(void*, double, double))cv->on_move->fn)(
+                        cv->on_move->env, ctx->dval, ctx->dval2);
+                    ctx->result = 0;
+                }
+            }
+            ctx->done = 1;
+            return 0;
+        }
         Widget* w = widget_at(ctx->handle);
         if (!w) { ctx->result = 3; ctx->done = 1; return 0; }
         if (ctx->action == AETHER_DRV_FOCUS) {

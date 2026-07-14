@@ -12,6 +12,8 @@
 
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>     // text metrics (CTLine typographic bounds)
+#import <ImageIO/ImageIO.h>       // headless canvas_write_png
 #include "aether_ui_backend.h"  // cross-platform backend ABI
 #include "aether_ui_system_extras.h"
 #include <stdint.h>
@@ -59,7 +61,8 @@ enum {
     AUI_PROGRESSBAR, AUI_DIVIDER, AUI_SCROLLVIEW,
     AUI_VSTACK, AUI_HSTACK, AUI_ZSTACK, AUI_SPACER,
     AUI_CANVAS, AUI_IMAGE, AUI_FORM_SECTION, AUI_FORM_SECTION_INNER,
-    AUI_NAVSTACK, AUI_BANNER, AUI_WINDOW, AUI_SHEET
+    AUI_NAVSTACK, AUI_BANNER, AUI_WINDOW, AUI_SHEET,
+    AUI_SPLITVIEW, AUI_WRAP, AUI_SCRIM
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +70,31 @@ enum {
 // ---------------------------------------------------------------------------
 static NSView* __strong *widgets = NULL;
 static int* widget_types = NULL;
+// Per-widget CSS class list — a space-separated string, malloc'd, NULL when
+// the widget has no classes. AppKit has no stylesheet engine, so unlike GTK
+// these classes carry no styling; they exist because the driver's `classes`
+// field is how specs read selection state (the .aui-row-selected mirror the
+// win32 backend established). Parallel array, same 1-based handle space.
+static char** widget_classes = NULL;
+// Per-widget click closure, addressable by handle. The live click path uses a
+// gesture recognizer (which owns its own closure), but the DRIVER has only a
+// handle — and a listbox row is a plain container, not an NSButton, so
+// performClick: does nothing for it. This is the table that lets
+// POST /widget/{id}/click fire what a real click would.
+static AeClosure** widget_clicks = NULL;
+// Main-axis flex weight (Flutter Expanded). 0 = unweighted, keeps natural size.
+static int* widget_weights = NULL;
+// Does this widget want to absorb slack? Bit 0 = horizontally, bit 1 = vertically.
+// GTK propagates expand UP the tree (a box containing an expanding child itself
+// expands); AppKit's hugging is strictly per-view, so we replicate the
+// propagation by hand — see aether_ui_widget_add_child_ctx.
+static int* widget_expand = NULL;
+#define AEUI_EXPAND_H 1
+#define AEUI_EXPAND_V 2
+// Radio-group leader for a toggle (0 = ungrouped). GTK renders grouped check
+// buttons as radios and enforces exactly-one-active itself; AppKit does not,
+// so exclusivity is enforced here.
+static int* widget_group = NULL;
 static int widget_count = 0;
 static int widget_capacity = 0;
 
@@ -75,22 +103,56 @@ static int register_widget_typed(void* widget, int type) {
         int new_cap = widget_capacity == 0 ? 64 : widget_capacity * 2;
         NSView* __strong *new_widgets = (__strong NSView**)calloc(new_cap, sizeof(NSView*));
         int* new_types = (int*)calloc(new_cap, sizeof(int));
+        char** new_classes = (char**)calloc(new_cap, sizeof(char*));
+        AeClosure** new_clicks = (AeClosure**)calloc(new_cap, sizeof(AeClosure*));
+        int* new_weights = (int*)calloc(new_cap, sizeof(int));
+        int* new_expand = (int*)calloc(new_cap, sizeof(int));
+        int* new_group = (int*)calloc(new_cap, sizeof(int));
         if (widgets) {
             for (int i = 0; i < widget_count; i++) {
                 new_widgets[i] = widgets[i];
                 new_types[i] = widget_types[i];
+                new_classes[i] = widget_classes[i];
+                new_clicks[i] = widget_clicks[i];
+                new_weights[i] = widget_weights[i];
+                new_expand[i] = widget_expand[i];
+                new_group[i] = widget_group[i];
             }
             free(widgets);
             free(widget_types);
+            free(widget_classes);
+            free(widget_clicks);
+            free(widget_weights);
+            free(widget_expand);
+            free(widget_group);
         }
         widgets = new_widgets;
         widget_types = new_types;
+        widget_classes = new_classes;
+        widget_clicks = new_clicks;
+        widget_weights = new_weights;
+        widget_expand = new_expand;
+        widget_group = new_group;
         widget_capacity = new_cap;
     }
     widgets[widget_count] = (__bridge NSView*)widget;
     widget_types[widget_count] = type;
+    widget_classes[widget_count] = NULL;
+    widget_clicks[widget_count] = NULL;
+    widget_weights[widget_count] = 0;
+    // A canvas, splitview or scrollview is a slack-absorber in both axes — the
+    // AppKit equivalent of GTK setting hexpand/vexpand TRUE on a drawing area.
+    widget_expand[widget_count] =
+        (type == AUI_CANVAS || type == AUI_SPLITVIEW || type == AUI_SCROLLVIEW)
+            ? (AEUI_EXPAND_H | AEUI_EXPAND_V) : 0;
+    widget_group[widget_count] = 0;
     widget_count++;
     return widget_count;
+}
+
+static AeClosure* widget_click_closure(int handle) {
+    if (handle < 1 || handle > widget_count) return NULL;
+    return widget_clicks[handle - 1];
 }
 
 int aether_ui_register_widget(void* widget) {
@@ -335,7 +397,29 @@ void aether_ui_bind_hidden_impl(int state_handle, int widget_handle, int invert)
 @interface AetherAppDelegate : NSObject <NSApplicationDelegate>
 @property (strong) NSWindow* window;
 @property (assign) int rootHandle;
+// The size the app ASKED for. Mounting an Auto Layout content view lets the
+// window resize itself to the content's natural size, so this has to be
+// re-asserted afterwards — see applicationDidFinishLaunching.
+@property (assign) int wantW;
+@property (assign) int wantH;
 @end
+
+// The overlay host — a plain view interposed between the window and the app's
+// root, so overlays have somewhere to live that is NOT inside the root stack.
+// GTK does exactly this with GtkOverlay; without it, adding a toast to an
+// NSStackView root would make it an arranged subview and shove the app's own
+// widgets aside. When no overlay is open the tree is visually identical to
+// having mounted the root directly.
+@interface AetherOverlayHost : NSView
+@end
+@implementation AetherOverlayHost
+@end
+
+static AetherOverlayHost* overlay_host = nil;
+// The initial-size floor (see applicationDidFinishLaunching). Retracted by the
+// first explicit resize, so window(w,h) is a starting size, not a cage.
+static NSLayoutConstraint* aeui_win_floor_w = nil;
+static NSLayoutConstraint* aeui_win_floor_h = nil;
 
 @implementation AetherAppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
@@ -343,7 +427,62 @@ void aether_ui_bind_hidden_impl(int state_handle, int widget_handle, int invert)
     if (self.rootHandle > 0) {
         NSView* root = (__bridge NSView*)aether_ui_get_widget(self.rootHandle);
         if (root) {
-            [self.window setContentView:root];
+            AetherOverlayHost* host = [[AetherOverlayHost alloc] initWithFrame:
+                [[self.window contentView] bounds]];
+            [host setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+            // Layer-backed so the whole tree gets layers — /screenshot reads the
+            // presentation layer to see animations in flight (see
+            // hook_screenshot_png), and there is no presentation layer without
+            // this.
+            [host setWantsLayer:YES];
+            [host addSubview:root];
+            [root setTranslatesAutoresizingMaskIntoConstraints:NO];
+            [root.leadingAnchor constraintEqualToAnchor:host.leadingAnchor].active = YES;
+            [root.trailingAnchor constraintEqualToAnchor:host.trailingAnchor].active = YES;
+            [root.topAnchor constraintEqualToAnchor:host.topAnchor].active = YES;
+            [root.bottomAnchor constraintEqualToAnchor:host.bottomAnchor].active = YES;
+            [self.window setContentView:host];
+            overlay_host = host;
+
+            // Force a layout pass now. A headless run never displays the
+            // window, and without this every widget_rect would answer 0x0 —
+            // the driver's geometry fields would be silently useless on CI.
+            [host layoutSubtreeIfNeeded];
+
+            // Re-assert the requested size — AFTER layout, which is the whole
+            // point. Mounting an Auto Layout content view makes the window
+            // adopt the content's FITTING size the moment it lays out:
+            // table_demo asks for 520x420 and settles at 318x420, the natural
+            // width of its widest row. Setting the size before that pass gets
+            // silently undone by it. window(w, h) means what it says.
+            if (self.wantW > 0 && self.wantH > 0) {
+                // Express the requested size as a FLOOR on the content, not as
+                // a one-shot setContentSize:.
+                //
+                // A window whose contentView uses Auto Layout re-adopts the
+                // content's fitting size on every layout pass, so an imperative
+                // setContentSize: is silently undone a frame later (measured:
+                // 520 → 318 within 300ms). table_demo asks for 520x420 and its
+                // rows are only 318 wide, so it settled at 318 and could not be
+                // widened even through /window/resize.
+                //
+                // A >= constraint is the durable form of the same intent: the
+                // content may never be smaller than what the app asked for, and
+                // layout has nothing to revert.
+                //
+                // It guarantees the STARTING size only. An explicit resize
+                // retracts it (see AETHER_DRV_WIN_RESIZE) — otherwise the floor
+                // becomes a cage and a window can never be made smaller than it
+                // was born, which broke the split spec's shrink.
+                aeui_win_floor_w = [host.widthAnchor
+                    constraintGreaterThanOrEqualToConstant:self.wantW];
+                aeui_win_floor_h = [host.heightAnchor
+                    constraintGreaterThanOrEqualToConstant:self.wantH];
+                aeui_win_floor_w.active = YES;
+                aeui_win_floor_h.active = YES;
+                [self.window setContentSize:NSMakeSize(self.wantW, self.wantH)];
+                [host layoutSubtreeIfNeeded];
+            }
         }
     }
     // Honor AETHER_UI_HEADLESS for CI and unattended scenarios. The window
@@ -382,6 +521,8 @@ int aether_ui_app_create(const char* title, int width, int height) {
     app_delegate = [[AetherAppDelegate alloc] init];
     app_delegate.window = window;
     app_delegate.rootHandle = 0;
+    app_delegate.wantW = width;
+    app_delegate.wantH = height;
     primary_window = window;
     return 1;
 }
@@ -537,21 +678,245 @@ void aether_ui_button_set_label(int handle, const char* label) {
     }
 }
 
-// Right-click context menus: not yet implemented on AppKit (NSMenu +
-// rightMouseDown is the native shape). No-op stub — same precedent as
-// canvas_on_move.
-void aether_ui_context_menu_item_impl(int handle, const char* label,
-                                      void* boxed_closure) {
-    (void)handle; (void)label; (void)boxed_closure;
+// ---------------------------------------------------------------------------
+// Right-click context menus.
+//
+// -[NSView setMenu:] IS the native shape: AppKit pops it on right-click with
+// no gesture wiring of our own. The menu is created lazily on the first item,
+// so a widget that never asks for one carries no menu at all.
+//
+// The driver reaches the same menu by handle (POST /widget/{id}/context_menu
+// [/{idx}]), so a spec exercises the very closures a real right-click fires
+// rather than a parallel test-only path.
+// ---------------------------------------------------------------------------
+@interface AetherMenuTarget : NSObject
+- (void)fire:(id)sender;
+@end
+
+static AetherMenuTarget* g_menu_target;   // defined with the menubar code below
+
+// The context menu attached to a widget, or nil.
+static NSMenu* widget_context_menu(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    return v ? [v menu] : nil;
 }
 
-// Shortcuts + focus stubs (item 9) — keep the cross-platform ABI green;
-// real accelerators/focus wiring is follow-up work on this backend.
-void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
-    (void)combo; (void)boxed_closure;
+void aether_ui_context_menu_item_impl(int handle, const char* label,
+                                      void* boxed_closure) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    if (!g_menu_target) g_menu_target = [[AetherMenuTarget alloc] init];
+
+    NSMenu* m = [v menu];
+    if (!m) {                       // lazily created on the first item
+        m = [[NSMenu alloc] initWithTitle:@""];
+        [m setAutoenablesItems:NO];
+        [v setMenu:m];
+    }
+    NSMenuItem* item = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithUTF8String:(label ? label : "")]
+               action:@selector(fire:) keyEquivalent:@""];
+    [item setTarget:g_menu_target];
+    [item setRepresentedObject:[NSNumber numberWithLongLong:(intptr_t)boxed_closure]];
+    [m addItem:item];
 }
+
+// Driver support: does this widget have a menu (and how many items)?
+static int aeui_ctx_menu_map(int handle) {
+    NSMenu* m = widget_context_menu(handle);
+    return m ? 1 : 0;
+}
+
+// Fire item `idx`. Returns 1 on success, 0 if there's no such item — the
+// driver turns that into an honest 404 rather than a silent green.
+static int aeui_ctx_menu_activate(int handle, int idx) {
+    NSMenu* m = widget_context_menu(handle);
+    if (!m || idx < 0 || idx >= (int)[m numberOfItems]) return 0;
+    NSMenuItem* item = [m itemAtIndex:idx];
+    if (![item target]) return 0;
+    [g_menu_target fire:item];
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Shortcuts + focus (item 9).
+//
+// Accelerators are window-scoped and fire regardless of focus — the same
+// contract GTK4's GtkShortcutController gives. AppKit has no equivalent
+// controller, so we install ONE local NSEvent key-down monitor and match
+// against a registry of normalized combos.
+//
+// Normalization is the crux: the DSL accepts "Ctrl+R", GTK's "<Control>r",
+// and bare keys like "Tab". Both the live NSEvent path and the driver's
+// POST /window/key path funnel through combo_normalize(), so a spec that
+// posts "Ctrl+B" fires exactly the accelerator a human pressing it would.
+//
+// Ctrl maps to the literal Control key, NOT Command. Command would be the
+// idiomatic Mac accelerator, but the combo string is the cross-platform
+// contract and a spec asserting "Ctrl+B" must mean what it says. Cmd+<key>
+// is accepted as an explicit alias so apps can still ask for it by name.
+// ---------------------------------------------------------------------------
+#define AEUI_MOD_CTRL  (1 << 0)
+#define AEUI_MOD_ALT   (1 << 1)
+#define AEUI_MOD_SHIFT (1 << 2)
+#define AEUI_MOD_CMD   (1 << 3)
+
+typedef struct {
+    char       combo[64];   // canonical: "ctrl+shift+b"
+    AeClosure* closure;
+} ShortcutEntry;
+
+static ShortcutEntry* shortcuts = NULL;
+static int shortcut_count = 0;
+static int shortcut_capacity = 0;
+static id  shortcut_monitor = nil;
+
+// Render (mods, key) into the canonical form: modifiers in a fixed order,
+// key lowercased. Fixed order is what makes "Shift+Ctrl+B" and "Ctrl+Shift+B"
+// the same accelerator.
+static void combo_canonical(int mods, const char* key, char* out, int outsize) {
+    char lowered[32];
+    int i = 0;
+    for (; key && key[i] && i < (int)sizeof(lowered) - 1; i++) {
+        lowered[i] = (char)tolower((unsigned char)key[i]);
+    }
+    lowered[i] = '\0';
+    snprintf(out, outsize, "%s%s%s%s%s",
+             (mods & AEUI_MOD_CTRL)  ? "ctrl+"  : "",
+             (mods & AEUI_MOD_ALT)   ? "alt+"   : "",
+             (mods & AEUI_MOD_SHIFT) ? "shift+" : "",
+             (mods & AEUI_MOD_CMD)   ? "cmd+"   : "",
+             lowered);
+}
+
+// Parse "Ctrl+Shift+R" / "<Control><Shift>r" / "Tab" → canonical form.
+static void combo_normalize(const char* combo, char* out, int outsize) {
+    out[0] = '\0';
+    if (!combo || !*combo) return;
+
+    int mods = 0;
+    char key[32] = "";
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s", combo);
+
+    // GTK angle-bracket form: <Control><Shift>r
+    if (strchr(buf, '<')) {
+        const char* p = buf;
+        while (*p == '<') {
+            const char* close = strchr(p, '>');
+            if (!close) break;
+            size_t len = (size_t)(close - p - 1);
+            char name[32];
+            if (len >= sizeof(name)) len = sizeof(name) - 1;
+            memcpy(name, p + 1, len);
+            name[len] = '\0';
+            if (strcasecmp(name, "Control") == 0 || strcasecmp(name, "Primary") == 0
+                || strcasecmp(name, "Ctrl") == 0)       mods |= AEUI_MOD_CTRL;
+            else if (strcasecmp(name, "Shift") == 0)     mods |= AEUI_MOD_SHIFT;
+            else if (strcasecmp(name, "Alt") == 0)       mods |= AEUI_MOD_ALT;
+            else if (strcasecmp(name, "Meta") == 0
+                     || strcasecmp(name, "Super") == 0)  mods |= AEUI_MOD_CMD;
+            p = close + 1;
+        }
+        snprintf(key, sizeof(key), "%s", p);
+    } else {
+        // Plus-separated form: Ctrl+Shift+R (a bare "Tab" has no '+' and
+        // falls through with mods == 0).
+        for (char* tok = strtok(buf, "+"); tok; tok = strtok(NULL, "+")) {
+            if (strcasecmp(tok, "Ctrl") == 0 || strcasecmp(tok, "Control") == 0
+                || strcasecmp(tok, "Primary") == 0)      mods |= AEUI_MOD_CTRL;
+            else if (strcasecmp(tok, "Shift") == 0)      mods |= AEUI_MOD_SHIFT;
+            else if (strcasecmp(tok, "Alt") == 0
+                     || strcasecmp(tok, "Option") == 0)  mods |= AEUI_MOD_ALT;
+            else if (strcasecmp(tok, "Cmd") == 0 || strcasecmp(tok, "Command") == 0
+                     || strcasecmp(tok, "Meta") == 0
+                     || strcasecmp(tok, "Super") == 0)   mods |= AEUI_MOD_CMD;
+            else snprintf(key, sizeof(key), "%s", tok);
+        }
+    }
+    combo_canonical(mods, key, out, outsize);
+}
+
+// Fire the accelerator registered for `combo`. Returns 1 if one fired.
+// Shared by the NSEvent monitor and the driver's /window/key route.
+static int shortcut_fire(const char* canonical) {
+    if (!canonical || !*canonical) return 0;
+    for (int i = 0; i < shortcut_count; i++) {
+        if (strcmp(shortcuts[i].combo, canonical) != 0) continue;
+        AeClosure* c = shortcuts[i].closure;
+        if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+        return 1;
+    }
+    return 0;
+}
+
+// Map a live NSEvent key-down to the canonical combo string.
+static void event_to_combo(NSEvent* ev, char* out, int outsize) {
+    NSEventModifierFlags f = [ev modifierFlags];
+    int mods = 0;
+    if (f & NSEventModifierFlagControl)  mods |= AEUI_MOD_CTRL;
+    if (f & NSEventModifierFlagOption)   mods |= AEUI_MOD_ALT;
+    if (f & NSEventModifierFlagShift)    mods |= AEUI_MOD_SHIFT;
+    if (f & NSEventModifierFlagCommand)  mods |= AEUI_MOD_CMD;
+
+    // charactersIgnoringModifiers gives the unmodified key ("b" for Ctrl+B).
+    NSString* chars = [ev charactersIgnoringModifiers];
+    const char* key = (chars && [chars length]) ? [chars UTF8String] : "";
+    char named[16];
+    // Named keys the DSL spells out; their unicode forms are unprintable.
+    switch ([ev keyCode]) {
+        case 48:  snprintf(named, sizeof(named), "tab");    key = named; break;
+        case 53:  snprintf(named, sizeof(named), "escape"); key = named; break;
+        case 51:  snprintf(named, sizeof(named), "backspace"); key = named; break;
+        case 117: snprintf(named, sizeof(named), "delete"); key = named; break;
+        case 36:  snprintf(named, sizeof(named), "return"); key = named; break;
+        case 49:  snprintf(named, sizeof(named), "space");  key = named; break;
+        default: break;
+    }
+    // Shift is folded into the character for printable keys ("B" not Shift+b),
+    // so only keep it as a modifier for the named keys above.
+    if (key != named) mods &= ~AEUI_MOD_SHIFT;
+    combo_canonical(mods, key, out, outsize);
+}
+
+void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
+    if (!combo || !*combo) return;
+    if (shortcut_count >= shortcut_capacity) {
+        shortcut_capacity = shortcut_capacity == 0 ? 8 : shortcut_capacity * 2;
+        shortcuts = (ShortcutEntry*)realloc(shortcuts,
+                                            sizeof(ShortcutEntry) * shortcut_capacity);
+        if (!shortcuts) { shortcut_count = 0; shortcut_capacity = 0; return; }
+    }
+    combo_normalize(combo, shortcuts[shortcut_count].combo,
+                    sizeof(shortcuts[shortcut_count].combo));
+    shortcuts[shortcut_count].closure = (AeClosure*)boxed_closure;
+    shortcut_count++;
+
+    // One monitor serves every accelerator. Swallow the event when it
+    // matches so the key doesn't also reach the focused control (a
+    // Ctrl+B accelerator must not type "b" into the focused entry).
+    if (!shortcut_monitor) {
+        shortcut_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+            handler:^NSEvent*(NSEvent* ev) {
+                char canonical[64];
+                event_to_combo(ev, canonical, sizeof(canonical));
+                if (shortcut_fire(canonical)) return nil;  // consumed
+                return ev;
+            }];
+    }
+}
+
+// Explicit keyboard-focus grab. AppKit's equivalent of gtk_widget_grab_focus
+// is makeFirstResponder: on the view's window.
 void aether_ui_focus_impl(int handle) {
-    (void)handle;
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    NSWindow* win = [v window] ?: primary_window;
+    if (!win) return;
+    // NSTextField's editing first responder is its field editor, so focusing
+    // an entry makes the WINDOW's firstResponder an NSTextView whose delegate
+    // is the field. focused_widget() below resolves that back to the field.
+    [win makeFirstResponder:v];
 }
 void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
                                             const char* accel,
@@ -655,29 +1020,220 @@ int aether_ui_vstack_create(int spacing) {
     return register_widget_typed((__bridge void*)stack, AUI_VSTACK);
 }
 
-// splitview stub: a plain stack in the split's orientation (no draggable
-// divider yet). NSSplitView wiring is follow-up work — this keeps the
-// cross-platform ABI + builds green. splitview("h") = panes side-by-side
-// = a horizontal stack.
+// ---------------------------------------------------------------------------
+// splitview — a real NSSplitView with a draggable divider.
+//
+// CAREFUL: GTK and AppKit use OPPOSITE senses of "vertical". GTK's
+// vertical=1 means the PANES are stacked vertically (a horizontal divider);
+// NSSplitView's vertical=YES means the DIVIDER is vertical (panes side by
+// side). The ABI follows GTK, so the flag is inverted on the way in.
+// ---------------------------------------------------------------------------
 int aether_ui_splitview_create(int vertical) {
-    return vertical ? aether_ui_vstack_create(0) : aether_ui_hstack_create(0);
+    NSSplitView* sv = [[NSSplitView alloc] init];
+    [sv setVertical:(vertical ? NO : YES)];   // inverted — see above
+    [sv setDividerStyle:NSSplitViewDividerStyleThin];
+    [sv setTranslatesAutoresizingMaskIntoConstraints:NO];
+    return register_widget_typed((__bridge void*)sv, AUI_SPLITVIEW);
 }
+
+// Position = pixels from the START edge (left for side-by-side panes, top for
+// stacked ones) to the divider. -1 means "not a splitview" — a spec has to be
+// able to tell an unwired backend from a divider that happens to sit at 0.
 int aether_ui_split_position_impl(int handle) {
-    (void)handle;
-    return -1;
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSSplitView class]]) return -1;
+    NSSplitView* sv = (NSSplitView*)v;
+    NSArray* subs = [sv subviews];
+    if ([subs count] < 1) return 0;
+    NSRect first = [(NSView*)subs[0] frame];
+    // isVertical == YES → side-by-side → the first pane's WIDTH is the offset.
+    return (int)lround([sv isVertical] ? first.size.width : first.size.height);
 }
+
 void aether_ui_split_set_position_impl(int handle, int px) {
-    (void)handle; (void)px;
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSSplitView class]]) return;
+    NSSplitView* sv = (NSSplitView*)v;
+    if ([[sv subviews] count] < 2) return;
+    [sv setPosition:(CGFloat)px ofDividerAtIndex:0];
+    [sv layoutSubtreeIfNeeded];
 }
+
+// ---------------------------------------------------------------------------
+// weight — proportional main-axis sharing (Flutter Expanded semantics):
+// unweighted children keep their natural size, weighted ones split whatever
+// is left over in the ratio of their weights.
+//
+// GTK gets this from a custom GtkLayoutManager. AppKit can express it in Auto
+// Layout directly: weighted children get near-zero hugging (so they, and only
+// they, absorb the slack), and each is pinned to the first weighted sibling by
+// a multiplier constraint, which fixes the ratio.
+// ---------------------------------------------------------------------------
+static int aeui_effective_weight(int handle) {
+    if (handle < 1 || handle > widget_count) return 0;
+    if (widget_weights[handle - 1] > 0) return widget_weights[handle - 1];
+    // A spacer is the implicit weight-1 child — same rule GTK applies to any
+    // child with hexpand/vexpand set.
+    return (get_widget_type(handle) == AUI_SPACER) ? 1 : 0;
+}
+
+static void aeui_apply_flex(NSStackView* stack) {
+    if (!stack) return;
+    BOOL horiz = ([stack orientation] == NSUserInterfaceLayoutOrientationHorizontal);
+    NSLayoutAttribute attr = horiz ? NSLayoutAttributeWidth : NSLayoutAttributeHeight;
+    NSLayoutConstraintOrientation orient = horiz
+        ? NSLayoutConstraintOrientationHorizontal
+        : NSLayoutConstraintOrientationVertical;
+
+    // Drop the constraints from the previous pass — weight() can be called
+    // again (or on a second child) and these must not accumulate.
+    NSMutableArray* stale = [NSMutableArray array];
+    for (NSLayoutConstraint* c in [stack constraints]) {
+        if ([[c identifier] isEqualToString:@"aeui-flex"]) [stale addObject:c];
+    }
+    [stack removeConstraints:stale];
+
+    NSView* ref = nil;
+    int ref_weight = 0;
+    for (NSView* child in [stack arrangedSubviews]) {
+        int h = handle_for_view(child);
+        int w = aeui_effective_weight(h);
+        if (w <= 0) continue;   // unweighted: leave its natural size alone
+        [child setContentHuggingPriority:1 forOrientation:orient];
+        if (!ref) {
+            ref = child;
+            ref_weight = w;
+            continue;
+        }
+        NSLayoutConstraint* c =
+            [NSLayoutConstraint constraintWithItem:child attribute:attr
+                                         relatedBy:NSLayoutRelationEqual
+                                            toItem:ref attribute:attr
+                                        multiplier:(CGFloat)w / (CGFloat)ref_weight
+                                          constant:0];
+        [c setIdentifier:@"aeui-flex"];
+        [c setActive:YES];
+    }
+    [stack setNeedsLayout:YES];
+}
+
 void aether_ui_widget_weight_impl(int handle, int n) {
-    (void)handle; (void)n;
+    if (handle < 1 || handle > widget_count || n < 1) return;
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    widget_weights[handle - 1] = n;
+    NSView* parent = [v superview];
+    if ([parent isKindOfClass:[NSStackView class]]) {
+        aeui_apply_flex((NSStackView*)parent);
+    }
 }
+
+// ---------------------------------------------------------------------------
+// on_layout — the GeometryReader: cb(w, h) after the container's allocation
+// changes. Frame-change notifications give us this without subclassing every
+// stack.
+// ---------------------------------------------------------------------------
+@interface AetherLayoutObserver : NSObject
+@property (assign) AeClosure* closure;
+@property (assign) int lastW;
+@property (assign) int lastH;
+@end
+
+@implementation AetherLayoutObserver
+- (void)frameChanged:(NSNotification*)note {
+    NSView* v = [note object];
+    if (!v) return;
+    int w = (int)lround([v bounds].size.width);
+    int h = (int)lround([v bounds].size.height);
+    if (w == self.lastW && h == self.lastH) return;   // CHANGE only, never per-frame
+    self.lastW = w;
+    self.lastH = h;
+    AeClosure* c = self.closure;
+    if (!c || !c->fn) return;
+    // Deferred, exactly as GTK defers to an idle callback: the closure is
+    // free to build or mutate widgets, which is the entire point of a
+    // GeometryReader, and doing that inside a layout pass is a re-entrancy bug.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ((void(*)(void*, intptr_t, intptr_t))c->fn)(c->env, (intptr_t)w, (intptr_t)h);
+    });
+}
+@end
+
 void aether_ui_on_layout_impl(int handle, void* boxed_closure) {
-    (void)handle; (void)boxed_closure;
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || !boxed_closure) return;
+    AetherLayoutObserver* obs = [[AetherLayoutObserver alloc] init];
+    obs.closure = (AeClosure*)boxed_closure;
+    obs.lastW = 0;
+    obs.lastH = 0;
+    [v setPostsFrameChangedNotifications:YES];
+    [[NSNotificationCenter defaultCenter] addObserver:obs
+                                             selector:@selector(frameChanged:)
+                                                 name:NSViewFrameDidChangeNotification
+                                               object:v];
+    retain_target(obs);
 }
+
+// ---------------------------------------------------------------------------
+// wrap — a flow container: children run left-to-right and drop to the next
+// line when the width runs out. NSStackView cannot do this at any price, so
+// this is a manual flow layout.
+// ---------------------------------------------------------------------------
+#define AEUI_WRAP_GAP 6.0
+
+@interface AetherWrapView : NSView
+@end
+
+@implementation AetherWrapView
+// Lay out at a GIVEN width, optionally committing frames. Returns the total
+// height consumed — which is also how intrinsicContentSize answers, so the
+// wrap reports the right height to the stack that contains it.
+- (CGFloat)flowWithWidth:(CGFloat)maxw commit:(BOOL)commit {
+    CGFloat x = 0, y = 0, row_h = 0;
+    for (NSView* c in [self subviews]) {
+        if ([c isHidden]) continue;
+        NSSize s = [c fittingSize];
+        if (s.width <= 0 || s.height <= 0) s = [c intrinsicContentSize];
+        if (s.width <= 0) s = [c frame].size;
+        if (x > 0 && x + s.width > maxw) {   // doesn't fit — next line
+            x = 0;
+            y += row_h + AEUI_WRAP_GAP;
+            row_h = 0;
+        }
+        if (commit) {
+            [c setTranslatesAutoresizingMaskIntoConstraints:YES];
+            // AppKit's origin is bottom-left; flow runs top-down, so flip y.
+            [c setFrame:NSMakeRect(x, [self bounds].size.height - y - s.height,
+                                   s.width, s.height)];
+        }
+        x += s.width + AEUI_WRAP_GAP;
+        if (s.height > row_h) row_h = s.height;
+    }
+    return y + row_h;
+}
+
+- (void)layout {
+    [super layout];
+    [self flowWithWidth:[self bounds].size.width commit:YES];
+}
+
+- (NSSize)intrinsicContentSize {
+    CGFloat w = [self bounds].size.width;
+    if (w <= 0) return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+    return NSMakeSize(NSViewNoIntrinsicMetric, [self flowWithWidth:w commit:NO]);
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    // A new width means a new line count means a new height.
+    [self invalidateIntrinsicContentSize];
+}
+@end
+
 int aether_ui_wrap_create(void) {
-    // Stub: a horizontal stack (no wrapping).
-    return aether_ui_hstack_create(6);
+    AetherWrapView* wv = [[AetherWrapView alloc] init];
+    [wv setTranslatesAutoresizingMaskIntoConstraints:NO];
+    return register_widget_typed((__bridge void*)wv, AUI_WRAP);
 }
 
 int aether_ui_hstack_create(int spacing) {
@@ -786,10 +1342,29 @@ int aether_ui_securefield_create(const char* placeholder, void* boxed_closure) {
 - (void)toggleChanged:(id)sender;
 @end
 
+// Turn OFF every other member of `handle`'s radio group. AppKit's own radio
+// behaviour needs same-superview + same-action NSButtons, which our toggles
+// are not (each carries its own target), so exclusivity is enforced here
+// against the group table. Called from the action AND from set_active, so a
+// programmatic select and a real click behave identically.
+static void toggle_enforce_group(int handle) {
+    if (handle < 1 || handle > widget_count) return;
+    int leader = widget_group[handle - 1];
+    if (!leader) return;
+    for (int i = 1; i <= widget_count; i++) {
+        if (i == handle || widget_group[i - 1] != leader) continue;
+        NSView* peer = (__bridge NSView*)aether_ui_get_widget(i);
+        if ([peer isKindOfClass:[NSButton class]]) {
+            [(NSButton*)peer setState:NSControlStateValueOff];
+        }
+    }
+}
+
 @implementation AetherToggleTarget
 - (void)toggleChanged:(id)sender {
     NSButton* btn = (NSButton*)sender;
     int active = [btn state] == NSControlStateValueOn ? 1 : 0;
+    if (active) toggle_enforce_group(handle_for_view(btn));
     if (self.closure && self.closure->fn) {
         ((void(*)(void*, intptr_t))self.closure->fn)(self.closure->env, (intptr_t)active);
     }
@@ -814,6 +1389,7 @@ void aether_ui_toggle_set_active(int handle, int active) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (v && [v isKindOfClass:[NSButton class]]) {
         [(NSButton*)v setState:active ? NSControlStateValueOn : NSControlStateValueOff];
+        if (active) toggle_enforce_group(handle);
     }
 }
 
@@ -825,12 +1401,32 @@ int aether_ui_toggle_get_active(int handle) {
     return 0;
 }
 
-// Radio-group a toggle with another. STUB: AppKit radio exclusivity comes
-// from setButtonType:NSButtonTypeRadio + a shared action/superview; wiring
-// that retroactively is not yet done. The GTK4 backend is real; callers get
-// plain checkboxes here (no exclusivity).
+// Put a toggle in a mutual-exclusion group with another, and render both as
+// radios — the same thing GTK4 does when you group two check buttons.
+//
+// The group is keyed by a LEADER handle so that chaining (b→a, c→a, d→c) all
+// resolves to one group: follow the target's leader if it already has one,
+// otherwise the target itself becomes the leader.
 void aether_ui_toggle_set_group(int handle, int group_with) {
-    (void)handle; (void)group_with;
+    if (handle < 1 || handle > widget_count) return;
+    if (group_with < 1 || group_with > widget_count) return;
+
+    int leader = widget_group[group_with - 1];
+    if (!leader) leader = group_with;
+
+    widget_group[group_with - 1] = leader;
+    widget_group[handle - 1] = leader;
+
+    // Radio look for every member, including the leader (which was created as
+    // a plain checkbox before it knew it was in a group).
+    NSView* a = (__bridge NSView*)aether_ui_get_widget(handle);
+    NSView* b = (__bridge NSView*)aether_ui_get_widget(leader);
+    if ([a isKindOfClass:[NSButton class]]) {
+        [(NSButton*)a setButtonType:NSButtonTypeRadio];
+    }
+    if ([b isKindOfClass:[NSButton class]]) {
+        [(NSButton*)b setButtonType:NSButtonTypeRadio];
+    }
 }
 
 // Slider — continuous; target invokes closure with double value.
@@ -1160,10 +1756,34 @@ void aether_ui_set_edge_insets(int handle, double top, double right,
     }
 }
 
+// Does this view carry its own width-to-constant constraint?
+static int aeui_has_explicit_width(NSView* v) {
+    for (NSLayoutConstraint* c in [v constraints]) {
+        if (c.firstAttribute == NSLayoutAttributeWidth
+            && c.secondItem == nil && [c isActive]) return 1;
+    }
+    return 0;
+}
+
 void aether_ui_set_width(int handle, int width) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (!v) return;
     [v setTranslatesAutoresizingMaskIntoConstraints:NO];
+
+    // Drop any equal-width chain this view is part of. A table header sets an
+    // explicit per-column width; leaving the button-row equality in place makes
+    // the two required constraints unsatisfiable, and Auto Layout resolves that
+    // by breaking one — silently, and with the wrong column widths surviving.
+    NSView* p = [v superview];
+    if (p) {
+        NSMutableArray* drop = [NSMutableArray array];
+        for (NSLayoutConstraint* c in [p constraints]) {
+            if (![[c identifier] isEqualToString:@"aeui-btneq"]) continue;
+            if (c.firstItem == v || c.secondItem == v) [drop addObject:c];
+        }
+        if ([drop count]) [p removeConstraints:drop];
+    }
+
     [v.widthAnchor constraintEqualToConstant:width].active = YES;
 }
 
@@ -1174,9 +1794,25 @@ void aether_ui_set_height(int handle, int height) {
     [v.heightAnchor constraintEqualToConstant:height].active = YES;
 }
 
+// Implicit-transition lookups — defined with apply_css, which records them.
+static int aeui_opacity_transition_ms(int handle);
+static int aeui_opacity_transition_ease_out(int handle);
+static void aeui_start_opacity_tween(NSView* v, int handle,
+                                     double from, double to, int ms, int ease_out);
+
 void aether_ui_set_opacity(int handle, double opacity) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
-    if (v) [v setAlphaValue:opacity];
+    if (!v) return;
+    // Implicit transition (QML Behavior): if the app declared
+    // ui.transition(h, "opacity", ms, …) once, every later opacity change
+    // TWEENS instead of snapping. The declaration is recorded by apply_css.
+    int ms = aeui_opacity_transition_ms(handle);
+    if (ms > 0) {
+        aeui_start_opacity_tween(v, handle, [v alphaValue], opacity, ms,
+                                 aeui_opacity_transition_ease_out(handle));
+        return;
+    }
+    [v setAlphaValue:opacity];
 }
 
 void aether_ui_set_enabled(int handle, int enabled) {
@@ -1388,33 +2024,397 @@ void aether_ui_window_close_impl(int win_handle) {
     [extra_windows[win_handle - 1] close];
 }
 
-// In-window overlay layer — no-op stubs on AppKit (real z-layer lands next
-// time on the Mac mini; house pattern, same as canvas_on_move). The DSL links
-// and runs; overlays simply don't display here.
+// ---------------------------------------------------------------------------
+// In-window overlay layer (roadmap item 1) — toast / modal / tooltip /
+// dropdown, drawn INSIDE the window, never as a compositor popup.
+//
+// The overlay table is append-only and never compacted: handles are 1-based
+// and monotonic, and closing an overlay flips `live` to 0 without removing
+// the entry. GET /overlays therefore lists every overlay ever opened. Specs
+// depend on that — a toast has to be observably DEAD, not merely absent, or
+// "it expired" and "it never opened" would look identical.
+// ---------------------------------------------------------------------------
+typedef struct {
+    NSView* __unsafe_unretained content;  // owned by the view tree
+    NSView* __unsafe_unretained scrim;    // modal scrim; nil when non-modal
+    // The two positioning constraints, kept so an overlay can be MOVED without
+    // being torn down and rebuilt. The drawn tooltip follows the pointer this
+    // way (one overlay reused for the life of the process, as on GTK).
+    NSLayoutConstraint* __unsafe_unretained cx;
+    NSLayoutConstraint* __unsafe_unretained cy;
+    AeClosure* on_dismiss;
+    int modal;
+    int live;
+} OverlayEntry;
+
+static OverlayEntry* overlays = NULL;
+static int overlay_count = 0;
+static int overlay_capacity = 0;
+
+static OverlayEntry* overlay_at(int handle) {
+    if (handle < 1 || handle > overlay_count) return NULL;
+    return &overlays[handle - 1];
+}
+
+// A full-bounds view that swallows every click. Input blocking is purely
+// hit-test z-order — there is no keyboard grab and no focus trap, which is
+// exactly GTK's behaviour (Tab still walks the app beneath a modal).
+@interface AetherScrimView : NSView
+@property (assign) int overlayHandle;
+@end
+
+@implementation AetherScrimView
+- (NSView*)hitTest:(NSPoint)p {
+    // Claim the point unconditionally when it's inside us — the whole job.
+    return NSPointInRect([self convertPoint:p fromView:[self superview]], [self bounds])
+        ? self : nil;
+}
+- (void)mouseDown:(NSEvent*)ev {
+    (void)ev;
+    // A scrim click is the ONLY path that fires on_dismiss. Closing an
+    // overlay programmatically does not (GTK behaves the same way).
+    OverlayEntry* e = overlay_at(self.overlayHandle);
+    if (!e || !e->live) return;
+    if (e->on_dismiss && e->on_dismiss->fn) {
+        ((void(*)(void*))e->on_dismiss->fn)(e->on_dismiss->env);
+    }
+    aether_ui_overlay_close_impl(self.overlayHandle);
+}
+@end
+
 int aether_ui_overlay_open_impl(int win_handle, int content_handle,
                                 int anchor, int dx, int dy, int modal) {
-    (void)win_handle; (void)content_handle; (void)anchor;
-    (void)dx; (void)dy; (void)modal;
+    (void)win_handle;   // single-window today; overlays land on the primary
+    NSView* content = (__bridge NSView*)aether_ui_get_widget(content_handle);
+    AetherOverlayHost* host = overlay_host;
+    if (!content || !host) return 0;
+
+    if (overlay_count >= overlay_capacity) {
+        overlay_capacity = overlay_capacity == 0 ? 8 : overlay_capacity * 2;
+        overlays = (OverlayEntry*)realloc(overlays,
+                                          sizeof(OverlayEntry) * overlay_capacity);
+        if (!overlays) { overlay_count = 0; overlay_capacity = 0; return 0; }
+    }
+    int handle = overlay_count + 1;
+    OverlayEntry* e = &overlays[overlay_count];
+    memset(e, 0, sizeof(*e));
+    e->modal = modal ? 1 : 0;
+    e->live = 1;
+
+    // Scrim first so it sits BELOW the content in z-order.
+    if (modal) {
+        AetherScrimView* scrim = [[AetherScrimView alloc] initWithFrame:[host bounds]];
+        scrim.overlayHandle = handle;
+        [scrim setWantsLayer:YES];
+        scrim.layer.backgroundColor =
+            [[NSColor colorWithRed:0 green:0 blue:0 alpha:0.45] CGColor];
+        [scrim setTranslatesAutoresizingMaskIntoConstraints:NO];
+        [host addSubview:scrim positioned:NSWindowAbove relativeTo:nil];
+        [scrim.leadingAnchor constraintEqualToAnchor:host.leadingAnchor].active = YES;
+        [scrim.trailingAnchor constraintEqualToAnchor:host.trailingAnchor].active = YES;
+        [scrim.topAnchor constraintEqualToAnchor:host.topAnchor].active = YES;
+        [scrim.bottomAnchor constraintEqualToAnchor:host.bottomAnchor].active = YES;
+        register_widget_typed((__bridge void*)scrim, AUI_SCRIM);
+        e->scrim = scrim;
+    }
+
+    [content setTranslatesAutoresizingMaskIntoConstraints:NO];
+    [host addSubview:content positioned:NSWindowAbove relativeTo:nil];
+
+    // anchor packs halign in bits 0-1 (0=start 1=center 2=end) and valign in
+    // bits 2-3 (0=top 1=center 2=bottom): code = h + v*4.
+    int h = anchor & 3, v = (anchor >> 2) & 3;
+    // dx/dy are SIGNED: positive insets from start/top, negative from end/bottom.
+    NSLayoutConstraint* cx;
+    NSLayoutConstraint* cy;
+    if (h == 0) {
+        cx = [content.leadingAnchor constraintEqualToAnchor:host.leadingAnchor
+                                                   constant:(dx > 0 ? dx : 0)];
+    } else if (h == 2) {
+        cx = [content.trailingAnchor constraintEqualToAnchor:host.trailingAnchor
+                                                    constant:(dx < 0 ? dx : 0)];
+    } else {
+        cx = [content.centerXAnchor constraintEqualToAnchor:host.centerXAnchor
+                                                   constant:dx];
+    }
+    if (v == 0) {
+        cy = [content.topAnchor constraintEqualToAnchor:host.topAnchor
+                                               constant:(dy > 0 ? dy : 0)];
+    } else if (v == 2) {
+        cy = [content.bottomAnchor constraintEqualToAnchor:host.bottomAnchor
+                                                  constant:(dy < 0 ? dy : 0)];
+    } else {
+        cy = [content.centerYAnchor constraintEqualToAnchor:host.centerYAnchor
+                                                   constant:dy];
+    }
+    cx.active = YES;
+    cy.active = YES;
+
+    e->cx = cx;
+    e->cy = cy;
+    e->content = content;
+    overlay_count++;
+    [host layoutSubtreeIfNeeded];
+    return handle;
+}
+
+void aether_ui_overlay_close_impl(int overlay_handle) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    if (!e || !e->live) return;   // idempotent
+    e->live = 0;
+    if (e->scrim)   [e->scrim removeFromSuperview];
+    if (e->content) [e->content removeFromSuperview];
+    e->scrim = nil;
+    e->content = nil;
+    if (overlay_host) [overlay_host layoutSubtreeIfNeeded];
+}
+
+void aether_ui_overlay_set_on_dismiss_impl(int overlay_handle, void* boxed_closure) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    if (e) e->on_dismiss = (AeClosure*)boxed_closure;
+}
+
+int aether_ui_overlay_is_live_impl(int overlay_handle) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    return e ? e->live : 0;
+}
+
+int aether_ui_overlay_count_impl(void) { return overlay_count; }
+
+int aether_ui_overlay_is_modal_impl(int overlay_handle) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    return e ? e->modal : 0;
+}
+
+// Escape closes the TOPMOST live overlay. Returns 1 if one was closed, so the
+// caller can let Escape propagate when nothing is open.
+static int aeui_escape_overlays(void) {
+    for (int i = overlay_count - 1; i >= 0; i--) {
+        if (overlays[i].live) {
+            aether_ui_overlay_close_impl(i + 1);
+            return 1;
+        }
+    }
     return 0;
 }
-void aether_ui_overlay_close_impl(int overlay_handle) { (void)overlay_handle; }
-void aether_ui_overlay_set_on_dismiss_impl(int overlay_handle, void* boxed_closure) {
-    (void)overlay_handle; (void)boxed_closure;
-}
-int aether_ui_overlay_is_live_impl(int overlay_handle) { (void)overlay_handle; return 0; }
-int aether_ui_overlay_count_impl(void) { return 0; }
-int aether_ui_overlay_is_modal_impl(int overlay_handle) { (void)overlay_handle; return 0; }
+
 int aether_ui_toast_impl(int win_handle, const char* text, int ms) {
-    (void)win_handle; (void)text; (void)ms; return 0;
+    if (!overlay_host) return 0;
+    NSTextField* lbl = [NSTextField labelWithString:
+        [NSString stringWithUTF8String:text ? text : ""]];
+    [lbl setEditable:NO];
+    [lbl setBordered:NO];
+    [lbl setSelectable:NO];
+    [lbl setTextColor:[NSColor whiteColor]];
+    [lbl setWantsLayer:YES];
+    lbl.layer.backgroundColor =
+        [[NSColor colorWithRed:0.15 green:0.15 blue:0.17 alpha:0.95] CGColor];
+    lbl.layer.cornerRadius = 8.0;
+    [lbl setAlignment:NSTextAlignmentCenter];
+
+    // A real registered widget, so the toast shows up in /widgets like GTK's.
+    int content = register_widget_typed((__bridge void*)lbl, AUI_TEXT);
+    // anchor 9 = bottom-center (h=1, v=2), non-modal, lifted 24px off the edge.
+    int handle = aether_ui_overlay_open_impl(win_handle, content, 9, 0, -24, 0);
+    if (handle > 0 && ms > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)ms * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^{
+            aether_ui_overlay_close_impl(handle);  // flips live, fires no dismiss
+        });
+    }
+    return handle;
 }
+// ---------------------------------------------------------------------------
+// apply_css on AppKit.
+//
+// There is no stylesheet engine here, and most of what GTK expresses in CSS
+// the Mac expresses through typed setters (set_bg_color, set_font_*). So this
+// stays a no-op for styling — with ONE exception.
+//
+// `ui.transition(h, "opacity", 1200, "ease_out")` is carried across the ABI as
+// the CSS declaration "transition: opacity 1200ms ease-out;" — GTK's stylesheet
+// IS the transition engine, so no dedicated ABI call was ever needed. Dropping
+// it on the floor here means every declared transition silently snaps on macOS.
+// We therefore parse just this one declaration (a string we emit ourselves) and
+// record it; set_opacity then tweens instead of snapping.
+// ---------------------------------------------------------------------------
+typedef struct {
+    int  ms;         // 0 = no transition declared
+    int  ease_out;   // 1 = ease-out, 0 = linear
+} OpacityTransition;
+
+static OpacityTransition* widget_transitions = NULL;   // indexed by handle-1
+static int widget_transition_cap = 0;
+
+static void aeui_transitions_reserve(int handle) {
+    if (handle <= widget_transition_cap) return;
+    int cap = widget_transition_cap == 0 ? 64 : widget_transition_cap;
+    while (cap < handle) cap *= 2;
+    widget_transitions = (OpacityTransition*)realloc(
+        widget_transitions, sizeof(OpacityTransition) * cap);
+    if (!widget_transitions) { widget_transition_cap = 0; return; }
+    memset(widget_transitions + widget_transition_cap, 0,
+           sizeof(OpacityTransition) * (cap - widget_transition_cap));
+    widget_transition_cap = cap;
+}
+
+static int aeui_opacity_transition_ms(int handle) {
+    if (handle < 1 || handle > widget_transition_cap) return 0;
+    return widget_transitions[handle - 1].ms;
+}
+
+static int aeui_opacity_transition_ease_out(int handle) {
+    if (handle < 1 || handle > widget_transition_cap) return 1;
+    return widget_transitions[handle - 1].ease_out;
+}
+
+// The tween is driven BY HAND, on a timer, rather than through
+// -[NSView animator].
+//
+// The animator proxy sets the model alpha to its target immediately and lets
+// CoreAnimation interpolate the presentation layer. Nothing that reads the view
+// — including cacheDisplayInRect:, i.e. /screenshot — can then observe an
+// intermediate value: the fade is real on screen but every mid-flight capture
+// already shows the settled frame, so a driver can't tell a 1200ms tween from
+// an instant snap. Stepping alphaValue ourselves makes the intermediate states
+// real, which is what the spec is entitled to assert.
+//
+// The timer exists only while a tween is in flight — idle still costs zero.
+@interface AetherTween : NSObject
+@property (weak)   NSView*  view;
+@property (assign) double   from;
+@property (assign) double   to;
+@property (assign) double   duration;   // seconds
+@property (assign) int      easeOut;
+@property (assign) CFTimeInterval start;
+@property (strong) NSTimer* timer;
+@end
+
+@implementation AetherTween
+- (void)step:(NSTimer*)t {
+    NSView* v = self.view;
+    if (!v) { [t invalidate]; self.timer = nil; return; }
+    double elapsed = CACurrentMediaTime() - self.start;
+    double p = (self.duration > 0) ? (elapsed / self.duration) : 1.0;
+    if (p >= 1.0) {
+        [v setAlphaValue:self.to];
+        [t invalidate];
+        self.timer = nil;
+        return;
+    }
+    double e = self.easeOut ? (1.0 - (1.0 - p) * (1.0 - p)) : p;   // quad ease-out
+    [v setAlphaValue:self.from + (self.to - self.from) * e];
+}
+@end
+
+// One live tween per widget; a new set_opacity supersedes the one in flight.
+static NSMutableDictionary<NSNumber*, AetherTween*>* aeui_tweens = nil;
+
+static void aeui_start_opacity_tween(NSView* v, int handle,
+                                     double from, double to, int ms, int ease_out) {
+    if (!aeui_tweens) aeui_tweens = [NSMutableDictionary dictionary];
+    NSNumber* key = @(handle);
+    AetherTween* old = aeui_tweens[key];
+    if (old) { [old.timer invalidate]; old.timer = nil; }
+
+    if (ms <= 0 || from == to) { [v setAlphaValue:to]; return; }
+
+    AetherTween* tw = [[AetherTween alloc] init];
+    tw.view = v;
+    tw.from = from;
+    tw.to = to;
+    tw.duration = (double)ms / 1000.0;
+    tw.easeOut = ease_out;
+    tw.start = CACurrentMediaTime();
+    tw.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
+                                                target:tw
+                                              selector:@selector(step:)
+                                              userInfo:nil
+                                               repeats:YES];
+    // The driver's screenshot runs a dispatch_sync onto the main queue; a
+    // default-mode-only timer would stall while modal/tracking loops run.
+    [[NSRunLoop mainRunLoop] addTimer:tw.timer forMode:NSRunLoopCommonModes];
+    aeui_tweens[key] = tw;
+}
+
 void aether_ui_widget_apply_css_impl(int handle, const char* property_css) {
-    (void)handle; (void)property_css;
+    if (!property_css || handle < 1) return;
+
+    const char* t = strstr(property_css, "transition:");
+    if (t) {
+        // "transition: opacity 1200ms ease-out;" — the declaration. Record it;
+        // the next opacity change tweens instead of snapping.
+        if (!strstr(t, "opacity")) return;            // only opacity is wired
+        const char* ms_at = strstr(t, "ms");
+        if (!ms_at) return;
+        const char* p = ms_at;                        // walk back over the digits
+        while (p > t && isdigit((unsigned char)p[-1])) p--;
+        int ms = atoi(p);
+        if (ms <= 0) return;
+        aeui_transitions_reserve(handle);
+        if (handle > widget_transition_cap) return;
+        widget_transitions[handle - 1].ms = ms;
+        widget_transitions[handle - 1].ease_out = strstr(t, "linear") ? 0 : 1;
+        return;
+    }
+
+    // "opacity: 0.15;" — ui.style_opacity() goes through CSS too, not through
+    // the set_opacity ABI call. Miss this and the declared transition above has
+    // nothing to act on, and every fade snaps.
+    const char* o = strstr(property_css, "opacity:");
+    if (o) {
+        aether_ui_set_opacity(handle, atof(o + 8));
+        return;
+    }
+    // Any other CSS (box-shadow, colours…): no-op. AppKit styles through the
+    // typed setters instead.
 }
+
+// Does `cls` appear as a whole space-delimited token in `list`?
+static int class_list_has(const char* list, const char* cls) {
+    if (!list || !cls || !*cls) return 0;
+    size_t n = strlen(cls);
+    for (const char* p = list; (p = strstr(p, cls)) != NULL; p += n) {
+        int left_ok  = (p == list) || (p[-1] == ' ');
+        int right_ok = (p[n] == '\0') || (p[n] == ' ');
+        if (left_ok && right_ok) return 1;
+    }
+    return 0;
+}
+
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls) {
-    (void)handle; (void)cls;
+    if (handle < 1 || handle > widget_count || !cls || !*cls) return;
+    char* cur = widget_classes[handle - 1];
+    if (class_list_has(cur, cls)) return;  // idempotent, like GTK's
+    if (!cur) {
+        widget_classes[handle - 1] = strdup(cls);
+        return;
+    }
+    char* joined = (char*)malloc(strlen(cur) + strlen(cls) + 2);
+    if (!joined) return;
+    sprintf(joined, "%s %s", cur, cls);
+    free(cur);
+    widget_classes[handle - 1] = joined;
 }
+
 void aether_ui_widget_remove_css_class_impl(int handle, const char* cls) {
-    (void)handle; (void)cls;
+    if (handle < 1 || handle > widget_count || !cls || !*cls) return;
+    char* cur = widget_classes[handle - 1];
+    if (!class_list_has(cur, cls)) return;
+    // Rebuild the list, dropping every occurrence of the token.
+    char* out = (char*)malloc(strlen(cur) + 1);
+    if (!out) return;
+    out[0] = '\0';
+    char* work = strdup(cur);
+    if (!work) { free(out); return; }
+    for (char* tok = strtok(work, " "); tok; tok = strtok(NULL, " ")) {
+        if (strcmp(tok, cls) == 0) continue;
+        if (out[0]) strcat(out, " ");
+        strcat(out, tok);
+    }
+    free(work);
+    free(cur);
+    widget_classes[handle - 1] = out;  // "" when the last class was removed
 }
 void aether_ui_canvas_group_begin_impl(int canvas_id) { (void)canvas_id; }
 void aether_ui_canvas_group_end_impl(int canvas_id, double alpha) {
@@ -1425,12 +2425,85 @@ int aether_ui_canvas_read_pixel_impl(int canvas_id, int px, int py,
     (void)canvas_id; (void)px; (void)py; (void)width; (void)height;
     return -1;
 }
+// ---------------------------------------------------------------------------
+// The drawn tooltip — a vg-drawn shape's tooltip, rendered as an overlay
+// rather than a native NSToolTip (which can't be positioned per-shape and
+// wouldn't be visible to the driver).
+//
+// ONE overlay is reused for the life of the process: hovering from shape to
+// shape moves it rather than churning the overlay table, which would otherwise
+// grow an entry per pointer motion.
+// ---------------------------------------------------------------------------
+static int drawn_tooltip_overlay = 0;
+static NSTextField* drawn_tooltip_label = nil;
+
 int aether_ui_vg_tooltip_show_impl(int canvas_id, const char* text,
                                    double cx, double cy) {
-    (void)canvas_id; (void)text; (void)cx; (void)cy; return 0;
+    if (!text || !text[0]) { aether_ui_vg_tooltip_hide_impl(); return 0; }
+    NSView* canvas = (__bridge NSView*)aether_ui_get_widget(
+        aether_ui_canvas_get_widget(canvas_id));
+    if (!canvas || !overlay_host) return 0;
+
+    // Canvas-local → host-local. The canvas is isFlipped and the host is not,
+    // so convertPoint: does the y-flip for us; the anchor is top-start, whose
+    // dy is measured DOWN from the top, hence the subtraction.
+    NSPoint p = [canvas convertPoint:NSMakePoint(cx, cy) toView:overlay_host];
+    int mx = (int)lround(p.x) + 12;      // sit below-right of the pointer,
+    int my = (int)lround([overlay_host bounds].size.height - p.y) + 18;  // like a native tip
+
+    NSString* s = [NSString stringWithUTF8String:text];
+
+    if (drawn_tooltip_overlay
+        && aether_ui_overlay_is_live_impl(drawn_tooltip_overlay)
+        && drawn_tooltip_label) {
+        OverlayEntry* e = overlay_at(drawn_tooltip_overlay);
+        [drawn_tooltip_label setStringValue:s];
+        if (e && e->cx && e->cy) {
+            e->cx.constant = mx;
+            e->cy.constant = my;
+        }
+        [overlay_host layoutSubtreeIfNeeded];
+        return drawn_tooltip_overlay;
+    }
+
+    NSTextField* lbl = [NSTextField labelWithString:s];
+    [lbl setEditable:NO];
+    [lbl setBordered:NO];
+    [lbl setSelectable:NO];
+    [lbl setTextColor:[NSColor whiteColor]];
+    [lbl setWantsLayer:YES];
+    lbl.layer.backgroundColor =
+        [[NSColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95] CGColor];
+    lbl.layer.cornerRadius = 4.0;
+
+    int content = register_widget_typed((__bridge void*)lbl, AUI_TEXT);
+    // anchor 0 = top-start; the offsets ARE the position.
+    drawn_tooltip_overlay = aether_ui_overlay_open_impl(0, content, 0, mx, my, 0);
+    drawn_tooltip_label = lbl;
+    return drawn_tooltip_overlay;
 }
-void aether_ui_vg_tooltip_hide_impl(void) { }
-int aether_ui_vg_tooltip_drawn_impl(void) { return 0; }
+
+void aether_ui_vg_tooltip_hide_impl(void) {
+    if (drawn_tooltip_overlay) {
+        aether_ui_overlay_close_impl(drawn_tooltip_overlay);
+        drawn_tooltip_overlay = 0;   // the table keeps the entry as live:0
+        drawn_tooltip_label = nil;
+    }
+}
+
+// Whether the drawn-tooltip PATH is active — a policy question, not a state
+// one. vg/live.ae calls this once at setup to decide whether to wire hover at
+// all, so it must NOT mean "is a tooltip currently showing" (it is always
+// false at setup, and hover would never be wired).
+//
+// Forced by $AETHER_UI_TOOLTIP, else on under sommelier, where native tooltips
+// don't display. Same rule as GTK4.
+int aether_ui_vg_tooltip_drawn_impl(void) {
+    const char* force = getenv("AETHER_UI_TOOLTIP");
+    if (force && strcmp(force, "drawn") == 0) return 1;
+    if (force && strcmp(force, "native") == 0) return 0;
+    return getenv("SOMMELIER_VERSION") != NULL;
+}
 
 // Sheet — modal NSWindow attached to primary window via beginSheet:.
 static NSMutableArray<NSWindow*>* sheet_windows = nil;
@@ -1514,7 +2587,8 @@ typedef enum {
     CANVAS_FILL_TEXT,
     CANVAS_DRAW_IMAGE,
     CANVAS_FILL_LINEAR,
-    CANVAS_FILL_RADIAL
+    CANVAS_FILL_RADIAL,
+    CANVAS_CLIP_RECT
 } CanvasCmdType;
 
 typedef struct {
@@ -1538,7 +2612,12 @@ typedef struct {
     int count;
     int capacity;
     int widget_handle;
-    AeClosure* on_move;   // pointer-move hook (canvas-local x,y); null = none
+    AeClosure* on_move;    // pointer-move hook (canvas-local x,y); null = none
+    AeClosure* on_click;   // press   (canvas-local x,y)
+    AeClosure* on_release; // release (canvas-local x,y) — completes a drag
+    AeClosure* on_key;     // key-down (key name: "Left", "a", "space", …)
+    AeClosure* on_resize;  // allocation change (w,h) — vg re-maps its viewBox
+    int last_w, last_h;    // on_resize fires on CHANGE only, never per-frame
 } CanvasState;
 
 static CanvasState* canvas_states = NULL;
@@ -1560,20 +2639,52 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
     cs->cmds[cs->count++] = cmd;
 }
 
+// Map an NSEvent key-down to the key NAME the DSL speaks. These are GDK's
+// names, because GTK4 was the reference backend and the vg apps (and the
+// driver's POST /canvas/{id}/key?name=) already spell them that way: "Left",
+// "Return", "space", "a". Emitting AppKit-flavoured names instead would mean
+// every canvas app needed a per-platform key table.
+static void aeui_key_name_for_event(NSEvent* ev, char* out, int outsize) {
+    switch ([ev keyCode]) {
+        case 123: snprintf(out, outsize, "Left");      return;
+        case 124: snprintf(out, outsize, "Right");     return;
+        case 126: snprintf(out, outsize, "Up");        return;
+        case 125: snprintf(out, outsize, "Down");      return;
+        case 36:
+        case 76:  snprintf(out, outsize, "Return");    return;
+        case 53:  snprintf(out, outsize, "Escape");    return;
+        case 48:  snprintf(out, outsize, "Tab");       return;
+        case 49:  snprintf(out, outsize, "space");     return;
+        case 51:  snprintf(out, outsize, "BackSpace"); return;
+        case 117: snprintf(out, outsize, "Delete");    return;
+        case 115: snprintf(out, outsize, "Home");      return;
+        case 119: snprintf(out, outsize, "End");       return;
+        case 116: snprintf(out, outsize, "Page_Up");   return;
+        case 121: snprintf(out, outsize, "Page_Down"); return;
+        default: break;
+    }
+    NSString* chars = [ev charactersIgnoringModifiers];
+    if (chars && [chars length] > 0) {
+        snprintf(out, outsize, "%s", [chars UTF8String]);
+    } else {
+        out[0] = '\0';
+    }
+}
+
 @interface AetherCanvasView : NSView
 @property (assign) int canvasId;
 @end
 
-@implementation AetherCanvasView
-- (BOOL)isFlipped { return YES; }
-
-- (void)drawRect:(NSRect)dirtyRect {
-    (void)dirtyRect;
-    CanvasState* cs = get_canvas_state(self.canvasId);
-    if (!cs) return;
-    CGContextRef cg = [[NSGraphicsContext currentContext] CGContext];
-    if (!cg) return;
-
+// Replay a canvas command buffer into ANY CGContext. Factored out of
+// drawRect: so the same code path serves both the on-screen view and the
+// headless canvas_write_png bitmap — a screenshot that took a different route
+// through the drawing code would be evidence of nothing.
+//
+// The context must already be in canvas coordinates (y down, origin top-left);
+// the view gets that from isFlipped, the bitmap gets an explicit transform.
+static void canvas_replay(CGContextRef cg, CanvasState* cs) {
+    if (!cg || !cs) return;
+    {
     for (int i = 0; i < cs->count; i++) {
         CanvasCmd* c = &cs->cmds[i];
         switch (c->type) {
@@ -1592,6 +2703,12 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                 CGContextSetLineCap(cg, kCGLineCapRound);
                 CGContextSetLineJoin(cg, kCGLineJoinRound);
                 CGContextStrokePath(cg);
+                break;
+            case CANVAS_CLIP_RECT:
+                // Intersects the current clip and persists for the rest of the
+                // frame (SVG viewport overflow:hidden). The context is fresh
+                // each drawRect:, so there is nothing to restore.
+                CGContextClipToRect(cg, CGRectMake(c->x, c->y, c->w, c->h));
                 break;
             case CANVAS_FILL_RECT:
                 CGContextSetRGBFillColor(cg, c->r, c->g, c->b, c->a);
@@ -1708,6 +2825,16 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
                 break;
         }
     }
+    }
+}
+
+@implementation AetherCanvasView
+- (BOOL)isFlipped { return YES; }
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    CGContextRef cg = [[NSGraphicsContext currentContext] CGContext];
+    canvas_replay(cg, get_canvas_state(self.canvasId));
 }
 
 // Pointer-move hover: a tracking area over the whole view delivers mouseMoved:;
@@ -1732,23 +2859,93 @@ static void canvas_add_cmd(int canvas_id, CanvasCmd cmd) {
     NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
     ((void(*)(void*, double, double))cs->on_move->fn)(cs->on_move->env, p.x, p.y);
 }
+
+// The view is isFlipped, so its coords are already canvas coords (top-left
+// origin) — no y-flip needed on any of these.
+- (void)mouseDown:(NSEvent*)event {
+    CanvasState* cs = get_canvas_state(self.canvasId);
+    // Take key focus so keyDown: starts arriving (a canvas game needs this).
+    [[self window] makeFirstResponder:self];
+    if (!cs || !cs->on_click || !cs->on_click->fn) return;
+    NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
+    ((void(*)(void*, double, double))cs->on_click->fn)(cs->on_click->env, p.x, p.y);
+}
+
+- (void)mouseUp:(NSEvent*)event {
+    CanvasState* cs = get_canvas_state(self.canvasId);
+    if (!cs || !cs->on_release || !cs->on_release->fn) return;
+    NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
+    ((void(*)(void*, double, double))cs->on_release->fn)(cs->on_release->env, p.x, p.y);
+}
+
+- (void)mouseDragged:(NSEvent*)event {
+    // A drag is a move with the button held — vg hit-tests press→drag→release
+    // as one gesture, and without this the middle of every swipe is missing.
+    [self mouseMoved:event];
+}
+
+- (BOOL)acceptsFirstResponder { return YES; }
+
+- (void)keyDown:(NSEvent*)event {
+    CanvasState* cs = get_canvas_state(self.canvasId);
+    if (!cs || !cs->on_key || !cs->on_key->fn) {
+        [super keyDown:event];
+        return;
+    }
+    char name[32];
+    aeui_key_name_for_event(event, name, sizeof(name));
+    ((void(*)(void*, const char*))cs->on_key->fn)(cs->on_key->env, name);
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    NSSize old = [self frame].size;
+    [super setFrameSize:newSize];
+    if ((int)lround(old.width) == (int)lround(newSize.width)
+        && (int)lround(old.height) == (int)lround(newSize.height)) return;
+    CanvasState* cs = get_canvas_state(self.canvasId);
+    if (!cs || !cs->on_resize || !cs->on_resize->fn) return;
+    int w = (int)lround(newSize.width), h = (int)lround(newSize.height);
+    if (w == cs->last_w && h == cs->last_h) return;   // change only
+    cs->last_w = w;
+    cs->last_h = h;
+    AeClosure* c = cs->on_resize;
+    // Deferred: the closure re-flushes the whole vg scene (mutating the
+    // command buffer we may be mid-draw on).
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ((void(*)(void*, intptr_t, intptr_t))c->fn)(c->env, (intptr_t)w, (intptr_t)h);
+    });
+}
 @end
 
 int aether_ui_canvas_create_impl(int width, int height) {
     AetherCanvasView* v = [[AetherCanvasView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
     [v setTranslatesAutoresizingMaskIntoConstraints:NO];
-    [v.widthAnchor constraintEqualToConstant:width].active = YES;
-    [v.heightAnchor constraintEqualToConstant:height].active = YES;
+    // The given size is the canvas's NATURAL size, not a cage. GTK's drawing
+    // area expands to fill its parent and re-maps the vg viewBox on resize;
+    // required constraints here would pin the canvas forever and on_resize
+    // would never fire. Low priority = "this size unless there's room for more".
+    NSLayoutConstraint* wc = [v.widthAnchor constraintEqualToConstant:width];
+    NSLayoutConstraint* hc = [v.heightAnchor constraintEqualToConstant:height];
+    wc.priority = NSLayoutPriorityDefaultLow;
+    hc.priority = NSLayoutPriorityDefaultLow;
+    wc.active = YES;
+    hc.active = YES;
+    // ...and it must actively WANT the slack, not merely tolerate it. GTK's
+    // drawing area sets hexpand/vexpand TRUE, so a vg scene fills the window
+    // below the toolbar. Without this the canvas sits at its natural height and
+    // everything below the fold is unreachable — a click the spec aims at the
+    // treemap lands outside the view entirely.
+    [v setContentHuggingPriority:1
+                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [v setContentHuggingPriority:1
+                  forOrientation:NSLayoutConstraintOrientationVertical];
 
     if (canvas_state_count >= canvas_state_capacity) {
         canvas_state_capacity = canvas_state_capacity == 0 ? 16 : canvas_state_capacity * 2;
         canvas_states = realloc(canvas_states, sizeof(CanvasState) * canvas_state_capacity);
     }
     CanvasState* cs = &canvas_states[canvas_state_count];
-    cs->cmds = NULL;
-    cs->count = 0;
-    cs->capacity = 0;
-    cs->on_move = NULL;
+    memset(cs, 0, sizeof(*cs));
     canvas_state_count++;
     int canvas_id = canvas_state_count;
 
@@ -1767,11 +2964,15 @@ int aether_ui_canvas_get_widget(int canvas_id) {
 // at its initial size and does not rescale on window resize on macOS. Tracked
 // for parity with the GTK backend.
 void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_resize = (AeClosure*)boxed_closure;
 }
 
 void aether_ui_canvas_on_click_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_click = (AeClosure*)boxed_closure;
 }
 
 void aether_ui_canvas_on_move_impl(int canvas_id, void* boxed_closure) {
@@ -1791,13 +2992,15 @@ void aether_ui_canvas_on_move_impl(int canvas_id, void* boxed_closure) {
 // route NSView keyDown: → key-name string into the closure (mirrors the GTK4
 // GtkEventControllerKey path). The Linux backend is the reference impl.
 void aether_ui_canvas_on_key_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_key = (AeClosure*)boxed_closure;
 }
 
-// Pointer-release on a canvas. No-op stub — the AppKit bridge would route
-// NSView mouseUp: → (x,y) into the closure. The Linux backend is the reference.
 void aether_ui_canvas_on_release_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !boxed_closure) return;
+    cs->on_release = (AeClosure*)boxed_closure;
 }
 
 void aether_ui_canvas_begin_path_impl(int canvas_id) {
@@ -1833,7 +3036,8 @@ void aether_ui_canvas_fill_rect_impl(int canvas_id, double x, double y,
 // add a CGContextClip path later).
 void aether_ui_canvas_clip_rect_impl(int canvas_id, double x, double y,
                                      double w, double h) {
-    (void)canvas_id; (void)x; (void)y; (void)w; (void)h;
+    canvas_add_cmd(canvas_id, (CanvasCmd){
+        .type = CANVAS_CLIP_RECT, .x = x, .y = y, .w = w, .h = h });
 }
 
 void aether_ui_canvas_arc_impl(int canvas_id, double cx, double cy, double radius,
@@ -1877,14 +3081,55 @@ void aether_ui_canvas_stroke_text_impl(int canvas_id, const char* text,
     (void)line_width; (void)font_flags; (void)r; (void)g; (void)b; (void)a;
 }
 
-// Text metrics — STUB (returns zeros). AppKit has real metrics via
-// CoreText (NSAttributedString / CTLineGetTypographicBounds); wiring them
-// is deferred to when we're next on the Mac mini. Zeros keep the ABI
-// linkable so vg.text_extent compiles everywhere (GTK4 has the real impl).
-double aether_ui_text_measure(double size, const char* text) { (void)size; (void)text; return 0.0; }
-double aether_ui_font_ascent(double size)  { (void)size; return 0.0; }
-double aether_ui_font_descent(double size) { (void)size; return 0.0; }
-double aether_ui_font_height(double size)  { (void)size; return 0.0; }
+// ---------------------------------------------------------------------------
+// Text metrics (CoreText).
+//
+// The load-bearing invariant: these MUST measure the same font that
+// CANVAS_FILL_TEXT draws with ([NSFont systemFontOfSize:], see drawRect:).
+// vg centres and ellipsizes text using these numbers, so if the measuring
+// font and the drawing font ever diverge, every centred label drifts by a
+// few pixels and nothing in the code will say why.
+//
+// Headless-safe by construction: NSFont metrics need no window, no canvas,
+// and no display — which is the whole reason GTK4 measures with a 1x1 scratch
+// cairo surface rather than through a widget.
+// ---------------------------------------------------------------------------
+static NSFont* aeui_metrics_font(double size) {
+    return [NSFont systemFontOfSize:(size > 0 ? size : 16.0)];
+}
+
+double aether_ui_text_measure(double size, const char* text) {
+    if (!text || !text[0]) return 0.0;
+    NSString* s = [NSString stringWithUTF8String:text];
+    if (!s) return 0.0;
+    NSAttributedString* as = [[NSAttributedString alloc]
+        initWithString:s
+            attributes:@{ NSFontAttributeName: aeui_metrics_font(size) }];
+    CTLineRef line = CTLineCreateWithAttributedString(
+        (__bridge CFAttributedStringRef)as);
+    if (!line) return 0.0;
+    // Typographic bounds width IS the pen advance — the same quantity cairo's
+    // x_advance reports, and the one you position a sibling glyph run by.
+    // (The *image* bounds would be tighter and would misplace trailing space.)
+    double w = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+    CFRelease(line);
+    return w;
+}
+
+double aether_ui_font_ascent(double size) {
+    return (double)[aeui_metrics_font(size) ascender];
+}
+
+double aether_ui_font_descent(double size) {
+    // AppKit's descender is NEGATIVE (below the baseline); cairo's descent —
+    // and therefore this ABI — is a positive distance. Flip it.
+    return (double)-[aeui_metrics_font(size) descender];
+}
+
+double aether_ui_font_height(double size) {
+    NSFont* f = aeui_metrics_font(size);
+    return (double)([f ascender] - [f descender] + [f leading]);
+}
 
 void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
                                        int iw, int ih,
@@ -1975,15 +3220,47 @@ void aether_ui_canvas_redraw_impl(int canvas_id) {
     if (v) [v setNeedsDisplay:YES];
 }
 
-// canvas_write_png — off-screen PNG render. NOT YET IMPLEMENTED on AppKit:
-// would replay the command buffer into a CGBitmapContext and write via
-// CGImageDestination (CFURL → kUTTypePNG). Returns 0 (failure) so callers
-// detect the gap rather than getting a silent empty file. Tracked follow-up;
-// the GTK4 backend has the working implementation.
+// canvas_write_png — off-screen PNG render of the command buffer.
+//
+// Fully headless: a CGBitmapContext needs no window, no display and no run
+// loop, so this works under CI exactly as it does live. That is house rule #4
+// (everything renderable must render via canvas_write_png) and it is what lets
+// a spec screenshot a vg scene on a box with no screen.
 int aether_ui_canvas_write_png_impl(int canvas_id, const char* path,
                                      int width, int height) {
-    (void)canvas_id; (void)path; (void)width; (void)height;
-    return 0;
+    CanvasState* cs = get_canvas_state(canvas_id);
+    if (!cs || !path || width <= 0 || height <= 0) return 0;
+
+    CGColorSpaceRef cspace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef cg = CGBitmapContextCreate(
+        NULL, (size_t)width, (size_t)height, 8, 0, cspace,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cspace);
+    if (!cg) return 0;
+
+    // The command buffer is authored in canvas coordinates (y down from the
+    // top-left); a bitmap context is y-up. The view gets the flip for free
+    // from isFlipped — here it has to be applied by hand, or every scene
+    // comes out mirrored.
+    CGContextTranslateCTM(cg, 0, height);
+    CGContextScaleCTM(cg, 1.0, -1.0);
+
+    canvas_replay(cg, cs);
+
+    CGImageRef img = CGBitmapContextCreateImage(cg);
+    CGContextRelease(cg);
+    if (!img) return 0;
+
+    NSString* p = [NSString stringWithUTF8String:path];
+    NSURL* url = [NSURL fileURLWithPath:p];
+    CGImageDestinationRef dest = CGImageDestinationCreateWithURL(
+        (__bridge CFURLRef)url, (__bridge CFStringRef)@"public.png", 1, NULL);
+    if (!dest) { CGImageRelease(img); return 0; }
+    CGImageDestinationAddImage(dest, img, NULL);
+    BOOL ok = CGImageDestinationFinalize(dest);
+    CFRelease(dest);
+    CGImageRelease(img);
+    return ok ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2084,6 +3361,10 @@ void aether_ui_on_hover_impl(int handle, void* boxed_closure) {
 void aether_ui_on_click_impl(int handle, void* boxed_closure) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (!v || !boxed_closure) return;
+    // Also record it by handle so the driver can fire it (see widget_clicks).
+    if (handle >= 1 && handle <= widget_count) {
+        widget_clicks[handle - 1] = (AeClosure*)boxed_closure;
+    }
     AetherClickRecognizer* rec = [[AetherClickRecognizer alloc] init];
     rec.closure = (AeClosure*)boxed_closure;
     [rec setTarget:rec];
@@ -2117,6 +3398,31 @@ void aether_ui_animate_opacity_impl(int handle, double target, int duration_ms) 
 // ---------------------------------------------------------------------------
 // Widget manipulation — remove / clear children.
 // ---------------------------------------------------------------------------
+// Retire a view and its whole subtree from the registry.
+//
+// The registry holds a STRONG (ARC) reference, so removeFromSuperview alone
+// does not make a widget go away: the slot keeps the view alive and the driver
+// keeps reporting it. A spec that removes a row then asserts it is gone from
+// /widgets would fail forever, and the app would leak every row it ever built.
+//
+// GTK gets this for free (the widget is destroyed and its slot reads NULL);
+// win32 gets it from IsWindow(). On AppKit it has to be done by hand. Slots
+// are never reused — handles stay monotonic — the entry just goes dead and
+// reports type "null".
+static void unregister_view_tree(NSView* v) {
+    if (!v) return;
+    for (NSView* c in [[v subviews] copy]) {
+        unregister_view_tree(c);
+    }
+    int h = handle_for_view(v);
+    if (h < 1) return;
+    widgets[h - 1] = nil;
+    free(widget_classes[h - 1]);
+    widget_classes[h - 1] = NULL;
+    widget_clicks[h - 1] = NULL;
+    widget_weights[h - 1] = 0;
+}
+
 void aether_ui_remove_child_impl(int parent_handle, int child_handle) {
     NSView* parent = (__bridge NSView*)aether_ui_get_widget(parent_handle);
     NSView* child = (__bridge NSView*)aether_ui_get_widget(child_handle);
@@ -2125,6 +3431,7 @@ void aether_ui_remove_child_impl(int parent_handle, int child_handle) {
         [(NSStackView*)parent removeArrangedSubview:child];
     }
     [child removeFromSuperview];
+    unregister_view_tree(child);
 }
 
 void aether_ui_clear_children_impl(int handle) {
@@ -2135,10 +3442,12 @@ void aether_ui_clear_children_impl(int handle) {
         for (NSView* sub in [[s arrangedSubviews] copy]) {
             [s removeArrangedSubview:sub];
             [sub removeFromSuperview];
+            unregister_view_tree(sub);
         }
     } else {
         for (NSView* sub in [[v subviews] copy]) {
             [sub removeFromSuperview];
+            unregister_view_tree(sub);
         }
     }
 }
@@ -2147,15 +3456,84 @@ void aether_ui_clear_children_impl(int handle) {
 // Widget tree
 // ---------------------------------------------------------------------------
 
+// Mark `v` and every ancestor as wanting slack, and retract any equal-height
+// row chain that this makes wrong.
+//
+// Retroactive by necessity: the DSL adds a container to its parent before
+// populating it, so a row is already chained to its siblings by the time the
+// canvas inside it announces that it expands.
+static void aeui_mark_expand(NSView* v, int bits) {
+    if (!v || !bits) return;
+
+    int h = handle_for_view(v);
+    if (h >= 1 && h <= widget_count) widget_expand[h - 1] |= bits;
+
+    if (bits & AEUI_EXPAND_H) {
+        [v setContentHuggingPriority:1
+              forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    if (bits & AEUI_EXPAND_V) {
+        [v setContentHuggingPriority:1
+              forOrientation:NSLayoutConstraintOrientationVertical];
+        // A row that expands must not stay pinned to the height of its inert
+        // siblings — that is what flattened the treemap to the toolbar's height.
+        NSView* p = [v superview];
+        if (p) {
+            NSMutableArray* drop = [NSMutableArray array];
+            for (NSLayoutConstraint* c in [p constraints]) {
+                if (![[c identifier] isEqualToString:@"aeui-roweq"]) continue;
+                if (c.firstItem == v || c.secondItem == v) [drop addObject:c];
+            }
+            if ([drop count]) [p removeConstraints:drop];
+        }
+    }
+    aeui_mark_expand([v superview], bits);   // carry it to the root
+}
+
 void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle) {
     int parent_handle = (int)(intptr_t)parent_ctx;
     NSView* parent = (__bridge NSView*)aether_ui_get_widget(parent_handle);
     NSView* child = (__bridge NSView*)aether_ui_get_widget(child_handle);
     if (!parent || !child) return;
 
+    if ([parent isKindOfClass:[NSSplitView class]]) {
+        // Exactly two panes, in declaration order; a third is silently dropped
+        // (GTK's GtkPaned does the same).
+        NSSplitView* sv = (NSSplitView*)parent;
+        if ([[sv subviews] count] >= 2) return;
+        [child setTranslatesAutoresizingMaskIntoConstraints:YES];
+        [sv addSubview:child];
+        return;
+    }
+
+    if ([parent isKindOfClass:[AetherWrapView class]]) {
+        // Flow layout positions children by frame, so they must not be
+        // driven by Auto Layout.
+        [child setTranslatesAutoresizingMaskIntoConstraints:YES];
+        [parent addSubview:child];
+        [parent setNeedsLayout:YES];
+        [parent invalidateIntrinsicContentSize];
+        return;
+    }
+
     if ([parent isKindOfClass:[NSStackView class]]) {
         NSStackView* sv = (NSStackView*)parent;
         [sv addArrangedSubview:child];
+
+        // Propagate "wants slack" from the child up the ancestor chain.
+        //
+        // GTK computes expand transitively: a box holding an expanding child
+        // expands too, so a canvas nested three levels down still fills the
+        // window. AppKit has no such rule — hugging is strictly per-view.
+        //
+        // It has to be RETROACTIVE, because the DSL assembles top-down: a
+        // container is added to its parent BEFORE its own children arrive. So
+        // by the time the canvas shows up, its row is already in the vstack
+        // (and already height-chained to its siblings). aeui_mark_expand walks
+        // the chain that exists now and retracts those chains.
+        int ce = (child_handle >= 1 && child_handle <= widget_count)
+                 ? widget_expand[child_handle - 1] : 0;
+        if (ce) aeui_mark_expand(sv, ce);
 
         if ([sv orientation] == NSUserInterfaceLayoutOrientationVertical) {
             // In a vertical stack, arranged subviews only take their intrinsic
@@ -2166,22 +3544,66 @@ void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle) {
             if (ct == AUI_HSTACK || ct == AUI_VSTACK || ct == AUI_ZSTACK ||
                 ct == AUI_SCROLLVIEW || ct == AUI_FORM_SECTION ||
                 ct == AUI_DIVIDER || ct == AUI_PROGRESSBAR ||
-                ct == AUI_TEXTAREA || ct == AUI_NAVSTACK) {
+                ct == AUI_TEXTAREA || ct == AUI_NAVSTACK ||
+                ct == AUI_SPLITVIEW || ct == AUI_WRAP || ct == AUI_CANVAS) {
+                // Stretch to the full width WHEN YOU CAN, but never force the
+                // parent to your width.
+                //
+                // A required equality on both edges looks right and is a trap:
+                // a table's header row holds buttons with required fixed column
+                // widths (220 + 90), so the row cannot stretch — and the
+                // equality then propagates that 318px all the way up through the
+                // vstack to the window, which could not be widened even by
+                // /window/resize. table_demo asked for 520 and was capped at 318.
+                //
+                // leading == pins the left edge; trailing <= lets the row be
+                // narrower than the parent; trailing == at high-but-not-required
+                // priority makes it stretch whenever nothing forbids it (which is
+                // what gives the calculator its full-width button rows).
                 [child.leadingAnchor constraintEqualToAnchor:sv.leadingAnchor].active = YES;
-                [child.trailingAnchor constraintEqualToAnchor:sv.trailingAnchor].active = YES;
+                [child.trailingAnchor constraintLessThanOrEqualToAnchor:sv.trailingAnchor].active = YES;
+                NSLayoutConstraint* stretch =
+                    [child.trailingAnchor constraintEqualToAnchor:sv.trailingAnchor];
+                stretch.priority = NSLayoutPriorityDefaultHigh;
+                stretch.active = YES;
+            }
+            if (ct == AUI_SPLITVIEW) {
+                // NSSplitView has NO intrinsic content size — it lays its panes
+                // out by frame. Dropped into a stack it would collapse to
+                // nothing, so it has to be told to absorb the slack (GtkPaned
+                // gets this from hexpand/vexpand being TRUE).
+                [child setContentHuggingPriority:1
+                                  forOrientation:NSLayoutConstraintOrientationVertical];
+                [child setContentCompressionResistancePriority:1
+                                                forOrientation:NSLayoutConstraintOrientationVertical];
             }
             // Vertical peers: chain equal-height among hstack siblings in the
             // same vstack — with Fill distribution this gives grid-like row
             // heights (calculator) without affecting mixed vstacks whose
             // slack is absorbed by spacer().
-            if (ct == AUI_HSTACK) {
+            // Equal-height chain across hstack siblings — this is what gives
+            // the calculator its grid-like button rows.
+            //
+            // But it must NOT apply to a row that wants to expand. Grand
+            // Perspective is a toolbar row + a treemap-canvas row + a status
+            // row in one vstack; equalising them pins the canvas to the height
+            // of the toolbar (three rows of 207px in a 656px window) and the
+            // whole treemap below the fold becomes unclickable. Rows that
+            // absorb slack size themselves; only inert rows get chained.
+            if (ct == AUI_HSTACK
+                && !(widget_expand[child_handle - 1] & AEUI_EXPAND_V)) {
                 for (NSView* sib in [sv arrangedSubviews]) {
                     if (sib == child) break;
                     int sh = handle_for_view(sib);
-                    if (get_widget_type(sh) == AUI_HSTACK) {
-                        [child.heightAnchor constraintEqualToAnchor:sib.heightAnchor].active = YES;
-                        break;
-                    }
+                    if (sh < 1 || get_widget_type(sh) != AUI_HSTACK) continue;
+                    if (widget_expand[sh - 1] & AEUI_EXPAND_V) continue;
+                    NSLayoutConstraint* eq =
+                        [child.heightAnchor constraintEqualToAnchor:sib.heightAnchor];
+                    // Tagged so it can be retracted if either row LATER gains an
+                    // expanding child — see aeui_mark_expand.
+                    [eq setIdentifier:@"aeui-roweq"];
+                    eq.active = YES;
+                    break;
                 }
             }
         } else {
@@ -2190,13 +3612,24 @@ void aether_ui_widget_add_child_ctx(void* parent_ctx, int child_handle) {
             // lets autolayout give the slack to one child; an explicit
             // width-equality chain forces grid-like button rows (calculator)
             // without affecting label+textfield or button+spacer rows.
-            if ([child isKindOfClass:[NSButton class]]) {
+            //
+            // Tagged, and skipped for any button that already carries an
+            // explicit width: a table header sets per-column widths (220, 90),
+            // and an equal-width chain on top of those is unsatisfiable —
+            // Auto Layout breaks one of the required constraints and both
+            // columns come out the same wrong size. set_width also RETRACTS
+            // this chain, because the width may be applied after the attach.
+            if ([child isKindOfClass:[NSButton class]]
+                && !aeui_has_explicit_width(child)) {
                 for (NSView* sib in [sv arrangedSubviews]) {
                     if (sib == child) break;
-                    if ([sib isKindOfClass:[NSButton class]]) {
-                        [child.widthAnchor constraintEqualToAnchor:sib.widthAnchor].active = YES;
-                        break;
-                    }
+                    if (![sib isKindOfClass:[NSButton class]]) continue;
+                    if (aeui_has_explicit_width(sib)) continue;
+                    NSLayoutConstraint* eq =
+                        [child.widthAnchor constraintEqualToAnchor:sib.widthAnchor];
+                    [eq setIdentifier:@"aeui-btneq"];
+                    eq.active = YES;
+                    break;
                 }
             }
         }
@@ -2225,25 +3658,30 @@ void aether_ui_widget_set_hidden(int handle, int hidden) {
 }
 
 // ---------------------------------------------------------------------------
-// AetherUIDriver — HTTP test server
+// AetherUIDriver — AppKit hooks for the SHARED HTTP test server.
 //
-// Runs an HTTP server on a background pthread. Widget actions are marshalled
-// back to the main thread via dispatch_sync(dispatch_get_main_queue(), ...).
-// Endpoint surface matches aether_ui_gtk4.c so test_automation.sh is portable.
+// This backend used to carry its own hand-rolled HTTP server (~370 lines of
+// sockets, parser and JSON emitter). It had drifted badly from the GTK4 one:
+// no enabled/geometry/classes fields, no /focus, /window/key, /window/resize,
+// no tray or notification routes, no URL-decoding — and it read NSView state
+// straight off the server thread.
+//
+// It is gone. macOS now fills in AetherDriverHooks and lets
+// aether_ui_test_server.c do the HTTP work, exactly as Win32 does. Route
+// parity is now structural instead of a thing to remember: a route added to
+// the shared server lands on both backends at once.
+//
+// Threading: introspection hooks are called on the HTTP thread (read-only
+// queries AppKit tolerates). Every MUTATION goes through dispatch_action,
+// which bounces to the main queue with dispatch_sync and blocks.
 // ---------------------------------------------------------------------------
 
-static int* sealed_widgets = NULL;
-static int sealed_count = 0;
-static int sealed_capacity = 0;
-static int banner_handle = 0;
-static int ts_port = 0;
+#include "aether_ui_test_server.h"
 
+// Seal bookkeeping now lives in the shared server — one source of truth for
+// "may automation touch this widget".
 void aether_ui_seal_widget_impl(int handle) {
-    if (sealed_count >= sealed_capacity) {
-        sealed_capacity = sealed_capacity == 0 ? 32 : sealed_capacity * 2;
-        sealed_widgets = realloc(sealed_widgets, sizeof(int) * sealed_capacity);
-    }
-    sealed_widgets[sealed_count++] = handle;
+    aether_ui_test_server_seal_widget(handle);
 }
 
 static void seal_subtree_recursive(NSView* v) {
@@ -2260,16 +3698,8 @@ void aether_ui_seal_subtree_impl(int handle) {
     if (v) seal_subtree_recursive(v);
 }
 
-static int is_widget_sealed(int handle) {
-    for (int i = 0; i < sealed_count; i++) {
-        if (sealed_widgets[i] == handle) return 1;
-    }
-    return 0;
-}
-
 static const char* widget_type_name_for(int handle) {
-    int t = get_widget_type(handle);
-    switch (t) {
+    switch (get_widget_type(handle)) {
         case AUI_TEXT: return "text";
         case AUI_BUTTON: return "button";
         case AUI_TOGGLE: return "toggle";
@@ -2292,413 +3722,504 @@ static const char* widget_type_name_for(int handle) {
         case AUI_FORM_SECTION_INNER: return "form_section_inner";
         case AUI_NAVSTACK: return "navstack";
         case AUI_BANNER: return "banner";
+        case AUI_SPLITVIEW: return "splitview";
+        case AUI_WRAP: return "wrap";
+        case AUI_SCRIM: return "scrim";
         default: return "widget";
     }
 }
 
-static const char* widget_text_for(int handle) {
+// ---------------------------------------------------------------------------
+// Introspection hooks — HTTP thread.
+// ---------------------------------------------------------------------------
+static int hook_widget_count(void) { return widget_count; }
+
+static const char* hook_widget_type(int handle) {
+    if (handle < 1 || handle > widget_count) return "null";
+    // A retired slot (see unregister_view_tree) must read as null, not as its
+    // stale type — otherwise a removed row keeps answering "listbox_row".
+    if (!aether_ui_get_widget(handle)) return "null";
+    return widget_type_name_for(handle);
+}
+
+static void hook_widget_text_into(int handle, char* buf, int bufsize) {
+    buf[0] = '\0';
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
-    if (!v) return "";
-    if ([v isKindOfClass:[NSButton class]]) {
-        return [[(NSButton*)v title] UTF8String];
+    if (!v) return;
+    NSString* s = nil;
+    if (get_widget_type(handle) == AUI_PICKER
+        && [v isKindOfClass:[NSPopUpButton class]]) {
+        // A picker's text tracks its SELECTION (parity with GTK, where the
+        // dropdown reports the chosen item) — not the control's own title.
+        s = [(NSPopUpButton*)v titleOfSelectedItem];
+    } else if ([v isKindOfClass:[NSButton class]]) {
+        s = [(NSButton*)v title];
+    } else if ([v isKindOfClass:[NSTextField class]]) {
+        s = [(NSTextField*)v stringValue];
+    } else if ([v isKindOfClass:[NSTextView class]]) {
+        s = [(NSTextView*)v string];
     }
+    if (s) snprintf(buf, bufsize, "%s", [s UTF8String]);
+}
+
+static int hook_widget_visible(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return 0;
+    // The widget's OWN flag, not "is it on screen" — parity with GTK's
+    // gtk_widget_get_visible and the win32 WS_VISIBLE read. A headless run
+    // never maps the window, and testing ancestry would zero the whole app.
+    return [v isHidden] ? 0 : 1;
+}
+
+static int hook_widget_parent(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return 0;
+    // Walk up to the nearest REGISTERED ancestor: AppKit interposes untracked
+    // clip/content views inside a scrollview, and a raw superview would report
+    // 0 (orphan) for anything inside one.
+    for (NSView* p = [v superview]; p; p = [p superview]) {
+        int h = handle_for_view(p);
+        if (h > 0) return h;
+    }
+    return 0;
+}
+
+static int hook_toggle_active(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || get_widget_type(handle) != AUI_TOGGLE
+        || ![v isKindOfClass:[NSButton class]]) return 0;
+    return [(NSButton*)v state] == NSControlStateValueOn ? 1 : 0;
+}
+
+static double hook_slider_value(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSSlider class]]) return 0.0;
+    return [(NSSlider*)v doubleValue];
+}
+
+static double hook_progressbar_fraction(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSProgressIndicator class]]) return 0.0;
+    return [(NSProgressIndicator*)v doubleValue];
+}
+
+static int hook_widget_enabled(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return 0;
+    // Non-controls (stacks, labels) have no enabled state — report them
+    // enabled, which is what GTK's get_sensitive does for a plain box.
+    if (![v isKindOfClass:[NSControl class]]) return 1;
+    return [(NSControl*)v isEnabled] ? 1 : 0;
+}
+
+// Window-local rect in TOP-LEFT coordinates. AppKit's y grows upward from the
+// bottom of the content view, while GTK and Win32 both report y growing down
+// from the top — so the flip here is what makes a geometry assertion in a spec
+// mean the same thing on all three backends.
+static int hook_widget_rect(int handle, int* x, int* y, int* w, int* hgt) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return -1;
+    NSView* content = [[v window] contentView];
+    if (!content) content = [primary_window contentView];
+    if (!content) return -1;
+
+    // Report the ALIGNMENT rect, not the raw frame.
+    //
+    // AppKit controls draw outside their layout box: an NSTextField's frame is
+    // ~2px wider on each side than the rect Auto Layout actually positions.
+    // Report frames and adjacent siblings appear to OVERLAP by 4px and a row's
+    // widths sum to more than its container — which reads as a broken layout
+    // when the layout is in fact exact. GTK's x/y/w/h is the allocation (the
+    // layout box), and the alignment rect is AppKit's word for the same thing.
+    NSView* super_v = [v superview];
+    NSRect r;
+    if (super_v) {
+        NSRect ar = [v alignmentRectForFrame:[v frame]];   // superview coords
+        r = [super_v convertRect:ar toView:content];
+    } else {
+        r = [v convertRect:[v bounds] toView:content];
+    }
+
+    CGFloat ch = [content bounds].size.height;
+    *x   = (int)lround(r.origin.x);
+    *y   = (int)lround(ch - (r.origin.y + r.size.height));  // bottom-left → top-left
+    *w   = (int)lround(r.size.width);
+    *hgt = (int)lround(r.size.height);
+    return 0;
+}
+
+static void hook_widget_classes_into(int handle, char* buf, int bufsize) {
+    buf[0] = '\0';
+    if (handle < 1 || handle > widget_count) return;
+    const char* c = widget_classes[handle - 1];
+    if (c) snprintf(buf, bufsize, "%s", c);
+}
+
+static int hook_focused_widget(void) {
+    NSWindow* win = primary_window;
+    if (!win) return 0;
+    id fr = [win firstResponder];
+    if (![fr isKindOfClass:[NSView class]]) return 0;
+    NSView* v = (NSView*)fr;
+    // An NSTextField being edited hands first-responder to the window's FIELD
+    // EDITOR (a shared NSTextView), not to the field itself — so a naive read
+    // reports an untracked view and focus looks lost. Resolve back through the
+    // field editor's delegate, then walk up to the nearest tracked ancestor.
+    if ([v isKindOfClass:[NSTextView class]]
+        && [(NSTextView*)v isFieldEditor]) {
+        id del = [(NSTextView*)v delegate];
+        if ([del isKindOfClass:[NSView class]]) v = (NSView*)del;
+    }
+    for (NSView* p = v; p; p = [p superview]) {
+        int h = handle_for_view(p);
+        if (h > 0) return h;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Tab order.
+//
+// AppKit's own key-view loop is NOT usable here: by default macOS only Tabs
+// between text fields, and buttons join the loop only when the user has "Full
+// Keyboard Access" switched on system-wide. Tab order would then depend on a
+// setting outside the app, and the same spec would pass or fail on two Macs.
+//
+// So we walk the widget registry instead. Registry order IS build order (the
+// handle is handed out at construction), which is precisely GTK's default
+// focus chain — the contract the DSL documents. macOS therefore matches GTK
+// exactly here, where win32 could not (it inherits the native dialog order).
+// ---------------------------------------------------------------------------
+static int aeui_is_focusable(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || [v isHidden]) return 0;
     if ([v isKindOfClass:[NSTextField class]]) {
-        return [[(NSTextField*)v stringValue] UTF8String];
+        NSTextField* tf = (NSTextField*)v;   // a label is a non-editable field
+        return ([tf isEditable] && [tf isEnabled]) ? 1 : 0;
     }
     if ([v isKindOfClass:[NSTextView class]]) {
-        return [[(NSTextView*)v string] UTF8String];
+        return [(NSTextView*)v isEditable] ? 1 : 0;
     }
-    return "";
+    if ([v isKindOfClass:[NSControl class]]) {
+        return [(NSControl*)v isEnabled] ? 1 : 0;
+    }
+    return 0;
 }
 
-// Escape a string for embedding in JSON.
-static void json_escape(const char* in, char* out, int outsize) {
-    int o = 0;
-    for (int i = 0; in && in[i] && o < outsize - 2; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if (c == '"' || c == '\\') {
-            if (o < outsize - 3) { out[o++] = '\\'; out[o++] = c; }
-        } else if (c < 0x20) {
-            if (o < outsize - 7) o += snprintf(out + o, outsize - o, "\\u%04x", c);
-        } else {
-            out[o++] = c;
+static int hook_focused_widget(void);
+
+static int aeui_tab_move(int backward) {
+    if (!primary_window) return 0;
+    int cur = hook_focused_widget();
+    // Scan outward from the current widget, wrapping around the registry.
+    for (int step = 1; step <= widget_count; step++) {
+        int idx = backward ? (cur - step) : (cur + step);
+        while (idx < 1) idx += widget_count;
+        while (idx > widget_count) idx -= widget_count;
+        if (!aeui_is_focusable(idx)) continue;
+        aether_ui_focus_impl(idx);
+        return 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Mutation — marshalled to the main queue.
+// ---------------------------------------------------------------------------
+static void driver_perform(AetherDriverActionCtx* ctx) {
+    // Actions with no widget subject, handled before the registry lookup.
+    switch (ctx->action) {
+        case AETHER_DRV_SET_STATE: {
+            switch (aether_ui_state_type(ctx->handle)) {
+                case 1: aether_ui_state_set_i(ctx->handle, atoi(ctx->sval)); break;
+                case 2: aether_ui_state_set_b(ctx->handle,
+                            (strcmp(ctx->sval, "true") == 0 || atoi(ctx->sval) != 0)); break;
+                case 3: aether_ui_state_set_s(ctx->handle, ctx->sval); break;
+                default: aether_ui_state_set(ctx->handle, ctx->dval);
+            }
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_WIN_RESIZE: {
+            NSWindow* win = primary_window;
+            if (win) {
+                // Retract the start-size floor — an explicit resize outranks
+                // the size the app was born with, in both directions.
+                aeui_win_floor_w.active = NO;
+                aeui_win_floor_h.active = NO;
+                // Size the CONTENT area (the GTK route's semantics), not the
+                // frame — a spec asserting w=600 means 600px of app, not 600
+                // minus the titlebar.
+                NSRect f = [win frame];
+                NSRect target = [win frameRectForContentRect:
+                    NSMakeRect(0, 0, ctx->ival, ctx->ival2)];
+                // Keep the top-left pinned as the window grows downward.
+                f.origin.y += f.size.height - target.size.height;
+                f.size = target.size;
+                [win setFrame:f display:YES];
+                [[win contentView] layoutSubtreeIfNeeded];
+            }
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_WIN_KEY: {
+            // Registered accelerators win first; only then the built-ins.
+            char canonical[64];
+            combo_normalize(ctx->sval, canonical, sizeof(canonical));
+            ctx->retval = shortcut_fire(canonical) ? 1 : 0;
+            if (!ctx->retval && primary_window) {
+                if (strcmp(canonical, "tab") == 0) {
+                    ctx->retval = aeui_tab_move(0);
+                } else if (strcmp(canonical, "shift+tab") == 0) {
+                    ctx->retval = aeui_tab_move(1);
+                } else if (strcmp(canonical, "escape") == 0) {
+                    ctx->retval = aeui_escape_overlays() ? 1 : 0;
+                }
+            }
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_SHUTDOWN: {
+            // Exit by the same path a user-close takes so the port is
+            // released cleanly; a signal-kill leaves a zombie holding 9222
+            // and the next spec in the matrix interrogates the previous app.
+            [NSApp terminate:nil];
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_PICK: {
+            // A real AppKit hit-test at window-local (top-left) coords. This
+            // is the proof that a modal scrim blocks input by z-order rather
+            // than by an honour system.
+            ctx->retval = 0;
+            int want_scrim = 0;
+            NSView* content = [primary_window contentView];
+            if (content) {
+                CGFloat ch = [content bounds].size.height;
+                NSPoint p = NSMakePoint(ctx->ival, ch - ctx->ival2);  // flip back
+                NSView* hit = [content hitTest:p];
+                for (NSView* v = hit; v; v = [v superview]) {
+                    int h = handle_for_view(v);
+                    if (h > 0) {
+                        if (get_widget_type(h) == AUI_SCRIM) { want_scrim = 1; }
+                        else { ctx->retval = h; }
+                        break;
+                    }
+                }
+            }
+            ctx->ival2 = want_scrim;   // out-param: on_scrim
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_SPLIT_POS: {
+            if (ctx->ival >= 0) aether_ui_split_set_position_impl(ctx->handle, ctx->ival);
+            ctx->retval = aether_ui_split_position_impl(ctx->handle);
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_CTX_MENU: {
+            ctx->retval = aeui_ctx_menu_map(ctx->handle);
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_CTX_ACTIVATE: {
+            ctx->retval = aeui_ctx_menu_activate(ctx->handle, ctx->ival);
+            ctx->result = 0;
+            return;
+        }
+        case AETHER_DRV_CANVAS_CLICK:
+        case AETHER_DRV_CANVAS_MOVE:
+        case AETHER_DRV_CANVAS_KEY: {
+            CanvasState* cs = get_canvas_state(ctx->handle);
+            AeClosure* c = NULL;
+            if (cs) {
+                c = (ctx->action == AETHER_DRV_CANVAS_CLICK) ? cs->on_click
+                  : (ctx->action == AETHER_DRV_CANVAS_MOVE)  ? cs->on_move
+                                                             : cs->on_key;
+            }
+            if (!c || !c->fn) { ctx->result = 3; return; }  // 404: unwired, not missed
+            if (ctx->action == AETHER_DRV_CANVAS_KEY) {
+                ((void(*)(void*, const char*))c->fn)(c->env, ctx->sval);
+            } else {
+                ((void(*)(void*, double, double))c->fn)(c->env, ctx->dval, ctx->dval2);
+            }
+            ctx->result = 0;
+            return;
+        }
+        default: break;
+    }
+
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(ctx->handle);
+    if (!v) { ctx->result = 3; return; }
+    if (ctx->action == AETHER_DRV_FOCUS) {
+        aether_ui_focus_impl(ctx->handle);
+        ctx->result = 0;
+        return;
+    }
+    if (ctx->handle == aether_ui_test_server_banner_handle()) { ctx->result = 2; return; }
+    if (aether_ui_test_server_is_sealed(ctx->handle)) { ctx->result = 1; return; }
+
+    switch (ctx->action) {
+        case AETHER_DRV_CLICK:
+            if ([v isKindOfClass:[NSButton class]]) {
+                [(NSButton*)v performClick:nil];
+            } else {
+                // Any widget carrying an on_click closure — listbox rows are
+                // plain containers, and a click on one must still fire.
+                AeClosure* c = widget_click_closure(ctx->handle);
+                if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+            }
+            break;
+        case AETHER_DRV_SET_TEXT: {
+            NSString* s = [NSString stringWithUTF8String:ctx->sval];
+            if ([v isKindOfClass:[NSTextField class]]) {
+                [(NSTextField*)v setStringValue:s];
+                // A programmatic setStringValue does NOT fire the action, so
+                // the app's on-change closure would never see driver input.
+                if (get_widget_type(ctx->handle) != AUI_TEXT) {
+                    [(NSTextField*)v sendAction:[(NSTextField*)v action]
+                                             to:[(NSTextField*)v target]];
+                }
+            } else if ([v isKindOfClass:[NSTextView class]]) {
+                [(NSTextView*)v setString:s];
+            }
+            break;
+        }
+        case AETHER_DRV_TOGGLE:
+            if ([v isKindOfClass:[NSButton class]]) {
+                NSButton* b = (NSButton*)v;
+                [b setState:([b state] == NSControlStateValueOn)
+                             ? NSControlStateValueOff : NSControlStateValueOn];
+                [b sendAction:[b action] to:[b target]];
+            }
+            break;
+        case AETHER_DRV_SET_VALUE:
+            if ([v isKindOfClass:[NSSlider class]]) {
+                aether_ui_slider_set_value(ctx->handle, ctx->dval);
+                [(NSSlider*)v sendAction:[(NSSlider*)v action]
+                                      to:[(NSSlider*)v target]];
+            } else if ([v isKindOfClass:[NSProgressIndicator class]]) {
+                aether_ui_progressbar_set_fraction(ctx->handle, ctx->dval);
+            } else if (get_widget_type(ctx->handle) == AUI_PICKER) {
+                // set_selected fires the change callback (GTK does the same).
+                aether_ui_picker_set_selected(ctx->handle, (int)ctx->dval);
+            }
+            break;
+        default:
+            break;
+    }
+    ctx->result = 0;
+}
+
+static void hook_dispatch_action(AetherDriverActionCtx* ctx) {
+    if ([NSThread isMainThread]) {
+        driver_perform(ctx);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{ driver_perform(ctx); });
+    }
+    ctx->done = 1;
+}
+
+static int hook_widget_children(int handle, int* out, int max) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return -1;
+    NSArray* subs = [v isKindOfClass:[NSStackView class]]
+        ? [(NSStackView*)v arrangedSubviews] : [v subviews];
+    int n = 0;
+    for (NSView* c in subs) {
+        if (n >= max) break;
+        int ch = handle_for_view(c);
+        if (ch > 0) {
+            if (out) out[n] = ch;
+            n++;
         }
     }
-    out[o] = '\0';
-}
-
-static int widget_to_json(int handle, char* buf, int bufsize) {
-    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
-    if (!v) {
-        return snprintf(buf, bufsize, "{\"id\":%d,\"type\":\"null\"}", handle);
-    }
-    const char* type = widget_type_name_for(handle);
-    const char* text = widget_text_for(handle);
-    char escaped[512];
-    json_escape(text, escaped, sizeof(escaped));
-    int visible = ![v isHidden];
-    int sealed = is_widget_sealed(handle) ? 1 : 0;
-    int is_banner = (handle == banner_handle) ? 1 : 0;
-    int parent_id = handle_for_view([v superview]);
-
-    int n = snprintf(buf, bufsize,
-        "{\"id\":%d,\"type\":\"%s\",\"text\":\"%s\",\"visible\":%s,\"sealed\":%s,\"banner\":%s,\"parent\":%d",
-        handle, type, escaped,
-        visible ? "true" : "false",
-        sealed ? "true" : "false",
-        is_banner ? "true" : "false",
-        parent_id);
-
-    if (get_widget_type(handle) == AUI_TOGGLE && [v isKindOfClass:[NSButton class]]) {
-        int active = [(NSButton*)v state] == NSControlStateValueOn ? 1 : 0;
-        n += snprintf(buf + n, bufsize - n, ",\"active\":%s", active ? "true" : "false");
-    } else if ([v isKindOfClass:[NSSlider class]]) {
-        n += snprintf(buf + n, bufsize - n, ",\"value\":%.2f", [(NSSlider*)v doubleValue]);
-    } else if ([v isKindOfClass:[NSProgressIndicator class]]) {
-        n += snprintf(buf + n, bufsize - n, ",\"value\":%.2f", [(NSProgressIndicator*)v doubleValue]);
-    }
-    n += snprintf(buf + n, bufsize - n, "}");
     return n;
 }
 
-static int parse_http_request(const char* req, char* path, int pathsize) {
-    int method = 0;
-    if (strncmp(req, "POST", 4) == 0) method = 1;
-    const char* p = strchr(req, ' ');
-    if (!p) return -1;
-    p++;
-    const char* end = strchr(p, ' ');
-    if (!end) end = strchr(p, '\r');
-    if (!end) end = p + strlen(p);
-    int len = (int)(end - p);
-    if (len >= pathsize) len = pathsize - 1;
-    memcpy(path, p, len);
-    path[len] = '\0';
-    return method;
-}
-
-static const char* extract_query_param(const char* path, const char* key) {
-    char needle[64];
-    snprintf(needle, sizeof(needle), "%s=", key);
-    const char* p = strstr(path, needle);
-    if (!p) return NULL;
-    return p + strlen(needle);
-}
-
-static void send_response(int fd, int status, const char* status_text,
-                          const char* content_type, const char* body) {
-    char header[512];
-    int bodylen = body ? (int)strlen(body) : 0;
-    int hlen = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %d\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        status, status_text, content_type, bodylen);
-    write(fd, header, hlen);
-    if (body && bodylen > 0) write(fd, body, bodylen);
-}
-
-// Perform a widget action on the main thread and return a result code.
-// action: 0=click, 1=set_text, 2=toggle, 3=set_value, 4=set_state
-// returns: 0=ok, 1=sealed, 2=banner, 3=not_found
-static int perform_action(int action, int handle, double dval, const char* sval) {
-    __block int result = 3;
+// Capture the window as a PNG — from the PRESENTATION layer where possible.
+//
+// This matters more than it looks. -[NSView animator] setAlphaValue: sets the
+// MODEL value immediately and lets CoreAnimation interpolate the PRESENTATION
+// layer toward it. cacheDisplayInRect: draws the model, so a screenshot taken
+// mid-tween already shows the final value: every animation looks like an
+// instant snap to the driver, and a spec that exists to prove a fade actually
+// tweens can never pass. The presentation layer is what is on screen, and what
+// a screenshot should mean.
+//
+// Falls back to cacheDisplayInRect: when there's no layer (or nothing has been
+// committed yet — a headless run that never displays), which is the correct
+// answer in exactly the cases where no animation can be in flight anyway.
+static int hook_screenshot_png(unsigned char** out_data, size_t* out_len) {
+    __block NSData* png = nil;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        if (action == 4) {
-            aether_ui_state_set(handle, dval);
-            result = 0;
-            return;
-        }
-        NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
-        if (!v) { result = 3; return; }
-        if (handle == banner_handle) { result = 2; return; }
-        if (is_widget_sealed(handle)) { result = 1; return; }
+        NSWindow* win = primary_window;
+        if (!win) return;
+        NSView* v = [win contentView];
+        if (!v) return;
+        NSRect bounds = [v bounds];
+        if (bounds.size.width <= 0 || bounds.size.height <= 0) return;
 
-        switch (action) {
-            case 0: // click
-                if ([v isKindOfClass:[NSButton class]]) {
-                    [(NSButton*)v performClick:nil];
-                }
-                break;
-            case 1: // set_text
-                if ([v isKindOfClass:[NSTextField class]]) {
-                    [(NSTextField*)v setStringValue:[NSString stringWithUTF8String:sval ? sval : ""]];
-                } else if ([v isKindOfClass:[NSTextView class]]) {
-                    [(NSTextView*)v setString:[NSString stringWithUTF8String:sval ? sval : ""]];
-                }
-                break;
-            case 2: // toggle
-                if ([v isKindOfClass:[NSButton class]]) {
-                    NSButton* b = (NSButton*)v;
-                    NSControlStateValue cur = [b state];
-                    [b setState:cur == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn];
-                    [b sendAction:[b action] to:[b target]];
-                }
-                break;
-            case 3: // set_value
-                if ([v isKindOfClass:[NSSlider class]]) {
-                    [(NSSlider*)v setDoubleValue:dval];
-                    [(NSSlider*)v sendAction:[(NSSlider*)v action] to:[(NSSlider*)v target]];
-                } else if ([v isKindOfClass:[NSProgressIndicator class]]) {
-                    [(NSProgressIndicator*)v setDoubleValue:dval];
-                }
-                break;
-        }
-        result = 0;
-    });
-    return result;
-}
-
-static void handle_test_request(int client_fd) {
-    char req[4096];
-    int n = (int)read(client_fd, req, sizeof(req) - 1);
-    if (n <= 0) { close(client_fd); return; }
-    req[n] = '\0';
-
-    char path[1024];
-    int method = parse_http_request(req, path, sizeof(path));
-    if (method < 0) {
-        send_response(client_fd, 400, "Bad Request", "text/plain", "Bad request");
-        close(client_fd);
-        return;
-    }
-
-    // GET /widgets with optional ?type=&text= filters
-    if (method == 0 && strncmp(path, "/widgets", 8) == 0 &&
-        (path[8] == '\0' || path[8] == '?')) {
-        const char* filter_type = extract_query_param(path, "type");
-        const char* filter_text = extract_query_param(path, "text");
-        char ft_buf[128] = "", fx_buf[128] = "";
-        if (filter_type) {
-            strncpy(ft_buf, filter_type, sizeof(ft_buf) - 1);
-            char* amp = strchr(ft_buf, '&'); if (amp) *amp = '\0';
-        }
-        if (filter_text) {
-            strncpy(fx_buf, filter_text, sizeof(fx_buf) - 1);
-            char* amp = strchr(fx_buf, '&'); if (amp) *amp = '\0';
-        }
-
-        char* body = malloc(widget_count * 512 + 64);
-        int pos = 0;
-        int first = 1;
-        pos += sprintf(body + pos, "[");
-        for (int i = 1; i <= widget_count; i++) {
-            const char* type = widget_type_name_for(i);
-            if (ft_buf[0] && strcmp(type, ft_buf) != 0) continue;
-            if (fx_buf[0]) {
-                const char* t = widget_text_for(i);
-                if (!t || strcmp(t, fx_buf) != 0) continue;
-            }
-            if (!first) pos += sprintf(body + pos, ",");
-            first = 0;
-            pos += widget_to_json(i, body + pos, 512);
-        }
-        pos += sprintf(body + pos, "]");
-        send_response(client_fd, 200, "OK", "application/json", body);
-        free(body);
-        close(client_fd);
-        return;
-    }
-
-    // GET /widget/{id}/children
-    if (method == 0 && strncmp(path, "/widget/", 8) == 0) {
-        char* suffix = strchr(path + 8, '/');
-        if (suffix && strcmp(suffix, "/children") == 0) {
-            int id = atoi(path + 8);
-            NSView* v = (__bridge NSView*)aether_ui_get_widget(id);
-            if (!v) {
-                send_response(client_fd, 404, "Not Found", "application/json",
-                              "{\"error\":\"widget not found\"}");
-                close(client_fd);
-                return;
-            }
-            char* body = malloc(widget_count * 512 + 64);
-            int pos = 0;
-            int first = 1;
-            pos += sprintf(body + pos, "[");
-            NSArray* subs = nil;
-            if ([v isKindOfClass:[NSStackView class]]) {
-                subs = [(NSStackView*)v arrangedSubviews];
-            } else {
-                subs = [v subviews];
-            }
-            for (NSView* c in subs) {
-                int ch = handle_for_view(c);
-                if (ch > 0) {
-                    if (!first) pos += sprintf(body + pos, ",");
-                    first = 0;
-                    pos += widget_to_json(ch, body + pos, 512);
+        CALayer* pres = [[v layer] presentationLayer];
+        if (pres) {
+            int w = (int)lround(bounds.size.width);
+            int h = (int)lround(bounds.size.height);
+            CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+            CGContextRef cg = CGBitmapContextCreate(
+                NULL, (size_t)w, (size_t)h, 8, 0, cs,
+                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+            CGColorSpaceRelease(cs);
+            if (cg) {
+                [pres renderInContext:cg];
+                CGImageRef img = CGBitmapContextCreateImage(cg);
+                CGContextRelease(cg);
+                if (img) {
+                    NSBitmapImageRep* rep =
+                        [[NSBitmapImageRep alloc] initWithCGImage:img];
+                    png = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                            properties:@{}];
+                    CGImageRelease(img);
                 }
             }
-            pos += sprintf(body + pos, "]");
-            send_response(client_fd, 200, "OK", "application/json", body);
-            free(body);
-            close(client_fd);
-            return;
         }
-    }
-
-    // GET /screenshot — capture the primary window as PNG
-    if (method == 0 && strcmp(path, "/screenshot") == 0) {
-        __block NSData* png = nil;
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            NSWindow* win = primary_window;
-            if (!win) return;
-            NSView* v = [win contentView];
-            if (!v) return;
-            NSRect bounds = [v bounds];
+        if (!png) {
             NSBitmapImageRep* rep = [v bitmapImageRepForCachingDisplayInRect:bounds];
             if (!rep) return;
             [v cacheDisplayInRect:bounds toBitmapImageRep:rep];
             png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        });
-
-        if (png && [png length] > 0) {
-            char header[256];
-            int hlen = snprintf(header, sizeof(header),
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: image/png\r\n"
-                "Content-Length: %lu\r\n"
-                "Connection: close\r\n\r\n",
-                (unsigned long)[png length]);
-            write(client_fd, header, hlen);
-            write(client_fd, [png bytes], [png length]);
-        } else {
-            send_response(client_fd, 500, "Error", "application/json",
-                          "{\"error\":\"screenshot failed\"}");
         }
-        close(client_fd);
-        return;
-    }
-
-    // GET /widget/{id}
-    if (method == 0 && strncmp(path, "/widget/", 8) == 0 && strchr(path + 8, '/') == NULL) {
-        int id = atoi(path + 8);
-        if (id < 1 || id > widget_count) {
-            send_response(client_fd, 404, "Not Found", "application/json",
-                          "{\"error\":\"widget not found\"}");
-        } else {
-            char buf[1024];
-            widget_to_json(id, buf, sizeof(buf));
-            send_response(client_fd, 200, "OK", "application/json", buf);
-        }
-        close(client_fd);
-        return;
-    }
-
-    // GET /state/{id}
-    if (method == 0 && strncmp(path, "/state/", 7) == 0 && strchr(path + 7, '/') == NULL) {
-        int id = atoi(path + 7);
-        double val = aether_ui_state_get(id);
-        char buf[128];
-        snprintf(buf, sizeof(buf), "{\"id\":%d,\"value\":%.6f}", id, val);
-        send_response(client_fd, 200, "OK", "application/json", buf);
-        close(client_fd);
-        return;
-    }
-
-    // POST /widget/{id}/<action>
-    if (method == 1 && strncmp(path, "/widget/", 8) == 0) {
-        char* action_part = strchr(path + 8, '/');
-        if (action_part) {
-            int handle = atoi(path + 8);
-            int action = -1;
-            double dval = 0.0;
-            char sval[512] = "";
-
-            if (strncmp(action_part, "/click", 6) == 0) {
-                action = 0;
-            } else if (strncmp(action_part, "/set_text", 9) == 0) {
-                action = 1;
-                const char* v = extract_query_param(path, "v");
-                if (v) {
-                    strncpy(sval, v, sizeof(sval) - 1);
-                    char* amp = strchr(sval, '&'); if (amp) *amp = '\0';
-                }
-            } else if (strncmp(action_part, "/toggle", 7) == 0) {
-                action = 2;
-            } else if (strncmp(action_part, "/set_value", 10) == 0) {
-                action = 3;
-                const char* v = extract_query_param(path, "v");
-                if (v) dval = atof(v);
-            } else {
-                send_response(client_fd, 400, "Bad Request", "application/json",
-                              "{\"error\":\"unknown action\"}");
-                close(client_fd);
-                return;
-            }
-
-            int result = perform_action(action, handle, dval, sval);
-            if (result == 1) {
-                send_response(client_fd, 403, "Forbidden", "application/json",
-                              "{\"error\":\"widget is sealed\"}");
-            } else if (result == 2) {
-                send_response(client_fd, 403, "Forbidden", "application/json",
-                              "{\"error\":\"banner cannot be manipulated\"}");
-            } else if (result == 3) {
-                send_response(client_fd, 404, "Not Found", "application/json",
-                              "{\"error\":\"widget not found\"}");
-            } else {
-                send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
-            }
-            close(client_fd);
-            return;
-        }
-    }
-
-    // POST /state/{id}/set?v=X
-    if (method == 1 && strncmp(path, "/state/", 7) == 0) {
-        char* action_part = strchr(path + 7, '/');
-        if (action_part && strncmp(action_part, "/set", 4) == 0) {
-            int handle = atoi(path + 7);
-            double dval = 0.0;
-            const char* v = extract_query_param(path, "v");
-            if (v) dval = atof(v);
-            perform_action(4, handle, dval, NULL);
-            send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
-            close(client_fd);
-            return;
-        }
-    }
-
-    send_response(client_fd, 404, "Not Found", "text/plain", "Not found");
-    close(client_fd);
+    });
+    if (!png || [png length] == 0) return -1;
+    *out_len = (size_t)[png length];
+    *out_data = (unsigned char*)malloc(*out_len);
+    if (!*out_data) return -1;
+    memcpy(*out_data, [png bytes], *out_len);
+    return 0;
 }
 
-static void* test_server_thread(void* arg) {
-    int port = (int)(intptr_t)arg;
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) return NULL;
+static const AetherDriverHooks macos_driver_hooks = {
+    .widget_count         = hook_widget_count,
+    .widget_type          = hook_widget_type,
+    .widget_text_into     = hook_widget_text_into,
+    .widget_visible       = hook_widget_visible,
+    .widget_parent        = hook_widget_parent,
+    .toggle_active        = hook_toggle_active,
+    .slider_value         = hook_slider_value,
+    .progressbar_fraction = hook_progressbar_fraction,
+    .dispatch_action      = hook_dispatch_action,
+    .widget_children      = hook_widget_children,
+    .widget_enabled       = hook_widget_enabled,
+    .widget_rect          = hook_widget_rect,
+    .widget_classes_into  = hook_widget_classes_into,
+    .focused_widget       = hook_focused_widget,
+    .screenshot_png       = hook_screenshot_png,
+};
 
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons((uint16_t)port);
-
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "AetherUIDriver: failed to bind to port %d: %s\n",
-                port, strerror(errno));
-        close(server_fd);
-        return NULL;
-    }
-    listen(server_fd, 8);
-    fprintf(stderr, "AetherUIDriver: listening on http://127.0.0.1:%d\n", port);
-
-    for (;;) {
-        int client = accept(server_fd, NULL, NULL);
-        if (client < 0) continue;
-        handle_test_request(client);
-    }
-    return NULL;
-}
-
-// Inject "Under Remote Control" banner as the first arranged subview.
+// Inject the "Under Remote Control" banner as the first arranged subview.
+// It is a REAL registered widget, so it shows up in /widgets with
+// "banner":true and it shifts every other widget's y — which is exactly why
+// the overlay/geometry specs read x/y/w/h from the driver instead of
+// hardcoding pixel coordinates.
 static void inject_remote_control_banner(int root_handle) {
     NSView* root = (__bridge NSView*)aether_ui_get_widget(root_handle);
     if (!root || ![root isKindOfClass:[NSStackView class]]) return;
@@ -2711,26 +4232,29 @@ static void inject_remote_control_banner(int root_handle) {
     [banner setFont:[NSFont boldSystemFontOfSize:12]];
     [banner setAlignment:NSTextAlignmentCenter];
     [banner setWantsLayer:YES];
-    banner.layer.backgroundColor = [[NSColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0] CGColor];
+    banner.layer.backgroundColor =
+        [[NSColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0] CGColor];
     [banner setTranslatesAutoresizingMaskIntoConstraints:NO];
     [banner.heightAnchor constraintEqualToConstant:24].active = YES;
 
-    banner_handle = register_widget_typed((__bridge void*)banner, AUI_BANNER);
+    int bh = register_widget_typed((__bridge void*)banner, AUI_BANNER);
     [(NSStackView*)root insertArrangedSubview:banner atIndex:0];
     [banner.leadingAnchor constraintEqualToAnchor:root.leadingAnchor].active = YES;
     [banner.trailingAnchor constraintEqualToAnchor:root.trailingAnchor].active = YES;
+
+    aether_ui_test_server_set_banner(bh);
+    aether_ui_seal_widget_impl(bh);   // the banner is not automatable
 }
 
+static int test_server_started = 0;
 void aether_ui_enable_test_server_impl(int port, int root_handle) {
-    ts_port = port;
+    // Idempotent: the env auto-start and an explicit app call must not stack
+    // a second banner (it shows up as a duplicate "Under Remote Control").
+    if (test_server_started) return;
+    test_server_started = 1;
 
-    // The app delegate hasn't been run yet — the root may not be in a window.
-    // We can inject the banner now since it's inside the stack view.
     inject_remote_control_banner(root_handle);
-
-    pthread_t tid;
-    pthread_create(&tid, NULL, test_server_thread, (void*)(intptr_t)port);
-    pthread_detach(tid);
+    aether_ui_test_server_start(port, &macos_driver_hooks);
 }
 
 // ---------------------------------------------------------------------------
@@ -2763,17 +4287,15 @@ static int register_mac_menu(NSMenu* menu, NSString* label, int is_bar) {
 }
 
 // Target/action plumbing for menu items. Each menu item stores its boxed
-// closure pointer; the shared target invokes it on click.
-@interface AetherMenuTarget : NSObject
-- (void)fire:(id)sender;
-@end
+// closure pointer; the shared target invokes it on click. Declared up with the
+// context-menu code (which needs it first) — this is its implementation, and
+// it serves both the menubar and per-widget right-click menus.
 @implementation AetherMenuTarget
 - (void)fire:(id)sender {
     AeClosure* c = (AeClosure*)(intptr_t)[[sender representedObject] longLongValue];
     if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
 }
 @end
-static AetherMenuTarget* g_menu_target = nil;
 
 int aether_ui_menu_bar_create(void) {
     if (!g_menu_target) g_menu_target = [[AetherMenuTarget alloc] init];

@@ -50,9 +50,17 @@ main() {
 
     // Verify every byte round-trips. The decoded value is a binary
     // string; read bytes via string.char_at (byte-level).
+    //
+    // NB the mask. string_char_at is declared `char` in libaether's header but
+    // the generated C prototypes it as `int`, and the x86-64 ABI only defines
+    // the low 8 bits of the return register for a char. gcc happens to
+    // zero-extend (Linux sees 255), Apple clang sign-extends (macOS saw -1) —
+    // so this test failed on macOS while the base64 itself was perfectly
+    // correct. A byte is unsigned; read it as one.
     j = 0
     while j < n {
         got = string.char_at(decoded, j)
+        if got < 0 { got = got + 256 }
         if got != vals[j] {
             println("  FAIL: byte ${j}: got ${got} want ${vals[j]}")
             exit(1)

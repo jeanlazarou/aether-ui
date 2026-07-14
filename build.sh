@@ -54,10 +54,12 @@ case "$OS" in
         clang -O0 -g -fobjc-arc \
             $AETHER_INCLUDES \
             "$C_FILE" "$SCRIPT_DIR/backend/aether_ui_macos.m" \
+            "$SCRIPT_DIR/backend/aether_ui_test_server.c" \
             "$SCRIPT_DIR/backend/aether_ui_system_extras.c" \
             -L"$AETHER_LIB_PATH" -laether \
             -o "$OUTPUT" \
-            -framework AppKit -framework Foundation -framework QuartzCore -pthread -lm \
+            -framework AppKit -framework Foundation -framework QuartzCore \
+            -framework CoreText -framework ImageIO -pthread -lm \
             $AETHER_LIBS
         ;;
     Linux|FreeBSD)
