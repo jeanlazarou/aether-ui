@@ -82,15 +82,30 @@ side-by-side first.
 ### win32 — the gaps that remain
 
 Real: focus/Tab (dialog order, not build order), driver introspection,
-state/bindings, canvas `on_click`/`on_key`/`on_release` (2026-07-16,
-`c21334c` — WM_LBUTTON/WM_KEYDOWN → the hooks, VK→GDK key names, focus
-deferred to window-show; drill + keyboard nav proven on winbaz), and
-now everything the shared server gained above.
+state/bindings, canvas `on_click`/`on_key`/`on_release` (`c21334c`),
+picker (combobox + driver set_value + default selection, `962ed0e`),
+**overlay layer** (`962ed0e` — raised child HWNDs over the client area:
+toast/modal-scrim/tooltip, append-only `/overlays`, Escape-dismiss,
+deep `/window/pick`; toast lifecycle proven green), and now everything
+the shared server gained above.
 Still stubbed: **splitview** (plain stack, no divider — `split_position`
-honestly answers -1), **overlay layer** (blocks vg_tooltip/picker/
-overlay suites — they need the drawn overlay host, not canvas events),
-**shortcuts** (`/window/key` answers `fired:false` honestly), **text
-metrics** (GDI), **weight / on_layout / wrap**.
+honestly answers -1), **shortcuts** (`/window/key` answers
+`fired:false` honestly), **text metrics** (GDI), **weight / on_layout /
+wrap**.
+
+**Two cross-cutting win32 bugs now block several suites (NOT feature
+stubs — fix these next, they unlock overlay + vg_tooltip + gp):**
+- **widget geometry reports `h:0`.** Every widget's driver rect has
+  height 0 (the calculator shows it too — it's green only because its
+  specs don't read geometry). This makes `/window/pick` at a widget's
+  computed centre miss, so the overlay pick/scrim tests (4) fail even
+  though the overlay layer works. Also likely behind gp_hover_and_resize
+  and any future geometry assert. The HWNDs render fine — it's the
+  `widget_rect` hook / stack-layout-timing that reports wrong.
+- **canvas scene doesn't rescale** (`canvas_on_resize` is a stub): the
+  vg scene stays at its initial viewBox size, so hover px coords don't
+  map to scene hit regions → vg_tooltip hover finds no shape (4 fails).
+  The overlay/tooltip plumbing underneath is correct.
 
 ~~Known harness gap~~ FIXED 2026-07-16: gp clips crumb-button labels
 (>20 chars → 17+"..."), and on Windows the fixture's long native path
@@ -102,14 +117,17 @@ keyboard nav proven through the matrix). NB: the ae module cache can
 serve a STALE spec helper — `rm -rf ~/.aether/cache` when a spec edit
 seems to have no effect.
 
-**Windows matrix baseline (2026-07-16): 47 passing / 70 failing.**
-GREEN: calculator 9, each 6, listbox 6, table 4, bindings 6,
-gp_map_nav 2. Remaining reds map to: overlay host (overlay,
-vg_tooltip, picker), shortcuts (testable ×2, gp_scan_and_list ×4),
-splitview+layout (split 13), GDI metrics (text_metrics), ctx-menu
-driver actions + gio (context_menu, gp_fileops), toggle_group radio
-exclusivity + resize relayout (gp_legend, gp_hover_and_resize), tabs
-strip (tabs 9 — honest stub), Tab order platform-native (testable 1).
+**Windows matrix baseline (2026-07-16 pm, `962ed0e`): 52 passing / 56
+failing.** GREEN suites: calculator 9, each 6, listbox 6, table 4,
+bindings 6, picker 3, gp_map_nav 2. Partial: overlay 3/7 (toast
+lifecycle green; pick tests blocked by the h:0 geometry bug above),
+vg_tooltip 1/5 (hover blocked by canvas-scene scaling above). Remaining
+reds map to: **the two cross-cutting bugs** (overlay pick, vg_tooltip
+hover), shortcuts (testable ×2, gp_scan_and_list ×4), splitview+layout
+(split 13), GDI metrics (text_metrics), ctx-menu driver actions + gio
+(context_menu, gp_fileops), toggle_group radio exclusivity
+(gp_legend), tabs strip (tabs 9 — honest stub), Tab order
+platform-native (testable 1).
 
 **Windows spec-matrix baseline (2026-07-14 evening, winbaz, post
 macOS-parity pull + timer fix):** `AEOCHA_DIR=... ./tests/spec_matrix.sh`
