@@ -82,11 +82,22 @@ side-by-side first.
 ### win32 — the gaps that remain
 
 Real: focus/Tab (dialog order, not build order), driver introspection,
-state/bindings, and now everything the shared server gained above.
+state/bindings, canvas `on_click`/`on_key`/`on_release` (2026-07-16,
+`c21334c` — WM_LBUTTON/WM_KEYDOWN → the hooks, VK→GDK key names, focus
+deferred to window-show; drill + keyboard nav proven on winbaz), and
+now everything the shared server gained above.
 Still stubbed: **splitview** (plain stack, no divider — `split_position`
-honestly answers -1), **overlay layer**, **shortcuts** (`/window/key`
-answers `fired:false` honestly), **text metrics** (GDI), **weight /
-on_layout / wrap**, canvas `on_click`/`on_key` (only `on_move` is wired).
+honestly answers -1), **overlay layer** (blocks vg_tooltip/picker/
+overlay suites — they need the drawn overlay host, not canvas events),
+**shortcuts** (`/window/key` answers `fired:false` honestly), **text
+metrics** (GDI), **weight / on_layout / wrap**.
+
+Known harness gap (NOT a backend stub): the gp_* spec rows stay red on
+Windows because gp clips crumb-button labels and the fixture's long
+native path (`C:/Users/paul/.gp-…`) truncates, so
+`widget_id_by_text(root_label)` finds no exact match. Fix belongs in
+`gp_driver.ae`/`clip_name`, not the backend — canvas events themselves
+are verified working.
 
 **Windows spec-matrix baseline (2026-07-14 evening, winbaz, post
 macOS-parity pull + timer fix):** `AEOCHA_DIR=... ./tests/spec_matrix.sh`
