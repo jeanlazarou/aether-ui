@@ -15,6 +15,8 @@ import lis_net
 import lis_net (Song, search, song_title, song_artist)
 import lis_audio
 import lis_audio (play_net, start_play)
+import lis_store
+import lis_store (save_his)
 
 exports ( build_search_bar, build_search_page, run_search )
 
@@ -50,10 +52,12 @@ build_search_page(_ctx: ptr, c: *Config) -> ptr {
     })
 }
 
-// Run the (stubbed) search and refresh the results each-list.
+// Run the search: persist the term to history (REAL SQLite via lis_store),
+// fetch results (stubbed net), refresh the results each-list.
 run_search(c: *Config, results: ptr) {
     term = search_term(c)
     if string.length(term) == 0 { term = "music" }
+    save_his(c.history, term)     // original: search recorded to the history table
     songs = search(term)
     each_update(results, songs)
 }

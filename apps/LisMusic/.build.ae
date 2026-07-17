@@ -1,8 +1,12 @@
 // LisMusic — aether-ui toolkit app, built as its own cached aeb node.
 // A port of SLTwitness's LisMusic (Qt6/QML) — see README.md.
+//
+// lis_store uses contrib.sqlite (a real SQLite backend), so this node adds
+// the aether/ tree to the module path (for `import contrib.sqlite`) and links
+// the prebuilt bridge archive + system libsqlite3.
 import build
 import aether
-import aether (source, output, no_closure_regen)
+import aether (source, output, no_closure_regen, lib, link_flag)
 import aetherui (ui_backend)
 
 main() {
@@ -11,6 +15,12 @@ main() {
     aether.program(b) {
         source("lismusic.ae")
         output("LisMusic")
+        // contrib.sqlite lives in the sibling aether checkout; put it on the
+        // module search path so `import contrib.sqlite` resolves.
+        lib("${root}/../aether")
+        link_flag("-L/usr/local/lib/aether")
+        link_flag("-laether_sqlite")
+        link_flag("-lsqlite3")
         no_closure_regen()
         ui_backend(root)
     }

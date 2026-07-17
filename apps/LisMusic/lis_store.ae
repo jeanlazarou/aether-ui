@@ -1,44 +1,83 @@
-// lis_store.ae — persistence SEAM (original: savehisty.h / savehisty.cpp).
+// lis_store.ae — search-history persistence (original: savehisty.{h,cpp}).
 //
-// The original uses SQLite (QSqlDatabase) to persist search history and
-// local-music paths. Aether's std has http/json/net but no SQLite binding,
-// so this is an in-memory stub with the same surface. Wiring real storage
-// later means implementing THIS module — the UI only calls these.
-//
-// Original surface: savehis(list) / loadhis() -> list / deletdata()
+// REAL now, not a stub: backed by contrib.sqlite (a proper SQLite binding).
+// Faithful to the original's schema and surface —
+//   CREATE TABLE IF NOT EXISTS history(
+//       id INTEGER PRIMARY KEY AUTOINCREMENT, historysearch TEXT)
+//   savehis(term)  → INSERT one row (original took a QVariantList; we take
+//                    one term per call, which is how the UI uses it)
+//   loadhis()      → SELECT historysearch FROM history  (→ std.list of strings)
+//   deletdata()    → DELETE FROM history
+// Persisted to history.db in the working directory, exactly as upstream.
 
 import std.string
 import std.list
+import contrib.sqlite
 
 extern println(s: string)
+extern malloc(size: int) -> ptr
 
-exports ( History, mk_history, save_his, load_his, delete_data )
+exports ( History, mk_history, save_his, load_his, delete_data, close_store )
 
 struct History {
-    items: ptr   // std.list of search-term strings (in memory only)
+    db: ptr      // sqlite connection (null if open failed → calls no-op)
 }
 
 mk_history() -> *History {
     h = malloc(16) as *History
-    h.items = list.new()
+    db, err = sqlite.open("history.db")
+    if err != "" {
+        println("[lis_store] open failed: ${err} (history disabled)")
+        h.db = null
+        return h
+    }
+    h.db = db
+    // Same DDL as the original savehisty::init().
+    cerr = sqlite.exec(db,
+        "CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, historysearch TEXT)")
+    if cerr != "" { println("[lis_store] create failed: ${cerr}") }
     return h
 }
 
-// Persist a search term. STUB — in-memory list, lost on exit (the original
-// writes a SQLite row).
+// Persist a search term (original: savehis — one INSERT). Prepared statement
+// with a bound parameter (the original binds too; and it's the SQL-injection-
+// safe path the sqlite README calls for).
 save_his(h: *History, term: string) {
+    if h.db == null { return }
     if string.length(term) == 0 { return }
-    _ = list.add(h.items, term)
-    println("[lis_store STUB] save_his ${term} (in-memory; no SQLite)")
+    stmt, err = sqlite.prepare(h.db, "INSERT INTO history (historysearch) VALUES (?)")
+    if err != "" { println("[lis_store] prepare failed: ${err}"); return }
+    _ = sqlite.bind_text(stmt, 1, term)
+    _rc, _serr = sqlite.step(stmt, h.db)
+    _ = sqlite.finalize(stmt)
 }
 
+// Load all history terms (original: loadhis → QVariantList). Returns a
+// std.list of strings, newest-last (insertion order via the autoincrement id).
 load_his(h: *History) -> ptr {
-    return h.items
+    out = list.new()
+    if h.db == null { return out }
+    stmt, err = sqlite.prepare(h.db, "SELECT historysearch FROM history ORDER BY id")
+    if err != "" { println("[lis_store] query failed: ${err}"); return out }
+    while sqlite.next_row(stmt, h.db) == 1 {
+        term = sqlite.column_text(stmt, 0)
+        _ = list.add(out, term)
+    }
+    _ = sqlite.finalize(stmt)
+    return out
 }
 
+// Clear all history (original: deletdata → DELETE FROM history).
 delete_data(h: *History) {
-    h.items = list.new()
-    println("[lis_store STUB] delete_data")
+    if h.db == null { return }
+    _ = sqlite.exec(h.db, "DELETE FROM history")
 }
 
-extern malloc(size: int) -> ptr
+// Close the connection (finalize any statements first — the sqlite README
+// warns close fails otherwise; all our statements are finalized inline).
+close_store(h: *History) {
+    if h.db != null {
+        _ = sqlite.close(h.db)
+        h.db = null
+    }
+}

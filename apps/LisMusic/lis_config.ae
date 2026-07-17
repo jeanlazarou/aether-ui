@@ -45,6 +45,7 @@ struct Config {
     st_page: int       // right-panel page index (int state): 0=Home 1=Search 2=MyMusic
     st_status: int     // a status label handle for stub feedback (int handle)
     win: int           // window handle (0 = primary), for overlays/toasts
+    tv: int            // the right-page tabs handle (set at build; nav drives it)
 }
 
 mk_config() -> *Config {
@@ -59,6 +60,7 @@ mk_config() -> *Config {
     c.st_page = 0
     c.st_status = 0
     c.win = 0
+    c.tv = 0
     return c
 }
 
@@ -66,12 +68,21 @@ mk_config() -> *Config {
 // the leftindex/stackstate behaviour stack). Here the right panel is a tab
 // stack and the page is just its index; nav_to switches it. ───────────────
 import ui
-import ui (ui_set_i, ui_get_i, ui_set_s, ui_get_s, ui_set_b, ui_get_b)
+import ui (ui_set_i, ui_get_i, ui_set_s, ui_get_s, ui_set_b, ui_get_b,
+    tab_select)
 
+// set_page just records the page index in state (the original's leftindex).
+// on_tab_change calls this so state tracks whichever tab is visible.
 set_page(c: *Config, idx: int) {
     if c.st_page != 0 { _ = ui_set_i(c.st_page, idx) }
 }
-nav_to(c: *Config, idx: int) { set_page(c, idx) }
+// nav_to is the action a sidebar click fires: it drives the actual tab strip
+// (original: Config signal → StackView push). tab_select fires on_tab_change,
+// which then set_page's the state — no loop (set_page doesn't call back).
+nav_to(c: *Config, idx: int) {
+    if c.tv != 0 { tab_select(c.tv, idx) }
+    set_page(c, idx)
+}
 current_page(c: *Config) -> int {
     if c.st_page == 0 { return 0 }
     return ui_get_i(c.st_page)

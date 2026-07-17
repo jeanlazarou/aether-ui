@@ -515,6 +515,19 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
 fi
 
 echo
+echo "=== Phase 7: AetherUIDriver LisMusic port spec ==="
+# LisMusic (apps/LisMusic): the three-region shell renders, sidebar nav drives
+# the right-page tab stack, search populates the each-list, transport wired.
+# Uses real contrib.sqlite for search history (history.db); clean it per run.
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    rm -f "$ROOT/history.db"
+    UI_SPEC=LisMusic/spec_lismusic \
+    run_server_test "$ROOT/target/build/apps/LisMusic/bin/LisMusic" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" lismusic || FAIL=$((FAIL + 1))
+    rm -f "$ROOT/history.db"
+fi
+
+echo
 if [ "$FAIL" -eq 0 ]; then
     echo "=== CI result: all phases passed ==="
     exit 0

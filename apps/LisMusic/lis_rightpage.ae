@@ -52,7 +52,9 @@ build_right(_ctx: ptr, c: *Config) -> int {
         // results and switching to that tab on use.
         build_search_bar(c, results)
     }
-    // Config.nav_to writes st_page; keep the tab strip in sync with it.
+    // Store the tab strip on Config so sidebar nav (nav_to) can drive it,
+    // and keep state in sync when the strip changes (click or programmatic).
+    c.tv = tv
     on_tab_change(tv) callback |i: int| {
         set_page(c, i)
     }

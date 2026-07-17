@@ -21,10 +21,12 @@ here (the sidebar sections, the player chrome, the settings labels, etc.).
 The original is a full client: it plays audio (QtMultimedia), persists
 history and local-library paths in **SQLite**, extracts cover art with the
 **FFmpeg** CLI, and pulls songs from a third-party HTTP+JSON API on a
-worker thread. **Aether-UI has no peer for four of those subsystems**
-(audio playback, SQLite, an image-decode-from-bytes path, and a
-threaded-network story wired into the widget loop), so a faithful,
-*working* clone is not achievable on this toolkit today.
+worker thread. Of those, **SQLite is real here** — `lis_store` is backed by
+`contrib.sqlite`, faithful to the original's `history` schema and
+persisted to `history.db` across runs. **Three subsystems still have no
+Aether-UI peer** (audio playback, an image-decode-from-bytes path for
+cover art, and a threaded-network story wired into the widget loop), so a
+faithful, *working* clone is not achievable on this toolkit today.
 
 What this port **does** deliver, faithfully, is the **UI and its
 structure**:
@@ -40,12 +42,14 @@ structure**:
   overlay, and the now-playing chrome (title / artist / transport /
   seek / volume).
 
-The four missing subsystems are isolated behind clearly-marked **seams**
-(`lis_audio`, `lis_store`, `lis_cover`, `lis_net`) — each is a small
-module with the original's method signatures and an honest stub body
-(e.g. `lis_audio.start_play()` logs and no-ops). Wiring a real backend in
-later means implementing one seam module, not rewriting the app. Every
-stub says so at its call site.
+The backend subsystems are isolated behind clearly-marked **seams**
+(`lis_audio`, `lis_store`, `lis_cover`, `lis_net`) — each a small module
+with the original's method signatures. `lis_store` is **real**
+(contrib.sqlite; search history round-trips and persists). The other
+three are honest stubs (e.g. `lis_audio.start_play()` logs and no-ops).
+Wiring a real backend in later means implementing one seam module, not
+rewriting the app — `lis_store` is the worked example of exactly that.
+Every stub says so at its call site.
 
 ## File map (original → port)
 
@@ -59,10 +63,18 @@ stub says so at its call site.
 | `Searchtop.qml`, `SearchData.qml` | `lis_search.ae` | search field + results |
 | `Loginpop.qml`, `OtherLoginpop.qml` | `lis_login.ae` | login popup (framework only, as in the original) |
 | `ButtonHover.qml`, `ChoseButton.qml`, `SelectBox.qml` | `lis_widgets.ae` | reusable UI bits |
-| `musicplay.{h,cpp}` | `lis_audio.ae` | **seam**: playback (stub) |
-| `savehisty.{h,cpp}` | `lis_store.ae` | **seam**: SQLite persistence (stub) |
-| `ffmpegsolve.{h,cpp}` | `lis_cover.ae` | **seam**: cover extraction (stub) |
-| `netmusic*.{h,cpp}`, `musicworker.{h,cpp}` | `lis_net.ae` | **seam**: HTTP/JSON API (stub) |
+| `musicplay.{h,cpp}` | `lis_audio.ae` | **seam**: playback (stub — no audio API) |
+| `savehisty.{h,cpp}` | `lis_store.ae` | **seam**: SQLite persistence (**REAL** — contrib.sqlite) |
+| `ffmpegsolve.{h,cpp}` | `lis_cover.ae` | **seam**: cover extraction (stub — no image decode) |
+| `netmusic*.{h,cpp}`, `musicworker.{h,cpp}` | `lis_net.ae` | **seam**: HTTP/JSON API (stub — canned results) |
+
+## Tests
+
+A driver spec (`tests/LisMusic/spec_lismusic.ae`, ci Phase 7 / spec_matrix
+row `lismusic`) drives the running app over the AetherUIDriver and proves
+the real behaviours: the three-region shell renders, sidebar nav switches
+the right-page tab stack, search populates the results each-list, and the
+transport play/pause + result Play buttons are wired. 5/5.
 
 ## Build & run
 
