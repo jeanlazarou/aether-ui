@@ -3966,36 +3966,48 @@ static int hook_widget_enabled(int handle) {
 // bottom of the content view, while GTK and Win32 both report y growing down
 // from the top — so the flip here is what makes a geometry assertion in a spec
 // mean the same thing on all three backends.
+// Geometry read — MUST run on the main thread. alignmentRectForFrame: (and
+// some convertRect: paths) touch the Auto Layout engine, and AppKit aborts the
+// process if the layout engine is touched from a background thread after the
+// main thread has used it ("Modifications to the layout engine must not be
+// performed from a background thread"). The driver's introspection hooks run on
+// the HTTP server thread, so an app with live/dynamic layout (LisMusic — an
+// NSBox divider whose alignmentRectInsets forces a layout pass) crashes here
+// unless the read is marshalled onto the main queue.
 static int hook_widget_rect(int handle, int* x, int* y, int* w, int* hgt) {
-    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
-    if (!v) return -1;
-    NSView* content = [[v window] contentView];
-    if (!content) content = [primary_window contentView];
-    if (!content) return -1;
+    __block int rc = -1;
+    __block int rx = 0, ry = 0, rw = 0, rh = 0;
+    void (^compute)(void) = ^{
+        NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+        if (!v) return;
+        NSView* content = [[v window] contentView];
+        if (!content) content = [primary_window contentView];
+        if (!content) return;
 
-    // Report the ALIGNMENT rect, not the raw frame.
-    //
-    // AppKit controls draw outside their layout box: an NSTextField's frame is
-    // ~2px wider on each side than the rect Auto Layout actually positions.
-    // Report frames and adjacent siblings appear to OVERLAP by 4px and a row's
-    // widths sum to more than its container — which reads as a broken layout
-    // when the layout is in fact exact. GTK's x/y/w/h is the allocation (the
-    // layout box), and the alignment rect is AppKit's word for the same thing.
-    NSView* super_v = [v superview];
-    NSRect r;
-    if (super_v) {
-        NSRect ar = [v alignmentRectForFrame:[v frame]];   // superview coords
-        r = [super_v convertRect:ar toView:content];
-    } else {
-        r = [v convertRect:[v bounds] toView:content];
-    }
-
-    CGFloat ch = [content bounds].size.height;
-    *x   = (int)lround(r.origin.x);
-    *y   = (int)lround(ch - (r.origin.y + r.size.height));  // bottom-left → top-left
-    *w   = (int)lround(r.size.width);
-    *hgt = (int)lround(r.size.height);
-    return 0;
+        // Report the ALIGNMENT rect, not the raw frame. AppKit controls draw
+        // outside their layout box (an NSTextField's frame is ~2px wider per
+        // side than what Auto Layout positions), so reporting frames makes
+        // adjacent siblings look like they overlap by 4px. GTK's x/y/w/h is the
+        // allocation; the alignment rect is AppKit's word for the same thing.
+        NSView* super_v = [v superview];
+        NSRect r;
+        if (super_v) {
+            NSRect ar = [v alignmentRectForFrame:[v frame]];   // superview coords
+            r = [super_v convertRect:ar toView:content];
+        } else {
+            r = [v convertRect:[v bounds] toView:content];
+        }
+        CGFloat ch = [content bounds].size.height;
+        rx = (int)lround(r.origin.x);
+        ry = (int)lround(ch - (r.origin.y + r.size.height));  // bottom-left → top-left
+        rw = (int)lround(r.size.width);
+        rh = (int)lround(r.size.height);
+        rc = 0;
+    };
+    if ([NSThread isMainThread]) compute();
+    else dispatch_sync(dispatch_get_main_queue(), compute);
+    if (rc == 0) { *x = rx; *y = ry; *w = rw; *hgt = rh; }
+    return rc;
 }
 
 static void hook_widget_classes_into(int handle, char* buf, int bufsize) {
