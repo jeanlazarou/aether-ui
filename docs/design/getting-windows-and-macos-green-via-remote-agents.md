@@ -370,9 +370,9 @@ Without `keep_alive`, your backgrounded `build/testable &` is killed the instant
 
 The items below landed + were verified on GTK4/win32 first; this is the record
 of running them on the Mac and ticking them off. Full `tests/spec_matrix.sh` is
-**131/131 green** on macOS after this work. Most batches were correct by
-construction; the two-way binding, the weight min-clamp, and the scoped/chorded
-shortcuts each needed an AppKit-specific fix (detailed below).
+**145/145 green** on macOS after this work. Most batches were correct by
+construction; the two-way binding, the weight min-clamp, the scoped/chorded
+shortcuts, and multi-window each needed an AppKit-specific fix (detailed below).
 
 - **Native menu bar** (commits dcdb68f/61da9d3) — ✅ green, no code change, as
   predicted. `spec_menu` is 4/4 and `GET /menus` returns exactly
@@ -463,30 +463,34 @@ References on the aeb side:
   the winbaz VM facts + MSYS2 quoting law live in the aeb session's memory
 ```
 
-- **Multi-window** (co-equal top-level windows; landed 2026-07-18). macOS impl
-  mirrors GTK4/win32: unified accessors over primary + extra_windows
-  (NSMutableArray); the last-close rule is already native
-  (applicationShouldTerminateAfterLastWindowClosed → YES). Verify:
-  ```
-  ./build.sh examples/multiwindow_demo/multiwindow_demo.ae build/multiwindow_demo
-  AETHER_UI_TEST_PORT=9222 ./build/multiwindow_demo &     # keep_alive:true
-  UI_SPEC=multiwindow_demo/spec_multiwindow_demo tests/run_spec.sh  # expect 5/5
-  ```
-  Watch-outs: (1) headless — a secondary NSWindow must NOT become key/visible
-  under AETHER_UI_HEADLESS or the spec's live/close assertions skew; window_show
-  should no-op when headless (GTK4/win32 do). (2) close-from-driver runs on the
-  server thread — AppKit -[NSWindow close] off the main thread is unsafe;
-  marshal to the main thread (dispatch_async(dispatch_get_main_queue,...)) if
-  the close assertion fails, like win32's PostMessage(WM_CLOSE) fix.
+- **RTL + auto menu-accelerators** (commit 033f4bc) — ✅ 3/3 on `polish_demo`,
+  no code change (RTL row layout was already GTK4+macOS; win32 caught up here).
 
-- **Multi-window §3 (per-window overlays/sheets)** (2026-07-18/19). Two macOS
-  bits: (1) sheets now attach to the KEY window (aeui_sheet_parent_window) —
-  should just work; the multiwindow spec's overlay-in-w2 test covers the shape.
-  (2) The overlay host (AetherOverlayHost) is STILL interposed only on the
-  primary window's contentView, so a secondary window's overlays land on the
-  primary. TODO to close: interpose a per-window AetherOverlayHost (like
-  applicationDidFinishLaunching does for the primary) keyed by the target
-  window, and have aether_ui_overlay_open_impl resolve win_handle → that host.
-  win32 already does the equivalent (aeui_overlay_host_hwnd). The multiwindow
-  spec asserts window:2 on the toast — on macOS that test will fail until the
-  per-window host lands, which is the honest signal to fix it.
+- **Virtualized list (vlist)** (commit df468b6) — ✅ 3/3 on `vlist_demo`, no code
+  change (bounded widget window over a large list; backend-agnostic).
+
+- **Per-widget shortcut scopes** (commit 650f0e4) — ✅ 2/2 on `wshortcut_demo`,
+  no code change. `widget_shortcut` + `focused_widget` compose over the shortcut
+  registry the scoped-shortcut work already built.
+
+- **Multi-window** (co-equal top-level windows; commits 611ee00…239a2a2) — ✅ 6/6
+  on `multiwindow_demo`, but it needed **three AppKit fixes** — both watch-outs
+  came true and the close crashed the process:
+  1. **Close crashed** (`Illegal instruction`). `/windows` and `/window/{id}/close`
+     call the `*_impl` hooks DIRECTLY on the HTTP server thread (unlike resize/key,
+     which marshal via `dispatch_action`). `-[NSWindow close]` off the main thread
+     aborts. Fixed with `aeui_close_window_main` (dispatch_sync to main), used by
+     both the driver and app close paths. Also set `releasedWhenClosed:NO` at
+     creation — `extra_windows` holds the only strong ref, so the default
+     over-releases and leaves a dangling pointer the `/windows` route then reads.
+  2. **Headless termination.** With the fix above, closing the secondary read as
+     the last on-screen window closing (nothing is ordered-in under headless) and
+     `applicationShouldTerminateAfterLastWindowClosed` killed the process mid-spec.
+     It now returns NO when headless (those apps exit via `/shutdown`). `window_show`
+     also no-ops when headless, matching the primary and GTK4/win32.
+  3. **Per-window overlays (§3).** The overlay host was interposed only on the
+     primary, so window 2's toast landed on window 1. Now `window_set_body`
+     interposes an `AetherOverlayHost` per window (`aeui_interpose_overlay_host`)
+     and `overlay_open_impl` resolves `win_handle → overlay_host_for(win_handle)`
+     — the app-level handle is 1-based into `extra_windows`, 0 = primary. The
+     spec's `window:2`-on-the-toast assertion now passes.

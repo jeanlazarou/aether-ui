@@ -588,6 +588,12 @@ static NSLayoutConstraint* aeui_win_cap_h = nil;
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
     (void)sender;
+    // Headless apps are driven by the test server and exit via /shutdown, never
+    // by window closes — none of their windows are ever ordered onto the desktop,
+    // so a driver closing a secondary window would otherwise read as "last window
+    // closed" and terminate the process (killing the server mid-spec).
+    const char* h = getenv("AETHER_UI_HEADLESS");
+    if (h && h[0] && h[0] != '0') return NO;
     return YES;
 }
 @end
@@ -2444,6 +2450,39 @@ int aether_ui_dark_mode_check(void) {
 // ---------------------------------------------------------------------------
 static NSMutableArray<NSWindow*>* extra_windows = nil;
 
+// Wrap a window's root in an AetherOverlayHost (as the primary gets in
+// applicationDidFinishLaunching), so EACH window has its own overlay layer and
+// a secondary window's overlays/sheets/toasts parent to IT, not the primary.
+static AetherOverlayHost* aeui_interpose_overlay_host(NSWindow* win, NSView* root) {
+    if (!win || !root) return nil;
+    AetherOverlayHost* host = [[AetherOverlayHost alloc]
+        initWithFrame:[[win contentView] bounds]];
+    [host setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [host setWantsLayer:YES];
+    [host addSubview:root];
+    [root setTranslatesAutoresizingMaskIntoConstraints:NO];
+    [root.leadingAnchor  constraintEqualToAnchor:host.leadingAnchor].active  = YES;
+    [root.trailingAnchor constraintEqualToAnchor:host.trailingAnchor].active = YES;
+    [root.topAnchor      constraintEqualToAnchor:host.topAnchor].active      = YES;
+    [root.bottomAnchor   constraintEqualToAnchor:host.bottomAnchor].active   = YES;
+    [win setContentView:host];
+    [host layoutSubtreeIfNeeded];
+    return host;
+}
+
+// Resolve an overlay_open/toast win_handle to its host. The app-level handle is
+// 1-based into extra_windows (window_create's return); 0 (or anything unknown)
+// means the primary window's host.
+static AetherOverlayHost* overlay_host_for(int win_handle) {
+    if (win_handle >= 1 && extra_windows
+        && win_handle <= (int)[extra_windows count]) {
+        NSView* cv = [extra_windows[win_handle - 1] contentView];
+        if ([cv isKindOfClass:[AetherOverlayHost class]])
+            return (AetherOverlayHost*)cv;
+    }
+    return overlay_host;
+}
+
 int aether_ui_window_create_impl(const char* title, int width, int height) {
     if (!extra_windows) extra_windows = [NSMutableArray array];
     NSRect frame = NSMakeRect(250, 250, width, height);
@@ -2454,6 +2493,10 @@ int aether_ui_window_create_impl(const char* title, int width, int height) {
                                                 styleMask:style
                                                   backing:NSBackingStoreBuffered
                                                     defer:NO];
+    // Keep the object alive after -close: extra_windows holds the only strong
+    // ref, and the default releasedWhenClosed:YES would over-release it (→ a
+    // dangling pointer the /windows route then reads). We manage the lifetime.
+    [win setReleasedWhenClosed:NO];
     [win setTitle:[NSString stringWithUTF8String:title ? title : ""]];
     [extra_windows addObject:win];
     return (int)[extra_windows count];
@@ -2463,17 +2506,32 @@ void aether_ui_window_set_body_impl(int win_handle, int root_handle) {
     if (!extra_windows || win_handle < 1 || win_handle > (int)[extra_windows count]) return;
     NSWindow* win = extra_windows[win_handle - 1];
     NSView* root = (__bridge NSView*)aether_ui_get_widget(root_handle);
-    if (root) [win setContentView:root];
+    if (root) aeui_interpose_overlay_host(win, root);
 }
 
 void aether_ui_window_show_impl(int win_handle) {
     if (!extra_windows || win_handle < 1 || win_handle > (int)[extra_windows count]) return;
+    // Headless: the window exists and its widgets are reachable, but it is never
+    // ordered onto the desktop (matches the primary's headless handling and the
+    // GTK4/win32 no-op). Ordering a secondary window key here would also make
+    // closing it read as the last visible window closing.
+    const char* h = getenv("AETHER_UI_HEADLESS");
+    if (h && h[0] && h[0] != '0') return;
     [extra_windows[win_handle - 1] makeKeyAndOrderFront:nil];
+}
+
+// -[NSWindow close] must run on the main thread; the driver's /window/{id}/close
+// route calls in on the HTTP server thread.
+static void aeui_close_window_main(NSWindow* w) {
+    if (!w) return;
+    void (^b)(void) = ^{ [w close]; };
+    if ([NSThread isMainThread]) b();
+    else dispatch_sync(dispatch_get_main_queue(), b);
 }
 
 void aether_ui_window_close_impl(int win_handle) {
     if (!extra_windows || win_handle < 1 || win_handle > (int)[extra_windows count]) return;
-    [extra_windows[win_handle - 1] close];
+    aeui_close_window_main(extra_windows[win_handle - 1]);
 }
 
 // ── Unified driver window view (1 = primary, 2.. = extras) ──
@@ -2512,9 +2570,7 @@ int aether_ui_widget_window_impl(int widget_handle) {
     return 0;
 }
 void aether_ui_close_window_by_handle_impl(int win_handle) {
-    NSWindow* w = mac_window_for_handle(win_handle);
-    if (w && w != primary_window) [w close];
-    else if (w == primary_window) [w close];
+    aeui_close_window_main(mac_window_for_handle(win_handle));
 }
 
 // ---------------------------------------------------------------------------
@@ -2577,14 +2633,11 @@ static OverlayEntry* overlay_at(int handle) {
 
 int aether_ui_overlay_open_impl(int win_handle, int content_handle,
                                 int anchor, int dx, int dy, int modal) {
-    // win_handle honoured for the KEY targets (win32 has full per-window
-    // overlays; GTK4 too). On AppKit the overlay host is currently interposed
-    // only on the primary window's contentView, so overlays still land there.
-    // TODO(multi-window §3): interpose a per-window AetherOverlayHost so a
-    // secondary window's overlays parent to IT. Sibling: see the peer note.
-    (void)win_handle;
+    // Each window carries its own AetherOverlayHost (the primary's from
+    // applicationDidFinishLaunching, extras' from window_set_body), so a
+    // secondary window's overlays parent to IT — win32/GTK4 do the same.
     NSView* content = (__bridge NSView*)aether_ui_get_widget(content_handle);
-    AetherOverlayHost* host = overlay_host;
+    AetherOverlayHost* host = overlay_host_for(win_handle);
     if (!content || !host) return 0;
 
     if (overlay_count >= overlay_capacity) {
