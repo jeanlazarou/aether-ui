@@ -1372,7 +1372,7 @@ void aether_ui_app_run_raw(int app_handle) {
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!e->hwnd) return;
     apply_window_theme(e->hwnd);
-    w32_window_register(e->hwnd, e->title);   // primary = window handle 1
+    w32_window_register(e->hwnd, wide_to_utf8(e->title));  // primary = handle 1
 
     // Reparent the root widget into the app window.
     if (e->root_handle > 0) {
