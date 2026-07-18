@@ -29,6 +29,10 @@ __pycache__/
 # Scratch planning doc — local working notes, never committed
 current_plan_dont_check_this_in.md
 
+# LisMusic writes its SQLite history to history.db in the cwd (the repo root
+# under ci.sh / manual runs). Runtime artifact — never commit it.
+history.db
+
 # aeb build output
 target/
 
