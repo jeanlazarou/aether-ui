@@ -36,6 +36,29 @@ PORT="${1:-9222}"
 cd "$ROOT"
 mkdir -p build
 
+# --- Aether toolchain resolution guard -----------------------------------
+# aeb resolves the SDK include AND lib dirs relative to `dirname(command -v ae)`
+# WITHOUT dereferencing symlinks. If `ae` is a symlinked shim beside a stale/
+# partial ~/.local tree, aeb links the wrong libaether.a (an old one with no
+# std.audio/std.worker → `undefined reference to aether_audio_*`) and/or misses
+# the nested headers (`fatal error: aether_panic.h`). Point $AETHER at the
+# *dereferenced* real binary so aeb's dir resolution lands on the actual
+# versioned install for both halves; also pin $AETHER_INCLUDE (which aeb honors
+# first) as a backstop. No-op on a canonical /usr/local install where `ae` is
+# not a symlink; only applied when the resolved tree is real (has runtime/).
+_ae_bin="$(command -v "${AETHER:-ae}" 2>/dev/null || true)"
+if [ -n "$_ae_bin" ]; then
+    _ae_real="$(readlink -f "$_ae_bin" 2>/dev/null || true)"
+    [ -n "$_ae_real" ] || _ae_real="$_ae_bin"   # BSD readlink lacks -f
+    _ae_root="$(dirname "$(dirname "$_ae_real")")"
+    if [ -x "$_ae_real" ] && [ -d "$_ae_root/include/aether/runtime" ]; then
+        [ -z "${AETHER:-}" ]         && export AETHER="$_ae_real"
+        [ -z "${AETHER_INCLUDE:-}" ] && export AETHER_INCLUDE="$_ae_root/include/aether"
+        echo "  aeb toolchain pinned: AETHER=$AETHER"
+    fi
+fi
+# -------------------------------------------------------------------------
+
 # All examples that must compile in Phase 1.
 EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
@@ -311,8 +334,18 @@ done
 
 # Phases 3-6 are Aeocha specs (tests/<app>/spec_*.ae — Aether programs on
 # the shared tests/lib/uidriver.ae client; tests/run_spec.sh is launcher
-# glue). They need the aeocha clone.
-AEOCHA_DIR="${AEOCHA_DIR:-$HOME/scm/aeocha}"
+# glue). They need the aeocha clone. Default to a flat ~/scm/aeocha, but fall
+# back to the sibling checkout beside aether-ui ($ROOT/../aeocha) — that's the
+# layout when both live under an AetherThings/ grouping. An explicit $AEOCHA_DIR
+# still wins over both.
+if [ -z "${AEOCHA_DIR:-}" ]; then
+    if [ -f "$HOME/scm/aeocha/aeocha.ae" ]; then
+        AEOCHA_DIR="$HOME/scm/aeocha"
+    else
+        AEOCHA_DIR="$ROOT/../aeocha"
+    fi
+fi
+export AEOCHA_DIR   # so tests/run_spec.sh (child) inherits the resolved path
 if [ ! -f "$AEOCHA_DIR/aeocha.ae" ]; then
     echo "NOTICE: aeocha not found at $AEOCHA_DIR — driver spec phases (3-6) FAIL."
     echo "        (clone github.com/aether-lang-org/aeocha or set AEOCHA_DIR)"

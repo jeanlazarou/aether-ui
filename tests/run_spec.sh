@@ -17,7 +17,16 @@
 set -e
 SPEC="${UI_SPEC:-$1}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-AEOCHA_DIR="${AEOCHA_DIR:-$HOME/scm/aeocha}"
+# Default to a flat ~/scm/aeocha, else the sibling checkout beside aether-ui
+# ($TESTS_DIR/../../aeocha — the AetherThings/ grouping). Explicit $AEOCHA_DIR
+# (e.g. exported by ci.sh) wins over both.
+if [ -z "${AEOCHA_DIR:-}" ]; then
+    if [ -f "$HOME/scm/aeocha/aeocha.ae" ]; then
+        AEOCHA_DIR="$HOME/scm/aeocha"
+    else
+        AEOCHA_DIR="$TESTS_DIR/../../aeocha"
+    fi
+fi
 if [ ! -f "$AEOCHA_DIR/aeocha.ae" ]; then
     echo "  FAIL: aeocha not found at $AEOCHA_DIR (set AEOCHA_DIR, or clone github.com/aether-lang-org/aeocha)"
     exit 1
