@@ -1512,6 +1512,17 @@ void aether_ui_context_menu_item_impl(int handle, const char* label,
 void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
     (void)combo; (void)boxed_closure;
 }
+// Conditional + chorded shortcuts: same stub status as plain shortcuts on
+// win32 (no accelerator wiring yet) — keep the ABI green.
+void aether_ui_shortcut_when_impl(const char* combo, void* boxed_closure,
+                                  void* enabled_closure) {
+    (void)combo; (void)boxed_closure; (void)enabled_closure;
+}
+void aether_ui_shortcut_chord_impl(const char* first_combo,
+                                   const char* second_combo,
+                                   void* boxed_closure) {
+    (void)first_combo; (void)second_combo; (void)boxed_closure;
+}
 void aether_ui_focus_impl(int handle) {
     Widget* w = widget_at(handle);
     if (w) SetFocus(w->hwnd);

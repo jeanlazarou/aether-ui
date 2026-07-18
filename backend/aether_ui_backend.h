@@ -399,6 +399,15 @@ void aether_ui_bind_hidden_impl(int state_handle, int widget_handle, int invert)
 // GTK's default focus chain; that default IS the feature).
 // GTK4 real; win32/macOS no-op stubs.
 void aether_ui_shortcut_impl(const char* combo, void* boxed_closure);
+// Conditional shortcut: enabled_closure (|-> int) gates the combo; 0 = inert
+// (key propagates). NULL predicate = always active.
+void aether_ui_shortcut_when_impl(const char* combo, void* boxed_closure,
+                                  void* enabled_closure);
+// Chorded shortcut: a two-key sequence (first_combo then second_combo within
+// ~1.5s) fires boxed_closure.
+void aether_ui_shortcut_chord_impl(const char* first_combo,
+                                   const char* second_combo,
+                                   void* boxed_closure);
 void aether_ui_focus_impl(int handle);
 void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
                                             const char* accel,

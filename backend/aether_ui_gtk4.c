@@ -1165,19 +1165,55 @@ static void aeui_flex_layout_allocate(GtkLayoutManager* lm, GtkWidget* widget,
     int leftover = axis_total - fixed - (n > 1 ? (n - 1) * self->spacing : 0);
     if (leftover < 0) leftover = 0;
 
-    // Pass 2: place sequentially; the LAST weighted child absorbs the
-    // integer-division remainder so the row always fills exactly.
+    // Pass 1b: min-clamp. A weighted child's proportional share can fall below
+    // its own minimum when leftover is tight; pinning it there and removing it
+    // from the weight pool (then re-splitting among the rest) keeps weighted
+    // children from being squeezed under their min. Iterate until stable —
+    // pinning one child shrinks the pool and can push another under its min.
+    int clamp_leftover = leftover;
+    int clamp_weight = total_weight;
+    int changed = 1;
+    while (changed && clamp_weight > 0) {
+        changed = 0;
+        for (GtkWidget* c = gtk_widget_get_first_child(widget); c;
+             c = gtk_widget_get_next_sibling(c)) {
+            if (!gtk_widget_should_layout(c)) continue;
+            int wgt = aeui_child_weight(c, self->orient);
+            if (wgt <= 0) continue;
+            if (g_object_get_data(G_OBJECT(c), "aeui-weight-pinned")) continue;
+            int cmin = 0, cnat = 0;
+            gtk_widget_measure(c, self->orient, cross_extent, &cmin, &cnat, NULL, NULL);
+            int share = clamp_leftover * wgt / clamp_weight;
+            if (share < cmin) {
+                g_object_set_data(G_OBJECT(c), "aeui-weight-pinned",
+                                  GINT_TO_POINTER(cmin));
+                clamp_leftover -= cmin;
+                if (clamp_leftover < 0) clamp_leftover = 0;
+                clamp_weight -= wgt;
+                changed = 1;
+            }
+        }
+    }
+
+    // Pass 2: place sequentially; the LAST flexible weighted child absorbs the
+    // integer-division remainder so the row always fills exactly. Pinned
+    // children take their stored minimum; the rest split clamp_leftover.
     int pos = 0, weighted_seen = 0, weighted_used = 0;
     for (GtkWidget* c = gtk_widget_get_first_child(widget); c;
          c = gtk_widget_get_next_sibling(c)) {
         if (!gtk_widget_should_layout(c)) continue;
         int wgt = aeui_child_weight(c, self->orient);
         int size;
-        if (wgt > 0) {
+        gpointer pinned = (wgt > 0)
+            ? g_object_get_data(G_OBJECT(c), "aeui-weight-pinned") : NULL;
+        if (pinned) {
+            size = GPOINTER_TO_INT(pinned);
+            g_object_set_data(G_OBJECT(c), "aeui-weight-pinned", NULL);  // reset
+        } else if (wgt > 0) {
             weighted_seen += wgt;
-            size = (weighted_seen == total_weight)
-                ? leftover - weighted_used
-                : leftover * wgt / total_weight;
+            size = (weighted_seen == clamp_weight)
+                ? clamp_leftover - weighted_used
+                : clamp_leftover * wgt / clamp_weight;
             weighted_used += size;
         } else {
             int cmin = 0, cnat = 0;
@@ -2566,6 +2602,7 @@ typedef struct {
     char* combo;         // as the app wrote it ("Ctrl+R")
     char* trigger_str;   // normalized GTK syntax ("<Control>r")
     AeClosure* closure;
+    AeClosure* enabled;  // optional predicate |-> int (1=active); NULL = always
     int attached;
 } AeuiShortcut;
 static AeuiShortcut* aeui_shortcuts = NULL;
@@ -2575,7 +2612,17 @@ static GtkShortcutController* aeui_shortcut_ctl = NULL;
 static gboolean aeui_shortcut_activate(GtkWidget* widget, GVariant* args,
                                        gpointer data) {
     (void)widget; (void)args;
-    AeClosure* c = (AeClosure*)data;
+    // data is the 1-based shortcut index (stable across the array realloc,
+    // unlike a struct pointer). A conditional shortcut whose `enabled`
+    // predicate returns 0 reports UNHANDLED so the key propagates normally.
+    int idx = GPOINTER_TO_INT(data) - 1;
+    if (idx < 0 || idx >= aeui_shortcut_count) return FALSE;
+    AeuiShortcut* s = &aeui_shortcuts[idx];
+    if (s->enabled && s->enabled->fn) {
+        int on = ((int(*)(void*))s->enabled->fn)(s->enabled->env);
+        if (!on) return FALSE;   // scope inactive → not handled here
+    }
+    AeClosure* c = s->closure;
     if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
     return TRUE;
 }
@@ -2628,13 +2675,113 @@ static void aeui_attach_shortcut(AeuiShortcut* s) {
                 s->combo, s->trigger_str);
         return;
     }
+    // Pass the 1-based index (stable across realloc) as the callback data.
+    int one_based = (int)(s - aeui_shortcuts) + 1;
     gtk_shortcut_controller_add_shortcut(aeui_shortcut_ctl,
         gtk_shortcut_new(trig,
-            gtk_callback_action_new(aeui_shortcut_activate, s->closure, NULL)));
+            gtk_callback_action_new(aeui_shortcut_activate,
+                                    GINT_TO_POINTER(one_based), NULL)));
     s->attached = 1;
 }
 
 void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
+    aether_ui_shortcut_when_impl(combo, boxed_closure, NULL);
+}
+
+// ── Chorded shortcuts (two-key sequences, "Ctrl+K Ctrl+S") ──────────
+// Emacs/VSCode style: a prefix combo arms a pending state; the next combo,
+// within a short timeout, completes the chord. Modelled as two normal
+// shortcuts sharing a small state machine.
+typedef struct {
+    char* prefix_trig;   // normalized first combo
+    char* second_trig;   // normalized second combo
+    AeClosure* closure;
+} AeuiChord;
+static AeuiChord* aeui_chords = NULL;
+static int aeui_chord_count = 0, aeui_chord_capacity = 0;
+static char* aeui_chord_pending = NULL;   // normalized prefix currently armed
+static guint aeui_chord_timeout_id = 0;
+
+static gboolean aeui_chord_timeout(gpointer data) {
+    (void)data;
+    if (aeui_chord_pending) { free(aeui_chord_pending); aeui_chord_pending = NULL; }
+    aeui_chord_timeout_id = 0;
+    return G_SOURCE_REMOVE;
+}
+
+// Called from the key path with a normalized trigger. Returns 1 if it armed a
+// prefix or completed a chord (i.e. the key was consumed by the chord layer).
+static int aeui_chord_feed(const char* norm_trig) {
+    // If a prefix is armed, try to complete.
+    if (aeui_chord_pending) {
+        for (int i = 0; i < aeui_chord_count; i++) {
+            if (strcmp(aeui_chords[i].prefix_trig, aeui_chord_pending) == 0 &&
+                strcmp(aeui_chords[i].second_trig, norm_trig) == 0) {
+                AeClosure* c = aeui_chords[i].closure;
+                free(aeui_chord_pending); aeui_chord_pending = NULL;
+                if (aeui_chord_timeout_id) { g_source_remove(aeui_chord_timeout_id); aeui_chord_timeout_id = 0; }
+                if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+                return 1;
+            }
+        }
+        // Armed but this key isn't a valid completion — cancel the prefix and
+        // let the key fall through as a normal shortcut.
+        free(aeui_chord_pending); aeui_chord_pending = NULL;
+        if (aeui_chord_timeout_id) { g_source_remove(aeui_chord_timeout_id); aeui_chord_timeout_id = 0; }
+    }
+    // Not armed: does this key start a chord?
+    for (int i = 0; i < aeui_chord_count; i++) {
+        if (strcmp(aeui_chords[i].prefix_trig, norm_trig) == 0) {
+            aeui_chord_pending = strdup(norm_trig);
+            aeui_chord_timeout_id = g_timeout_add(1500, aeui_chord_timeout, NULL);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// A chord key's controller action: feed the normalized trigger (passed as the
+// action data) into the state machine. Returns handled iff the chord layer
+// consumed it (armed or completed).
+static gboolean aeui_chord_key_activate(GtkWidget* widget, GVariant* args,
+                                        gpointer data) {
+    (void)widget; (void)args;
+    const char* trig = (const char*)data;
+    return aeui_chord_feed(trig) ? TRUE : FALSE;
+}
+
+static void aeui_register_chord_key(const char* norm_trig) {
+    if (!aeui_shortcut_ctl || !primary_window) return;  // attaches at activate
+    GtkShortcutTrigger* trig = gtk_shortcut_trigger_parse_string(norm_trig);
+    if (!trig) return;
+    gtk_shortcut_controller_add_shortcut(aeui_shortcut_ctl,
+        gtk_shortcut_new(trig,
+            gtk_callback_action_new(aeui_chord_key_activate,
+                                    (gpointer)norm_trig, NULL)));
+}
+
+void aether_ui_shortcut_chord_impl(const char* first_combo,
+                                   const char* second_combo,
+                                   void* boxed_closure) {
+    if (aeui_chord_count >= aeui_chord_capacity) {
+        aeui_chord_capacity = aeui_chord_capacity == 0 ? 8 : aeui_chord_capacity * 2;
+        aeui_chords = realloc(aeui_chords, sizeof(AeuiChord) * aeui_chord_capacity);
+    }
+    AeuiChord* ch = &aeui_chords[aeui_chord_count++];
+    ch->prefix_trig = aeui_normalize_combo(first_combo);
+    ch->second_trig = aeui_normalize_combo(second_combo);
+    ch->closure = (AeClosure*)boxed_closure;
+    // Register both combos as controller shortcuts so GTK actually delivers
+    // the keys to us; their actions route into the chord state machine.
+    aeui_register_chord_key(ch->prefix_trig);
+    aeui_register_chord_key(ch->second_trig);
+}
+
+// Conditional shortcut: `enabled_closure` (|-> int) gates whether the combo
+// fires. Returns 0 → the key propagates as if no shortcut were bound (scope
+// inactive). NULL predicate = always active (plain ui.shortcut).
+void aether_ui_shortcut_when_impl(const char* combo, void* boxed_closure,
+                                  void* enabled_closure) {
     if (aeui_shortcut_count >= aeui_shortcut_capacity) {
         aeui_shortcut_capacity = aeui_shortcut_capacity == 0
             ? 16 : aeui_shortcut_capacity * 2;
@@ -2645,6 +2792,7 @@ void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
     s->combo = strdup(combo ? combo : "");
     s->trigger_str = aeui_normalize_combo(combo);
     s->closure = (AeClosure*)boxed_closure;
+    s->enabled = (AeClosure*)enabled_closure;
     s->attached = 0;
     aeui_attach_shortcut(s);   // no-op before the window exists
 }
@@ -2665,6 +2813,8 @@ static gboolean aeui_escape_overlays(GtkWidget* widget, GVariant* args,
 }
 
 // Called from on_activate once primary_window exists.
+static void aeui_register_chord_key(const char* norm_trig);
+
 static void aeui_attach_pending_shortcuts(void) {
     for (int i = 0; i < aeui_shortcut_count; i++) {
         aeui_attach_shortcut(&aeui_shortcuts[i]);
@@ -2675,6 +2825,11 @@ static void aeui_attach_pending_shortcuts(void) {
                                           GTK_SHORTCUT_SCOPE_GLOBAL);
         gtk_widget_add_controller(GTK_WIDGET(primary_window),
                                   GTK_EVENT_CONTROLLER(aeui_shortcut_ctl));
+    }
+    // Now the controller exists, wire any chord keys registered pre-window.
+    for (int i = 0; i < aeui_chord_count; i++) {
+        aeui_register_chord_key(aeui_chords[i].prefix_trig);
+        aeui_register_chord_key(aeui_chords[i].second_trig);
     }
     gtk_shortcut_controller_add_shortcut(aeui_shortcut_ctl,
         gtk_shortcut_new(gtk_shortcut_trigger_parse_string("Escape"),
@@ -2688,10 +2843,18 @@ static void aeui_attach_pending_shortcuts(void) {
 // runs the overlay-dismiss path. Returns 1 if something handled it.
 int aeui_window_key_fire(const char* combo) {
     char* want = aeui_normalize_combo(combo);
+    // Chord layer first: a prefix key arms, a completion key fires the chord.
+    // If the chord machine consumed it (armed or completed), we're done.
+    if (aeui_chord_feed(want) == 1) { free(want); return 1; }
     int fired = 0;
     for (int i = 0; i < aeui_shortcut_count; i++) {
         if (strcmp(aeui_shortcuts[i].trigger_str, want) == 0) {
-            AeClosure* c = aeui_shortcuts[i].closure;
+            AeuiShortcut* s = &aeui_shortcuts[i];
+            // Honour the conditional predicate on the driver path too.
+            if (s->enabled && s->enabled->fn) {
+                if (!((int(*)(void*))s->enabled->fn)(s->enabled->env)) continue;
+            }
+            AeClosure* c = s->closure;
             if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
             fired = 1;
         }

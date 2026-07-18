@@ -1,0 +1,22 @@
+// Aether UI weight min-clamp — a weighted child is never squeezed below its
+// minimum. Two weighted children share a row; A has a large min-width (220),
+// so when the row is narrow its 1/2 share (< 220) clamps UP to 220 and B
+// takes the rest. The spec resizes the window narrow and reads A's width.
+import ui
+import ui (window, vstack, hstack, text, weight, width, enable_test_server)
+import std.os (os_getenv)
+
+main() {
+    window("weight clamp", 400, 200) {
+        vstack(8) {
+            row = hstack(8) {
+                a = text("AAAA")
+                weight(a, 1)
+                width(a, 220)     // min-width 220
+                b = text("BBBB")
+                weight(b, 1)
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

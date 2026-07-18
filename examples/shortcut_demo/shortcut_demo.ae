@@ -1,0 +1,44 @@
+// Aether UI shortcut scopes + chords.
+//   - shortcut_when: "Ctrl+E" only fires while the "edit mode" flag is on.
+//   - shortcut_chord: "Ctrl+K" then "Ctrl+S" fires a save action.
+// The driver fires keys via POST /window/key?combo=... and reads a status
+// label to see which handlers ran.
+import ui
+import ui (window, vstack, text, btn, shortcut_when, shortcut_chord,
+    ui_state_b, ui_get_b, ui_set_b, enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    edit_on = ui_state_b(0)
+
+    window("shortcut demo", 380, 240) {
+        vstack(8) {
+            status = text("status: idle")
+            mode = text("edit mode: off")
+
+            // Toggle the scope.
+            _t = btn("toggle edit mode") callback {
+                nv = 1
+                if ui_get_b(edit_on) == 1 { nv = 0 }
+                _ = ui_set_b(edit_on, nv)
+                lbl = "edit mode: off"
+                if nv == 1 { lbl = "edit mode: on" }
+                aether_ui_text_set_string(mode, lbl)
+            }
+
+            // Conditional: Ctrl+E only when edit mode is on.
+            shortcut_when("Ctrl+E", || { return ui_get_b(edit_on) }) callback {
+                aether_ui_text_set_string(status, "status: edit fired")
+            }
+
+            // Chord: Ctrl+K Ctrl+S → save.
+            shortcut_chord("Ctrl+K", "Ctrl+S") callback {
+                aether_ui_text_set_string(status, "status: saved")
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

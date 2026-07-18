@@ -60,7 +60,7 @@ fi
 # -------------------------------------------------------------------------
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo weightclamp_demo shortcut_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -534,6 +534,16 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=tabledeleg_demo/spec_tabledeleg_demo \
     run_server_test "$(EX_BIN tabledeleg_demo)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" tabledeleg_demo || FAIL=$((FAIL + 1))
+fi
+
+echo "=== Phase 5k6: AetherUIDriver weight-clamp + shortcut-scope/chord specs ==="
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    UI_SPEC=weightclamp_demo/spec_weightclamp_demo \
+    run_server_test "$(EX_BIN weightclamp_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" weightclamp_demo || FAIL=$((FAIL + 1))
+    UI_SPEC=shortcut_demo/spec_shortcut_demo \
+    run_server_test "$(EX_BIN shortcut_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" shortcut_demo || FAIL=$((FAIL + 1))
 fi
 
 echo "=== Phase 5l: AetherUIDriver game specs (falling_blocks / svg_tetris / rubiks_cube) ==="

@@ -1022,6 +1022,23 @@ void aether_ui_shortcut_impl(const char* combo, void* boxed_closure) {
     }
 }
 
+// Conditional + chorded shortcuts. STUB on macOS for now (GTK4 is the verified
+// backend for these). The real impl mirrors GTK4: shortcut_when gates
+// shortcut_fire on the predicate; shortcut_chord adds a two-key state machine
+// keyed off event_to_combo. TODO for the Mac sibling — see the peer-
+// equivalence checklist.
+void aether_ui_shortcut_when_impl(const char* combo, void* boxed_closure,
+                                  void* enabled_closure) {
+    (void)enabled_closure;
+    // Degrade to a plain (always-on) shortcut so the combo still works.
+    aether_ui_shortcut_impl(combo, boxed_closure);
+}
+void aether_ui_shortcut_chord_impl(const char* first_combo,
+                                   const char* second_combo,
+                                   void* boxed_closure) {
+    (void)first_combo; (void)second_combo; (void)boxed_closure;
+}
+
 // Explicit keyboard-focus grab. AppKit's equivalent of gtk_widget_grab_focus
 // is makeFirstResponder: on the view's window.
 void aether_ui_focus_impl(int handle) {
