@@ -398,6 +398,22 @@ running, +1 for the two-way binding assertion).
      driver `/set_text` reaches the write-back (the earlier raw path fired the
      field's *action*, never `controlTextDidChange` nor the write-back).
 
+- **Reactive bindings — each_bind + computed state** (landed 2026-07-18,
+  commit aa6c1a7). Backend-agnostic (the `aether_ui_state_on_change` observer
+  + `AEUI_STATE_LIST` cell, mirrored verbatim in `aether_ui_macos.m`).
+  Verified 5/5 on GTK4 + win32. On the Mac:
+  ```
+  ./build.sh examples/rbind_demo/rbind_demo.ae build/rbind_demo
+  AETHER_UI_TEST_PORT=9222 ./build/rbind_demo &        # keep_alive:true
+  UI_SPEC=rbind_demo/spec_rbind_demo tests/run_spec.sh # expect 5/5
+  ```
+
+- **File dialogs — open_file / save_file** (landed 2026-07-18, commit
+  27b0ef2). macOS uses NSOpenPanel / NSSavePanel (both `aeui_is_headless`-
+  guarded). No spec (native modal); the check is that a headless click
+  doesn't hang and returns "". Build any app calling them and confirm it
+  links; a real pick needs a human at the Mac.
+
 ## macOS vs winbaz — the cheat sheet
 
 | | winbaz | Mac mini |

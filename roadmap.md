@@ -209,8 +209,12 @@ term in one result row — cosmetic, doesn't affect the spec.
 
 ## 3. Backlog (real, smaller, or gated)
 
-- **File dialogs** (`ui.open_file`/`save_file` → GtkFileDialog/NSPanel/
-  IFileDialog) — gp shells out to xdg-open today. S, do opportunistically.
+- ~~**File dialogs** (`ui.open_file`/`save_file`)~~ **DONE 2026-07-18** —
+  `open_file(title)` / `save_file(title, default_name)`, real on all three
+  (GtkFileChooserNative + nested loop / GetOpenFileName+GetSaveFileName /
+  NSOpenPanel+NSSavePanel). Headless-no-op (returns ""), so no spec —
+  verified headless-safe (no hang) on GTK4 + win32. (gp's xdg-open is a
+  file *launcher*, a separate thing, still there.)
 - **Tab view** (`ui.tabs`) — navstack exists; tabs don't. S–M.
 - **Drag & drop** — inter-widget first (list reorder), inter-app later. M.
 - **Multi-window** — one window per app today (surface table is
