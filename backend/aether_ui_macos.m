@@ -2476,6 +2476,47 @@ void aether_ui_window_close_impl(int win_handle) {
     [extra_windows[win_handle - 1] close];
 }
 
+// ── Unified driver window view (1 = primary, 2.. = extras) ──
+// (NSApplicationShouldTerminateAfterLastWindowClosed gives the last-close rule
+// natively; these expose the registry to the driver.)
+static NSWindow* mac_window_for_handle(int win_handle) {
+    if (win_handle == 1) return primary_window;
+    int idx = win_handle - 2;
+    if (!extra_windows || idx < 0 || idx >= (int)[extra_windows count]) return nil;
+    return extra_windows[idx];
+}
+int aether_ui_window_count_impl(void) {
+    return 1 + (extra_windows ? (int)[extra_windows count] : 0);
+}
+const char* aether_ui_window_title_impl(int win_handle) {
+    NSWindow* w = mac_window_for_handle(win_handle);
+    if (!w) return "";
+    const char* t = [[w title] UTF8String];
+    return t ? t : "";
+}
+int aether_ui_window_is_open_impl(int win_handle) {
+    NSWindow* w = mac_window_for_handle(win_handle);
+    // A closed NSWindow is released/hidden; visible OR the primary counts live.
+    return (w && ([w isVisible] || w == primary_window)) ? 1 : 0;
+}
+int aether_ui_widget_window_impl(int widget_handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(widget_handle);
+    if (!v) return 0;
+    NSWindow* win = [v window];
+    if (!win) return 0;
+    if (win == primary_window) return 1;
+    if (extra_windows) {
+        NSUInteger i = [extra_windows indexOfObject:win];
+        if (i != NSNotFound) return (int)i + 2;
+    }
+    return 0;
+}
+void aether_ui_close_window_by_handle_impl(int win_handle) {
+    NSWindow* w = mac_window_for_handle(win_handle);
+    if (w && w != primary_window) [w close];
+    else if (w == primary_window) [w close];
+}
+
 // ---------------------------------------------------------------------------
 // In-window overlay layer (roadmap item 1) — toast / modal / tooltip /
 // dropdown, drawn INSIDE the window, never as a compositor popup.

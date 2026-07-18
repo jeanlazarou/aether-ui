@@ -256,12 +256,13 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
 
     int n = snprintf(buf, bufsize,
         "{\"id\":%d,\"type\":\"%s\",\"text\":\"%s\",\"visible\":%s,"
-        "\"sealed\":%s,\"banner\":%s,\"parent\":%d",
+        "\"sealed\":%s,\"banner\":%s,\"parent\":%d,\"window\":%d",
         handle, type, esc,
         visible ? "true" : "false",
         sealed  ? "true" : "false",
         is_banner ? "true" : "false",
-        parent);
+        parent,
+        aether_ui_widget_window_impl(handle));
 
     if (h->widget_enabled) {
         n += snprintf(buf + n, bufsize - n, ",\"enabled\":%s",
@@ -797,6 +798,26 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
     // The menu-item side-store is shared across all three backends, so this
     // proves item activation everywhere; the app-visible effect (a counter
     // bump) is what the spec asserts, confirming the closure genuinely fired.
+    } else if (method == 0 && strcmp(path, "/windows") == 0) {
+        // Every top-level window: 1=primary, 2..=extras.
+        int nw = aether_ui_window_count_impl();
+        char* body = (char*)malloc(64 + nw * 256);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= nw; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 256,
+                "{\"id\":%d,\"title\":\"%s\",\"live\":%s}",
+                i, aether_ui_window_title_impl(i),
+                aether_ui_window_is_open_impl(i) ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_http(client_fd, 200, "OK", "application/json", body);
+        free(body);
+    } else if (method == 1 && strncmp(path, "/window/", 8) == 0
+               && strstr(path, "/close")) {
+        int id = extract_id_from_path(path, "/window/");
+        aether_ui_close_window_by_handle_impl(id);
+        send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
     } else if (method == 0 && strcmp(path, "/menus") == 0) {
         int handles[64];
         int nh = aether_ui_menu_handles(handles, 64);

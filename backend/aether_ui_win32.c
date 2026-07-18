@@ -240,6 +240,32 @@ static Widget** widgets = NULL;
 static int widget_count = 0;
 static int widget_capacity = 0;
 
+// ---------------------------------------------------------------------------
+// Multi-window registry (unified driver view: 1 = primary, 2.. = extras).
+// The message loop stays alive while ≥1 window is live; WM_DESTROY quits only
+// when the last one closes (was: quit on ANY window destroy).
+// ---------------------------------------------------------------------------
+typedef struct { HWND hwnd; char* title; int live; } W32Window;
+static W32Window* w32_windows = NULL;
+static int w32_window_count = 0, w32_window_capacity = 0;
+
+static int w32_window_register(HWND hwnd, const char* title) {
+    if (w32_window_count >= w32_window_capacity) {
+        w32_window_capacity = w32_window_capacity == 0 ? 4 : w32_window_capacity * 2;
+        w32_windows = realloc(w32_windows, sizeof(W32Window) * w32_window_capacity);
+    }
+    W32Window* e = &w32_windows[w32_window_count++];
+    e->hwnd = hwnd;
+    e->title = _strdup(title ? title : "");
+    e->live = 1;
+    return w32_window_count;  // 1-based
+}
+static int w32_live_window_count(void) {
+    int n = 0;
+    for (int i = 0; i < w32_window_count; i++) if (w32_windows[i].live) n++;
+    return n;
+}
+
 // Open-addressed reverse map HWND → 1-based handle.
 //
 // Before this, handle_for_hwnd() was an O(n) linear scan called from every
@@ -1112,7 +1138,11 @@ static LRESULT CALLBACK app_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            PostQuitMessage(0);
+            // Multi-window: mark this window dead; quit the loop only when the
+            // last live window is gone.
+            for (int i = 0; i < w32_window_count; i++)
+                if (w32_windows[i].hwnd == hwnd) { w32_windows[i].live = 0; break; }
+            if (w32_live_window_count() == 0) PostQuitMessage(0);
             return 0;
         case WM_COMMAND: {
             // WM_COMMAND with a menu ID (no control HWND) → look up the
@@ -1342,6 +1372,7 @@ void aether_ui_app_run_raw(int app_handle) {
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!e->hwnd) return;
     apply_window_theme(e->hwnd);
+    w32_window_register(e->hwnd, e->title);   // primary = window handle 1
 
     // Reparent the root widget into the app window.
     if (e->root_handle > 0) {
@@ -2685,7 +2716,32 @@ int aether_ui_window_create_impl(const char* title, int width, int height) {
         NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!hwnd) return 0;
     apply_window_theme(hwnd);
+    w32_window_register(hwnd, title);   // extra → driver window handle 2..
     return register_widget_typed(hwnd, WK_WINDOW);
+}
+
+// ── Unified driver window view (1 = primary, 2.. = extras) ──
+int aether_ui_window_count_impl(void) { return w32_window_count; }
+const char* aether_ui_window_title_impl(int win_handle) {
+    if (win_handle < 1 || win_handle > w32_window_count) return "";
+    return w32_windows[win_handle - 1].title;
+}
+int aether_ui_window_is_open_impl(int win_handle) {
+    if (win_handle < 1 || win_handle > w32_window_count) return 0;
+    return w32_windows[win_handle - 1].live;
+}
+int aether_ui_widget_window_impl(int widget_handle) {
+    Widget* w = widget_at(widget_handle);
+    if (!w || !w->hwnd) return 0;
+    HWND root = GetAncestor(w->hwnd, GA_ROOT);
+    for (int i = 0; i < w32_window_count; i++)
+        if (w32_windows[i].hwnd == root) return i + 1;
+    return 0;
+}
+void aether_ui_close_window_by_handle_impl(int win_handle) {
+    if (win_handle < 1 || win_handle > w32_window_count) return;
+    if (w32_windows[win_handle - 1].live)
+        DestroyWindow(w32_windows[win_handle - 1].hwnd);  // fires WM_DESTROY
 }
 
 void aether_ui_window_set_body_impl(int win_handle, int root_handle) {
@@ -3023,7 +3079,10 @@ int aether_ui_vg_tooltip_drawn_impl(void) {
 
 void aether_ui_window_show_impl(int win_handle) {
     Widget* w = widget_at(win_handle);
-    if (w) { ShowWindow(w->hwnd, SW_SHOW); UpdateWindow(w->hwnd); }
+    if (!w) return;
+    if (aeui_is_headless()) return;   // realized but not shown, like the primary
+    ShowWindow(w->hwnd, SW_SHOW);
+    UpdateWindow(w->hwnd);
 }
 
 void aether_ui_window_close_impl(int win_handle) {
