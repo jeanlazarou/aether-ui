@@ -152,6 +152,7 @@ void aether_ui_enable_test_server_ctx(int port, void* ctx);
 // System integration (Group 5)
 void aether_ui_alert_impl(const char* title, const char* message);
 char* aether_ui_file_open(const char* title);
+char* aether_ui_file_save(const char* title, const char* default_name);
 void aether_ui_clipboard_write_impl(const char* text);
 int aether_ui_timer_create_impl(int interval_ms, void* boxed_closure);
 void aether_ui_timer_cancel_impl(int timer_id);

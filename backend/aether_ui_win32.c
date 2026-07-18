@@ -2316,7 +2316,7 @@ void aether_ui_alert_impl(const char* title, const char* message) {
 }
 
 char* aether_ui_file_open(const char* title) {
-    if (aeui_is_headless()) return NULL;  // modal file dialog would block
+    if (aeui_is_headless()) return strdup("");  // modal would block on CI
     ensure_win_init();
     wchar_t file[1024] = L"";
     OPENFILENAMEW ofn;
@@ -2330,7 +2330,29 @@ char* aether_ui_file_open(const char* title) {
     if (GetOpenFileNameW(&ofn)) {
         return strdup(wide_to_utf8(file));
     }
-    return NULL;
+    return strdup("");
+}
+
+char* aether_ui_file_save(const char* title, const char* default_name) {
+    if (aeui_is_headless()) return strdup("");
+    ensure_win_init();
+    wchar_t file[1024] = L"";
+    if (default_name && *default_name) {
+        wchar_t* wn = utf8_to_wide(default_name);
+        wcsncpy(file, wn, 1023);
+    }
+    OPENFILENAMEW ofn;
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"All Files\0*.*\0\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 1024;
+    ofn.lpstrTitle = utf8_to_wide(title ? title : "Save File");
+    ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (GetSaveFileNameW(&ofn)) {
+        return strdup(wide_to_utf8(file));
+    }
+    return strdup("");
 }
 
 void aether_ui_clipboard_write_impl(const char* text) {

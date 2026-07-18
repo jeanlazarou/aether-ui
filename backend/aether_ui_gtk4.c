@@ -2185,13 +2185,50 @@ void aether_ui_alert_impl(const char* title, const char* message) {
     gtk_widget_show(dialog);
 }
 
-// File open dialog — blocks and returns the selected path, or "" if cancelled.
-char* aether_ui_file_open(const char* title) {
+// File dialogs — block and return the chosen path, "" if cancelled. Native
+// modals, so headless-no-op (like alert / menu_popup): CI has no seat to
+// dismiss them. GtkFileChooserNative is portable back to GTK 4.8; it's
+// "async-oriented" only in that it has no run() — we drive its response
+// synchronously with a nested GMainLoop, exactly as the modal message
+// dialogs do, so the ABI stays blocking-and-returns-a-path across backends.
+typedef struct { GMainLoop* loop; char* path; } AeuiFileResult;
+
+static void on_file_chooser_response(GtkNativeDialog* dlg, int response,
+                                     gpointer data) {
+    AeuiFileResult* r = (AeuiFileResult*)data;
+    if (response == GTK_RESPONSE_ACCEPT) {
+        GFile* f = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(dlg));
+        if (f) { char* p = g_file_get_path(f); if (p) r->path = strdup(p);
+                 g_free(p); g_object_unref(f); }
+    }
+    if (r->loop) g_main_loop_quit(r->loop);
+}
+
+static char* aeui_run_file_chooser(const char* title, GtkFileChooserAction action,
+                                   const char* default_name) {
     ensure_gtk_init();
-    // GtkFileChooserNative is the GTK 4.8-compatible way to do this.
-    // However, it is still async-oriented. For now, we stub it as requested.
-    fprintf(stderr, "Warning: aether_ui_file_open is not yet implemented for GTK 4.8\n");
-    return strdup("");
+    const char* hl = getenv("AETHER_UI_HEADLESS");
+    if (hl && hl[0] && hl[0] != '0') return strdup("");
+    const char* accept = (action == GTK_FILE_CHOOSER_ACTION_SAVE) ? "_Save" : "_Open";
+    GtkFileChooserNative* dlg = gtk_file_chooser_native_new(
+        title ? title : "", primary_window, action, accept, "_Cancel");
+    if (default_name && *default_name && action == GTK_FILE_CHOOSER_ACTION_SAVE) {
+        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), default_name);
+    }
+    AeuiFileResult r = { g_main_loop_new(NULL, FALSE), NULL };
+    g_signal_connect(dlg, "response", G_CALLBACK(on_file_chooser_response), &r);
+    gtk_native_dialog_show(GTK_NATIVE_DIALOG(dlg));
+    g_main_loop_run(r.loop);
+    g_main_loop_unref(r.loop);
+    g_object_unref(dlg);
+    return r.path ? r.path : strdup("");
+}
+
+char* aether_ui_file_open(const char* title) {
+    return aeui_run_file_chooser(title, GTK_FILE_CHOOSER_ACTION_OPEN, NULL);
+}
+char* aether_ui_file_save(const char* title, const char* default_name) {
+    return aeui_run_file_chooser(title, GTK_FILE_CHOOSER_ACTION_SAVE, default_name);
 }
 
 // Clipboard read/write

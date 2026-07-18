@@ -40,7 +40,7 @@ exports (
     style_enabled, style_tooltip,
     edge_insets, width, height, distribution, alignment,
     fill_width, fill_height, margin, margin_of,
-    alert, clipboard_write, open_url, is_dark_mode,
+    alert, clipboard_write, open_url, open_file, save_file, is_dark_mode,
     timer, timer_cancel,
     window_create, window_set_body, window_show, window_close,
     overlay, overlay_modal, dismiss_overlay, overlay_is_live, toast, style_shadow,
@@ -239,6 +239,8 @@ const DIST_FILL_EQUALLY = 1
 // Group 5: System integration
 extern aether_ui_alert_impl(title: string, msg: string)
 extern aether_ui_clipboard_write_impl(text: string)
+extern aether_ui_file_open(title: string) -> string
+extern aether_ui_file_save(title: string, default_name: string) -> string
 extern aether_ui_open_url_impl(url: string)
 extern aether_ui_dark_mode_check() -> int
 extern aether_ui_timer_create_impl(interval_ms: int, boxed_closure: ptr) -> int
@@ -1231,6 +1233,18 @@ clipboard_write(text: string) {
 
 open_url(url: string) {
     aether_ui_open_url_impl(url)
+}
+
+// Native file pickers — block, return the chosen path ("" if cancelled).
+// GtkFileChooserNative / IFileDialog(GetOpenFileName) / NSOpenPanel|NSSavePanel.
+// Headless-no-op (return "") like alert/menu_popup — a modal has no seat on CI.
+//   path = open_file("Choose a song")
+//   path = save_file("Export as", "untitled.txt")
+open_file(title: string) -> string {
+    return aether_ui_file_open(title)
+}
+save_file(title: string, default_name: string) -> string {
+    return aether_ui_file_save(title, default_name)
 }
 
 is_dark_mode() {

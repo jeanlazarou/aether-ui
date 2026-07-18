@@ -2165,6 +2165,21 @@ char* aether_ui_file_open(const char* title) {
     return strdup("");
 }
 
+char* aether_ui_file_save(const char* title, const char* default_name) {
+    if (aeui_is_headless()) return strdup("");
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    if (title) [panel setTitle:[NSString stringWithUTF8String:title]];
+    if (default_name && *default_name) {
+        [panel setNameFieldStringValue:
+            [NSString stringWithUTF8String:default_name]];
+    }
+    if ([panel runModal] == NSModalResponseOK) {
+        NSURL* url = [panel URL];
+        if (url) return strdup([[url path] UTF8String]);
+    }
+    return strdup("");
+}
+
 void aether_ui_clipboard_write_impl(const char* text) {
     NSPasteboard* pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
