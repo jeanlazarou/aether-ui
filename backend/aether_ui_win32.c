@@ -844,12 +844,17 @@ static void stack_do_layout(HWND stack_hwnd) {
         free(pinned);
     }
 
-    // Lay out. Positions are computed LTR; for an RTL hstack each child's x is
-    // MIRRORED within the client width afterward (so child order reverses on
-    // screen regardless of the child-enumeration order).
+    // Lay out. An RTL hstack walks the SAME children[] but anchors from the
+    // right edge and decrements — so children[0] lands rightmost, reversing the
+    // on-screen order relative to LTR deterministically (independent of the
+    // child-enumeration order).
     int rtl = (orientation == 0 && sl->rtl);
-    int client_w = client.right - client.left;
-    int cur = (orientation == 1) ? sl->padding_top : sl->padding_left;
+    if (getenv("AEUI_RTL_DEBUG") && orientation == 0)
+        fprintf(stderr, "[rtl-dbg] hstack layout: sl->rtl=%d nchildren=%d client_w=%ld\n",
+                sl->rtl, nchildren, (long)(client.right - client.left));
+    int cur = (orientation == 1) ? sl->padding_top
+            : rtl ? ((client.right - client.left) - sl->padding_right)
+                  : sl->padding_left;
     for (int i = 0; i < nchildren; i++) {
         int x, y, w, h;
         if (orientation == 1) { // VStack
@@ -890,11 +895,13 @@ static void stack_do_layout(HWND stack_hwnd) {
             } else {
                 y = sl->padding_top + mc[i].margin_t;
             }
-            x = cur + mc[i].margin_l;
-            cur = x + w + mc[i].margin_r + sl->spacing;
-            // Mirror within the client width for RTL: the left edge x maps to
-            // (client_w - x - w), so a child near the left lands near the right.
-            if (rtl) x = client_w - x - w;
+            if (rtl) {
+                x = cur - mc[i].margin_r - w;
+                cur = x - mc[i].margin_l - sl->spacing;
+            } else {
+                x = cur + mc[i].margin_l;
+                cur = x + w + mc[i].margin_r + sl->spacing;
+            }
         }
         SetWindowPos(children[i], NULL, x, y, w, h,
                      SWP_NOZORDER | SWP_NOACTIVATE);
