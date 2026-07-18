@@ -366,45 +366,37 @@ Without `keep_alive`, your backgrounded `build/testable &` is killed the instant
    than 0.256 — rebuild Aether from `main` on the Mac and `make install` it (no
    sudo), then retry. `aetherc --version` confirms.
 
-## Pending peer-equivalence checks (for the Mac sibling)
+## Peer-equivalence checks — verified on the Mac (2026-07-18)
 
-Things landed + verified on GTK4 and win32 (winbaz) but **not yet run on the
-Mac** — the AppKit path is expected-parity by construction, but "expected" is
-not "verified". Run these on the Mac agent and tick them off:
+Both items below landed + were verified on GTK4/win32 first; this is the record
+of running them on the Mac and ticking them off. Full `tests/spec_matrix.sh` is
+**108/108 green** on macOS after this work (was 103; +4 for the `menu` suite now
+running, +1 for the two-way binding assertion).
 
-- **Native menu bar** (landed 2026-07-18, commits dcdb68f/61da9d3). GTK4 went
-  from stub → real; win32 was already real; both are 4/4 on `spec_menu`.
-  macOS already builds a real `NSMenu` bar AND its `menu_add_item` records to
-  the shared side-store, and the driver routes (`GET /menus`,
-  `POST /menu/{h}/activate`) live in the **shared** test-server — so this
-  should be green with no code change. To confirm:
-  ```
-  # on the Mac agent:
-  ./build.sh examples/menu/menu.ae build/menu
-  AETHER_UI_TEST_PORT=9222 ./build/menu &        # keep_alive:true
-  UI_SPEC=menu/spec_menu tests/run_spec.sh        # expect 4/4
-  # spot-check the route directly:
-  curl -s localhost:9222/menus                    # 3 menus, item labels
-  ```
-  Expect the same `[{"handle":2,"items":["New","Open...","Save","Quit"]},…]`
-  and a New→1 / Save→2 / Undo→1 counter. If it isn't 4/4, the likely culprit is
-  NSMenu build ordering vs. the shared store — not the routes.
+- **Native menu bar** (commits dcdb68f/61da9d3) — ✅ green, no code change, as
+  predicted. `spec_menu` is 4/4 and `GET /menus` returns exactly
+  `[{"handle":2,"items":["New","Open...","Save","Quit"]},{"handle":3,"items":["Undo","Redo"]},{"handle":4,"items":["About"]}]`.
+  macOS's real `NSMenu` bar + `menu_add_item` side-store recording + the shared
+  test-server's `/menus` and `/menu/{h}/activate` routes were already all in
+  place.
 
-- **Two-way textfield binding** (landed 2026-07-18, commit 04e6023).
-  `bind_value` / `textfield_bound`. macOS impl is the
-  `AetherTextFieldDelegate.stateHandle` write-back in `controlTextDidChange`
-  + `AEUI_BIND_VALUE` in `apply_prop_binding` — mirrors the GTK4/win32 shape.
-  Compiles by construction; verify:
-  ```
-  ./build.sh examples/bindings_demo/bindings_demo.ae build/bindings_demo
-  AETHER_UI_TEST_PORT=9222 ./build/bindings_demo &      # keep_alive:true
-  UI_SPEC=bindings_demo/spec_bindings_demo tests/run_spec.sh   # expect 7/7
-  ```
-  The bit to watch on AppKit: `controlTextDidChange` must fire when the
-  driver's `/set_text` sets `stringValue` — if AppKit doesn't emit it for a
-  programmatic set, the field→state leg of the spec's two-way test won't
-  trip. If so, post the state directly in the driver's set-text path (as the
-  other backends' set_text naturally drives their change signal).
+- **Two-way textfield binding** (commit 04e6023) — ✅ 7/7, but it needed **one
+  AppKit-specific fix**. The watch-out came true: AppKit does *not* emit
+  `controlTextDidChange` for a programmatic `setStringValue:` (unlike GtkEntry's
+  `changed` and win32's `EN_CHANGE`, which both fire on any set), so the
+  field→state leg was dead. Two things were wired to close it:
+  1. `aether_ui_textfield_set_text` now mirrors a bound field into its state
+     (checks the `AetherTextFieldDelegate.stateHandle`), guarded by a
+     `g_seeding_bound_field` flag that `apply_prop_binding` raises around the
+     state→field seed. Without the guard the seed's `set_text(field, c->str)`
+     re-entered `state_set_s` with a pointer aliasing the cell's own string —
+     `state_set_s` frees before copy → use-after-free → segfault + corrupted
+     state. The guard makes only *external* sets propagate, matching the other
+     backends' change-signal semantics.
+  2. The driver's `AETHER_DRV_SET_TEXT` handler now routes through
+     `aether_ui_textfield_set_text` instead of a raw `setStringValue:`, so
+     driver `/set_text` reaches the write-back (the earlier raw path fired the
+     field's *action*, never `controlTextDidChange` nor the write-back).
 
 ## macOS vs winbaz — the cheat sheet
 

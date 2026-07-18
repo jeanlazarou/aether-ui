@@ -294,6 +294,12 @@ static int state_truthy(StateCell* c) {
     return c->num != 0.0;
 }
 
+// Set while a state→field seed is running, so the set_text below doesn't
+// bounce the value straight back into the state (which would also alias and
+// free the cell's own string mid-copy). External driver set_text runs with
+// this clear, so those DO propagate — matching GtkEntry/EN_CHANGE semantics.
+static int g_seeding_bound_field = 0;
+
 static void apply_prop_binding(PropBinding* b) {
     StateCell* c = state_cell(b->state_handle);
     if (!c) return;
@@ -303,7 +309,9 @@ static void apply_prop_binding(PropBinding* b) {
         const char* cur = aether_ui_textfield_get_text(b->widget_handle);
         const char* want = (c->type == AEUI_STATE_STRING && c->str) ? c->str : "";
         if (!cur || strcmp(cur, want) != 0) {
+            g_seeding_bound_field = 1;
             aether_ui_textfield_set_text(b->widget_handle, want);
+            g_seeding_bound_field = 0;
         }
         return;
     }
@@ -1450,8 +1458,19 @@ int aether_ui_textfield_create(const char* placeholder, void* boxed_closure) {
 void aether_ui_textfield_set_text(int handle, const char* text) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (v && [v isKindOfClass:[NSTextField class]]) {
-        [(NSTextField*)v setStringValue:
-            [NSString stringWithUTF8String:text ? text : ""]];
+        NSTextField* field = (NSTextField*)v;
+        [field setStringValue:[NSString stringWithUTF8String:text ? text : ""]];
+        // AppKit does NOT emit controlTextDidChange for a programmatic
+        // setStringValue: (unlike GtkEntry's "changed" / win32's EN_CHANGE),
+        // so a two-way bound field wouldn't propagate to its state on a
+        // driver-side set_text. Mirror the write-back here. Compare-first in
+        // apply_prop_binding breaks the echo, so this can't recurse.
+        id d = [field delegate];
+        if (!g_seeding_bound_field && d
+            && [d isKindOfClass:[AetherTextFieldDelegate class]]) {
+            int sh = ((AetherTextFieldDelegate*)d).stateHandle;
+            if (sh > 0) aether_ui_state_set_s(sh, text ? text : "");
+        }
     }
 }
 
@@ -4286,7 +4305,10 @@ static void driver_perform(AetherDriverActionCtx* ctx) {
         case AETHER_DRV_SET_TEXT: {
             NSString* s = [NSString stringWithUTF8String:ctx->sval];
             if ([v isKindOfClass:[NSTextField class]]) {
-                [(NSTextField*)v setStringValue:s];
+                // Route through the toolkit setter so a two-way bind_value
+                // field mirrors driver input into its state (setStringValue
+                // alone fires neither controlTextDidChange nor the write-back).
+                aether_ui_textfield_set_text(ctx->handle, ctx->sval);
                 // A programmatic setStringValue does NOT fire the action, so
                 // the app's on-change closure would never see driver input.
                 if (get_widget_type(ctx->handle) != AUI_TEXT) {
