@@ -224,15 +224,28 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
     char text[1024];
     h->widget_text_into(handle, text, sizeof(text));
 
-    // Escape " and \ and \n for JSON.
-    char esc[2048];
+    // Escape for JSON. Beyond " \ \n \r \t, ANY control char (U+0000–U+001F)
+    // must be emitted as \uXXXX — a raw control byte in a widget's text (e.g. a
+    // stray U+0001 in a search-result title) otherwise produces invalid JSON
+    // that breaks every client-side json.parse (found via LisMusic on win32).
+    // A \uXXXX expansion is 6 bytes; leave that much headroom.
+    char esc[2560];
     int ei = 0;
-    for (int i = 0; text[i] && ei < (int)sizeof(esc) - 2; i++) {
-        char ch = text[i];
-        if (ch == '"' || ch == '\\') { esc[ei++] = '\\'; esc[ei++] = ch; }
+    for (int i = 0; text[i] && ei < (int)sizeof(esc) - 8; i++) {
+        unsigned char ch = (unsigned char)text[i];
+        if (ch == '"' || ch == '\\') { esc[ei++] = '\\'; esc[ei++] = (char)ch; }
         else if (ch == '\n') { esc[ei++] = '\\'; esc[ei++] = 'n'; }
-        else if (ch == '\r') { /* skip */ }
-        else esc[ei++] = ch;
+        else if (ch == '\r') { esc[ei++] = '\\'; esc[ei++] = 'r'; }
+        else if (ch == '\t') { esc[ei++] = '\\'; esc[ei++] = 't'; }
+        else if (ch < 0x20) {
+            // Any other control char → \u00XX.
+            static const char hex[] = "0123456789abcdef";
+            esc[ei++] = '\\'; esc[ei++] = 'u';
+            esc[ei++] = '0'; esc[ei++] = '0';
+            esc[ei++] = hex[(ch >> 4) & 0xF];
+            esc[ei++] = hex[ch & 0xF];
+        }
+        else esc[ei++] = (char)ch;
     }
     esc[ei] = '\0';
 
