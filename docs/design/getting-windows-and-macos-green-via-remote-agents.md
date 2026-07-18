@@ -366,6 +366,30 @@ Without `keep_alive`, your backgrounded `build/testable &` is killed the instant
    than 0.256 — rebuild Aether from `main` on the Mac and `make install` it (no
    sudo), then retry. `aetherc --version` confirms.
 
+## Pending peer-equivalence checks (for the Mac sibling)
+
+Things landed + verified on GTK4 and win32 (winbaz) but **not yet run on the
+Mac** — the AppKit path is expected-parity by construction, but "expected" is
+not "verified". Run these on the Mac agent and tick them off:
+
+- **Native menu bar** (landed 2026-07-18, commits dcdb68f/61da9d3). GTK4 went
+  from stub → real; win32 was already real; both are 4/4 on `spec_menu`.
+  macOS already builds a real `NSMenu` bar AND its `menu_add_item` records to
+  the shared side-store, and the driver routes (`GET /menus`,
+  `POST /menu/{h}/activate`) live in the **shared** test-server — so this
+  should be green with no code change. To confirm:
+  ```
+  # on the Mac agent:
+  ./build.sh examples/menu/menu.ae build/menu
+  AETHER_UI_TEST_PORT=9222 ./build/menu &        # keep_alive:true
+  UI_SPEC=menu/spec_menu tests/run_spec.sh        # expect 4/4
+  # spot-check the route directly:
+  curl -s localhost:9222/menus                    # 3 menus, item labels
+  ```
+  Expect the same `[{"handle":2,"items":["New","Open...","Save","Quit"]},…]`
+  and a New→1 / Save→2 / Undo→1 counter. If it isn't 4/4, the likely culprit is
+  NSMenu build ordering vs. the shared store — not the routes.
+
 ## macOS vs winbaz — the cheat sheet
 
 | | winbaz | Mac mini |
