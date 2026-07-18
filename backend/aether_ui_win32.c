@@ -1812,7 +1812,12 @@ static void tabs_do_select(TabsState* ts, int index, int fire) {
     ts->selected = index;
     Widget* content = widget_at(ts->content_handle);
     if (content) stack_do_layout(content->hwnd);
-    if (fire && changed) invoke_closure(ts->on_change);
+    // on_change takes the new index — call it with the arg, like GTK/AppKit.
+    // (invoke_closure would drop the argument.)
+    if (fire && changed) {
+        AeClosure* c = ts->on_change;
+        if (c && c->fn) ((void(*)(void*, intptr_t))c->fn)(c->env, (intptr_t)index);
+    }
 }
 
 int aether_ui_tabs_create(void* boxed_closure) {
