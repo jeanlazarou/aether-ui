@@ -122,6 +122,8 @@ void aether_ui_tabs_set_on_change(int tabs_handle, void* boxed_closure);
 // allocation changes (the GeometryReader). GTK4 only; no-op stubs
 // elsewhere.
 void aether_ui_widget_weight_impl(int handle, int n);
+// Lay an hstack's children right-to-left (on=1) or back to LTR (on=0).
+void aether_ui_set_rtl(int handle, int on);
 void aether_ui_on_layout_impl(int handle, void* boxed_closure);
 // wrap: flow container, children wrap to the next line when width runs
 // out (GtkFlowBox; plain stack stub elsewhere).

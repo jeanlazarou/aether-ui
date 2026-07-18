@@ -1027,6 +1027,18 @@ int aether_ui_hstack_create(int spacing) {
     return aether_ui_register_widget(box);
 }
 
+// Lay a stack's children right-to-left (RTL). GtkBox honours the widget's text
+// direction, so the children reverse natively (first child on the right). Only
+// meaningful on an hstack; harmless on a vstack.
+void aether_ui_set_rtl(int handle, int rtl) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return;
+    gtk_widget_set_direction(w, rtl ? GTK_TEXT_DIR_RTL : GTK_TEXT_DIR_LTR);
+    // A flex-managed stack (weight/on_layout) lays out itself; flag it so the
+    // custom layout can reverse too.
+    g_object_set_data(G_OBJECT(w), "aeui-rtl", GINT_TO_POINTER(rtl ? 1 : 0));
+}
+
 int aether_ui_spacer_create(void) {
     ensure_gtk_init();
     GtkWidget* spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);

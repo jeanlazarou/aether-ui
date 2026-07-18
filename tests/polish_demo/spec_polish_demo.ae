@@ -1,0 +1,47 @@
+// spec_polish_demo.ae — RTL row layout + auto menu↔shortcut binding.
+//   - rtl(row, 1): children A/B/C lay right-to-left (A rightmost = largest x).
+//   - menu_item_accel: the File→Save item shows its accel AND binds it, so
+//     Ctrl+S fires the same closure the menu item would.
+import aeocha
+import uidriver
+import std.string
+
+x_of(label: string) -> int {
+    id = uidriver.widget_id_by_text(label)
+    return uidriver.widget_int_field_by_id(id, "x")
+}
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+    uidriver.resize_window(420, 200)
+
+    aeocha.describe(fw, "RTL + menu accelerator over AetherUIDriver") {
+        aeocha.it("rtl lays an hstack's children right-to-left") callback {
+            xa = x_of("A")
+            xb = x_of("B")
+            xc = x_of("C")
+            // A is first in source but rightmost on screen: xa > xb > xc.
+            aeocha.assert_true(xa > xb, "A is right of B (${xa} > ${xb})")
+            aeocha.assert_true(xb > xc, "B is right of C (${xb} > ${xc})")
+        }
+
+        aeocha.it("menu_item_accel shows the accelerator in the item") callback {
+            b = uidriver.menus_body()
+            aeocha.assert_contains(b, "Save  Ctrl+S", "the item shows its accel")
+        }
+
+        aeocha.it("the bound accelerator fires the menu action") callback {
+            // The whole point of menu_item_accel: the keystroke runs the same
+            // closure the menu item would, with no separate shortcut wiring.
+            uidriver.window_key("Ctrl+S")
+            ok = uidriver.wait_body_contains("/widgets", "saves: 1", 20)
+            aeocha.assert_true(ok, "Ctrl+S ran the Save closure")
+            // Fires again on a second press (idempotent binding).
+            uidriver.window_key("Ctrl+S")
+            ok2 = uidriver.wait_body_contains("/widgets", "saves: 2", 20)
+            aeocha.assert_true(ok2, "the accelerator keeps firing")
+        }
+    }
+    aeocha.run_summary(fw)
+}

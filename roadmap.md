@@ -171,8 +171,10 @@ term in one result row — cosmetic, doesn't affect the spec.
 
 - **Typography:** ~~multi-line wrap (`text_wrapped`), text-anchor
   middle/end~~ **DONE 2026-07-18** (`text_wrapped` + `text_anchor`;
-  wrap/anchor in the text JSON; 3/3 GTK4+win32). Remaining: text-anchor
-  for CANVAS/vg text (this covers native labels).
+  wrap/anchor in the text JSON; 3/3 GTK4+win32). vg/CANVAS text-anchor
+  was ALREADY done (`vg.text_anchored`, "middle"/"end" → center/trailing
+  with real advance-width shifting; test_grammar_text asserts it). So this
+  line is fully closed.
 - **Table/list:** virtualization (the GtkColumnView / recycled-cell vs
   handle-registry question — the one real remaining table item),
   ~~delegate cells (%-bars, chips)~~ **DONE** (`table_col_delegate` — a
@@ -197,7 +199,10 @@ term in one result row — cosmetic, doesn't affect the spec.
   its share would fall under it, iterated to a fixed point. GTK4
   (AeuiFlexLayout) AND win32 (the stack layout now flex-distributes too,
   same clamp) — 2/2 on both, identical widths. `weight()` is real on win32
-  now (was a no-op). RTL still open.
+  now (was a no-op). ~~RTL~~ **DONE 2026-07-18** — `rtl(hstack, 1)` lays
+  children right-to-left (GTK4 gtk_widget_set_direction / win32 reversed
+  placement / macOS NSStackView userInterfaceLayoutDirection); 3/3 in the
+  polish spec (GTK4).
 - **Bindings:** ~~list-typed state (`each_bind`)~~ **DONE 2026-07-18**
   (`ui_state_list` + `each_bind`; a `ui_set_list` re-runs `each_update`
   via a generic state-observer primitive), ~~two-way binding~~ **DONE**
@@ -213,7 +218,10 @@ term in one result row — cosmetic, doesn't affect the spec.
   — two-key sequence, 1.5s window). GTK4 AND win32 both real (win32 via a
   real registry behind the /window/key path — 3/3 on both). macOS:
   shortcut_when degrades to plain, chord stubbed (sibling TODO). Remaining:
-  per-widget scopes, auto menu↔shortcut binding.
+  per-widget scopes. ~~auto menu↔shortcut binding~~ **DONE 2026-07-18** —
+  `menu_item_accel(menu, label, accel, cb)` adds the item (accel shown
+  after the label) AND registers shortcut(accel, cb), so the action fires
+  from the menu or the keystroke with no separate wiring; 3/3.
 - **Menus:** ~~GTK4 native menu wiring (GMenu/GActionGroup) is still the
   recorded stub~~ **DONE 2026-07-18** — the GTK4 menu bar is real
   (GtkPopoverMenuBar over a GMenu model; each item backed by a

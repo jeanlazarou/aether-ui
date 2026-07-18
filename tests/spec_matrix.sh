@@ -49,6 +49,7 @@ SUITES=(
   "tabledeleg|examples/tabledeleg_demo|tabledeleg_demo/spec_tabledeleg_demo|"
   "weightclamp|examples/weightclamp_demo|weightclamp_demo/spec_weightclamp_demo|"
   "shortcut|examples/shortcut_demo|shortcut_demo/spec_shortcut_demo|"
+  "polish|examples/polish_demo|polish_demo/spec_polish_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"

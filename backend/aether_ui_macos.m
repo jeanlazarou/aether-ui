@@ -1379,6 +1379,16 @@ void aether_ui_widget_weight_impl(int handle, int n) {
     }
 }
 
+// RTL: an NSStackView honours userInterfaceLayoutDirection, reversing its
+// arranged subviews (first child on the right).
+void aether_ui_set_rtl(int handle, int on) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSStackView class]]) return;
+    [(NSStackView*)v setUserInterfaceLayoutDirection:
+        on ? NSUserInterfaceLayoutDirectionRightToLeft
+           : NSUserInterfaceLayoutDirectionLeftToRight];
+}
+
 // ---------------------------------------------------------------------------
 // on_layout — the GeometryReader: cb(w, h) after the container's allocation
 // changes. Frame-change notifications give us this without subclassing every

@@ -1,0 +1,44 @@
+// Aether UI polish: RTL row layout + auto menu↔shortcut binding.
+import ui
+import ui (window, vstack, hstack, text, btn, rtl,
+    menu_bar, menu, menu_item_accel, menu_bar_add, attach_menu_bar,
+    app_create, app_start, enable_test_server_root)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    saves = 0
+    status_h = 0
+
+    root = ui.root_vstack(10) {
+        status = text("saves: 0")
+        status_h = status
+        // An RTL row: children A, B, C laid right-to-left (A rightmost).
+        row = hstack(6) {
+            _a = text("A")
+            _b = text("B")
+            _c = text("C")
+        }
+        rtl(row, 1)
+    }
+
+    app = app_create("polish demo", 420, 200)
+
+    // Menu with an accelerator-bound Save.
+    bar = menu_bar()
+    file_menu = menu("File")
+    menu_item_accel(file_menu, "Save", "Ctrl+S") callback {
+        saves = saves + 1
+        aether_ui_text_set_string(status_h,
+            string.concat("saves: ", string.from_int(saves)))
+    }
+    menu_bar_add(bar, file_menu)
+    attach_menu_bar(app, bar)
+
+    if os_getenv("AETHER_UI_TEST_PORT") != null {
+        enable_test_server_root(9222, root)
+    }
+    app_start(app, root)
+}

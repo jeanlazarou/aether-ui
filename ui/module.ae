@@ -18,7 +18,7 @@ exports (
     _surface_window_factory, _surface_render_factory, _surface_record_factory,
     app_run, app_create, app_start,
     vstack, hstack, scrollview, zstack, form, section, navstack,
-    splitview, split_position, split_set_position, on_layout, weight, wrap,
+    splitview, split_position, split_set_position, on_layout, weight, rtl, wrap,
     tabs, tab, on_tab_change, tab_select, tab_selected,
     nav_push, nav_pop,
     text, text_wrapped, text_anchor, button, btn, spacer, divider,
@@ -65,7 +65,7 @@ exports (
     on_hover, on_double_click, on_click,
     remove_child, clear_children,
     enable_test_server, enable_test_server_root, seal_widget, seal_subtree,
-    menu_bar, menu, menu_item, menu_separator,
+    menu_bar, menu, menu_item, menu_item_accel, menu_separator,
     menu_bar_add, attach_menu_bar, menu_popup,
     root_grid, grid, grid_place,
     tray_icon, tray_set_tooltip, tray_set_menu,
@@ -192,6 +192,7 @@ extern aether_ui_splitview_create(vertical: int) -> int
 extern aether_ui_split_position_impl(handle: int) -> int
 extern aether_ui_split_set_position_impl(handle: int, px: int)
 extern aether_ui_widget_weight_impl(handle: int, n: int)
+extern aether_ui_set_rtl(handle: int, on: int)
 extern aether_ui_on_layout_impl(handle: int, boxed_closure: ptr)
 extern aether_ui_wrap_create() -> int
 extern aether_ui_zstack_create() -> int
@@ -601,6 +602,12 @@ split_set_position(handle: int, px: int) {
 // stacks are untouched. GTK4 only; no-op on win32/macOS for now.
 weight(handle: int, n: int) {
     aether_ui_widget_weight_impl(handle, n)
+}
+
+// rtl(stack, on) — lay an hstack's children right-to-left (first child on the
+// right). For localized UIs (Arabic/Hebrew). on: 1 = RTL, 0 = back to LTR.
+rtl(handle: int, on: int) {
+    aether_ui_set_rtl(handle, on)
 }
 
 // wrap { … } — flow container: children lay out left-to-right and wrap
@@ -2213,6 +2220,18 @@ menu(label: string) {
 menu_item(menu_handle: int, label: string, on_press: fn) {
     boxed = box_closure(on_press)
     aether_ui_menu_add_item(menu_handle, label, boxed)
+}
+
+// menu_item_accel(menu, label, accel, cb): a menu item that ALSO binds its
+// accelerator — one call adds the item (with the accel shown after the label,
+// e.g. "Save  Ctrl+S") and registers shortcut(accel, cb), so the same action
+// fires from the menu OR the keystroke with no separate wiring.
+//   menu_item_accel(file, "Save", "Ctrl+S") callback { save() }
+menu_item_accel(menu_handle: int, label: string, accel: string, on_press: fn) {
+    shown = string.concat(label, string.concat("  ", accel))
+    boxed = box_closure(on_press)
+    aether_ui_menu_add_item(menu_handle, shown, boxed)
+    aether_ui_shortcut_impl(accel, boxed)
 }
 
 // Add a horizontal separator between menu items.

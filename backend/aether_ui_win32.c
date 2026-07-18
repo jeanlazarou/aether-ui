@@ -169,6 +169,7 @@ typedef struct {
     int padding_top, padding_right, padding_bottom, padding_left;
     int alignment;    // 0=start, 1=center, 2=end
     int distribution; // 0=fill, 1=equal, 2=trailing
+    int rtl;          // hstack: lay children right-to-left
 } StackLayout;
 
 typedef struct {
@@ -843,8 +844,11 @@ static void stack_do_layout(HWND stack_hwnd) {
         free(pinned);
     }
 
-    // Lay out.
-    int cur = (orientation == 1) ? sl->padding_top : sl->padding_left;
+    // Lay out. For an RTL hstack, start from the right edge and decrement.
+    int rtl = (orientation == 0 && sl->rtl);
+    int cur = (orientation == 1) ? sl->padding_top
+            : rtl ? ((client.right - client.left) - sl->padding_right)
+                  : sl->padding_left;
     for (int i = 0; i < nchildren; i++) {
         int x, y, w, h;
         if (orientation == 1) { // VStack
@@ -885,8 +889,13 @@ static void stack_do_layout(HWND stack_hwnd) {
             } else {
                 y = sl->padding_top + mc[i].margin_t;
             }
-            x = cur + mc[i].margin_l;
-            cur = x + w + mc[i].margin_r + sl->spacing;
+            if (rtl) {
+                x = cur - mc[i].margin_r - w;
+                cur = x - mc[i].margin_l - sl->spacing;
+            } else {
+                x = cur + mc[i].margin_l;
+                cur = x + w + mc[i].margin_r + sl->spacing;
+            }
         }
         SetWindowPos(children[i], NULL, x, y, w, h,
                      SWP_NOZORDER | SWP_NOACTIVATE);
@@ -2002,6 +2011,14 @@ void aether_ui_split_set_position_impl(int handle, int px) {
 void aether_ui_widget_weight_impl(int handle, int n) {
     Widget* w = widget_at(handle);
     if (w) w->weight = n;
+}
+
+void aether_ui_set_rtl(int handle, int on) {
+    Widget* w = widget_at(handle);
+    if (w && (w->kind == WK_HSTACK || w->kind == WK_VSTACK || w->kind == WK_ZSTACK)) {
+        w->stack.rtl = on ? 1 : 0;
+        if (w->hwnd) stack_do_layout(w->hwnd);
+    }
 }
 void aether_ui_on_layout_impl(int handle, void* boxed_closure) {
     (void)handle; (void)boxed_closure;
