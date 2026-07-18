@@ -1,84 +1,144 @@
-// lis_audio.ae — playback SEAM (original: musicplay.h / musicplay.cpp).
+// lis_audio.ae — playback (original: musicplay.h / musicplay.cpp).
 //
-// The original wraps QMediaPlayer + QAudioOutput. Aether-UI has NO audio
-// API, so this is an honest stub: it holds the "now playing" metadata the
-// UI binds to and logs each transport call. Wiring real playback later means
-// implementing THIS module against some future aether audio binding — the
-// rest of the app talks only to these signatures.
+// REAL now, backed by std.audio (0.413 — vendored miniaudio). The original
+// wraps QMediaPlayer + QAudioOutput; this wraps std.audio's playback tier:
+// load_wav decodes bytes into a source, play/pause/stop/seek/volume operate
+// on it. Faithful to the original's Q_INVOKABLE surface —
+//   play_local(path)  → fs.read_binary + load_wav + play
+//   start_play / stop_play / is_playing
+//   position_ms / duration_ms / seek_frac / set_voice
+//   trans_time(ms) -> "MM:SS"
 //
-// Original Q_INVOKABLE surface preserved:
-//   playmusic(path) / playnetmusic(path) / startplay() / stopplay()
-//   duration() / position() / setpos(ms) / transtime(ms) -> "MM:SS"
-//   gettitle() / getauthor() / setvoice(v)
+// SCOPE (std.audio v1 is a playback tier): local WAV files are real. mp3/flac
+// decode too (miniaudio has the decoders), but the demo ships a wav. Network
+// STREAM playback stays with lis_net (a URL, not local bytes) — play_net still
+// stubs. On headless CI std.audio falls back to a NULL backend (silent but
+// fully functional: load/duration/position/seek all work), so the driver spec
+// is deterministic — is_null_backend() reports which path won.
 
 import std.string
+import std.audio
+import std.fs
 
 extern println(s: string)
 extern malloc(size: int) -> ptr
 
 exports (
-    Player, mk_player, play_local, play_net, start_play, stop_play,
-    is_playing, cur_title, cur_author, set_voice, trans_time, seek_frac
+    Player, mk_player, close_audio, play_local, play_net, start_play, stop_play,
+    is_playing, cur_title, cur_author, set_voice, trans_time, seek_frac,
+    audio_position_ms, audio_duration_ms
 )
 
 struct Player {
     title: string
     author: string
-    playing: int      // 0/1
-    voice: float      // 0..1
-    pos_ms: long      // stubbed clock (never advances — no real player)
-    dur_ms: long
+    voice: float
+    src: ptr        // std.audio source (null = nothing loaded)
+    engine_ok: int  // 1 once audio.open() succeeded
 }
 
 mk_player() -> *Player {
-    p = malloc(64) as *Player
+    p = malloc(48) as *Player
     p.title = "Lumière"
     p.author = "Unknown"
-    p.playing = 0
     p.voice = 0.5
-    p.pos_ms = 0
-    p.dur_ms = 0
+    p.src = null
+    p.engine_ok = 0
+    // Initialise the engine once. v1 always succeeds (real device or the
+    // null fallback); guard anyway.
+    if audio.open() == true {
+        p.engine_ok = 1
+        if audio.is_null_backend() == true {
+            println("[lis_audio] engine up (NULL backend — silent, headless)")
+        } else {
+            println("[lis_audio] engine up (real device)")
+        }
+    } else {
+        println("[lis_audio] engine open failed — playback disabled")
+    }
     return p
 }
 
-// Load a local file. STUB — no decoder; records the path as the title.
-play_local(p: *Player, path: string) {
-    println("[lis_audio STUB] play_local ${path}")
-    p.title = path
-    p.author = "Local file"
-    p.dur_ms = 0
+close_audio(p: *Player) {
+    if p.src != null { audio.unload(p.src); p.src = null }
+    if p.engine_ok == 1 { audio.close(); p.engine_ok = 0 }
 }
 
-// Load a network stream URL. STUB — no network/decoder.
+// Load a local audio file and start it (original: playmusic). Reads the file
+// into bytes, decodes via load_wav, plays. Replaces any current source.
+play_local(p: *Player, path: string) {
+    if p.engine_ok == 0 { println("[lis_audio] no engine; can't play ${path}"); return }
+    data, n, rerr = fs.read_binary(path)
+    if rerr != "" {
+        println("[lis_audio] read failed ${path}: ${rerr}")
+        return
+    }
+    src, lerr = audio.load_wav(data, n)
+    if lerr != "" {
+        println("[lis_audio] decode failed ${path}: ${lerr}")
+        return
+    }
+    if p.src != null { audio.unload(p.src) }
+    p.src = src
+    p.title = path
+    p.author = "Local file"
+    _ = audio.volume(p.src, p.voice)
+    _ = audio.play(p.src)
+    println("[lis_audio] playing ${path} (${audio.duration_ms(p.src)}ms)")
+}
+
+// Network STREAM playback — still stubbed: std.audio v1 takes decoded local
+// bytes, not a URL. A real version fetches the stream (lis_net) to bytes,
+// then goes through the same load_wav+play path.
 play_net(p: *Player, url: string) {
-    println("[lis_audio STUB] play_net ${url}")
+    println("[lis_audio] play_net ${url} (stream playback not in std.audio v1)")
 }
 
 start_play(p: *Player) {
-    println("[lis_audio STUB] start_play")
-    p.playing = 1
+    if p.src != null { _ = audio.play(p.src) }
 }
 
 stop_play(p: *Player) {
-    println("[lis_audio STUB] stop_play")
-    p.playing = 0
+    if p.src != null { _ = audio.pause(p.src) }
 }
 
-is_playing(p: *Player) -> int { return p.playing }
+is_playing(p: *Player) -> int {
+    if p.src == null { return 0 }
+    if audio.is_playing(p.src) == true { return 1 }
+    return 0
+}
+
 cur_title(p: *Player) -> string { return p.title }
 cur_author(p: *Player) -> string { return p.author }
 
 set_voice(p: *Player, v: float) {
     p.voice = v
-    println("[lis_audio STUB] set_voice ${v}")
+    if p.src != null { _ = audio.volume(p.src, v) }
 }
 
-// Seek to a fraction 0..1 of the (stubbed) duration.
+// Seek to a fraction 0..1 of the duration.
 seek_frac(p: *Player, frac: float) {
-    println("[lis_audio STUB] seek ${frac}")
+    if p.src == null { return }
+    dur = audio.duration_ms(p.src)
+    target = f_to_long((dur / 1.0) * frac)
+    _ = audio.seek_ms(p.src, target)
 }
 
-// Milliseconds → "MM:SS" (the original's transtime; this part is real).
+// Live position / duration in ms (for the seek slider + time labels).
+audio_position_ms(p: *Player) -> long {
+    if p.src == null { return 0 }
+    return audio.position_ms(p.src)
+}
+audio_duration_ms(p: *Player) -> long {
+    if p.src == null { return 0 }
+    return audio.duration_ms(p.src)
+}
+
+// float → long (round to nearest), for seek target math.
+extern lrint(x: float) -> long
+f_to_long(x: float) -> long { return lrint(x) }
+
+// Milliseconds → "MM:SS" (the original's transtime).
 trans_time(ms: long) -> string {
     if ms < 0 { return "00:00" }
     total_s = ms / 1000

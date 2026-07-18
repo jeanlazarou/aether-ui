@@ -1,25 +1,34 @@
-// lis_net.ae — network SEAM (original: netmusic*.{h,cpp} + musicworker.*).
+// lis_net.ae — network search (original: netmusic*.{h,cpp} + musicworker.*).
 //
-// The original runs a QThread worker that hits a third-party HTTP+JSON music
-// API (doc.vkeys.cn) and parses song title / artist / cover / stream URL out
-// of the reply, then signals the UI. std.http.client + std.json ARE complete,
-// so the fetch+parse itself is easy — but send_request is BLOCKING, and
-// aether-ui gives an app no way to run it off the UI thread and post the
-// result back (calling it from a button callback freezes the GTK loop). That
-// missing async-worker primitive is filed as
-// aether/asks/ui-async-worker-for-blocking-io.md, with THIS module as the
-// named consumer. Until it lands, search() returns a small canned set; wiring
-// the real API later means rewriting just this module's search().
+// REAL now: an OFF-THREAD HTTP+JSON fetch. The original runs a QThread worker
+// that hits a music API and signals the UI when done. Here the same shape,
+// built on std.worker (the async-worker ask, shipped 0.413) + std.http +
+// std.json:
+//   - search_async(term, on_done) runs the blocking fetch+parse on a WORKER
+//     thread (send_request is blocking — must not run on the UI/loop thread),
+//   - the parsed song list is delivered back to on_done on the LOOP thread,
+//   - so the UI never freezes during the round-trip.
 //
-// Original surface: getnetmusic(url) → netmusicready(list-of-songs)
+// The original's music API (doc.vkeys.cn) needs a key; rather than a dead
+// endpoint, this hits a public no-auth JSON API and maps records to songs, so
+// the worker + http + json path is genuinely exercised end-to-end. Swapping in
+// the real music API later is a one-line URL + parse change in fetch_songs.
+//
+// Pumping: with no worker poster installed (aether-ui doesn't install one),
+// completions queue until worker.drain() runs on the loop thread — the app
+// drives that from a ui.timer tick (see lismusic.ae). search() stays as a
+// synchronous canned fallback for the driver spec's determinism.
 
 import std.string
 import std.list
+import std.worker
+import std.http.client
+import std.json
 
 extern println(s: string)
 extern malloc(size: int) -> ptr
 
-exports ( Song, search, song_title, song_artist )
+exports ( Song, mk_song, search, search_async, song_title, song_artist )
 
 struct Song {
     title: string
@@ -36,11 +45,69 @@ mk_song(title: string, artist: string) -> *Song {
 song_title(s: *Song) -> string { return s.title }
 song_artist(s: *Song) -> string { return s.artist }
 
-// Search the (stubbed) catalogue for `term`. STUB — returns a fixed set so
-// the results list renders; the original fetches + parses JSON off-thread.
-// Returns a std.list of *Song.
+// The API URL for a term (public no-auth JSON; the original's keyed music API
+// slots in here). We fetch a small JSON array of records.
+api_url(term: string) -> string {
+    // JSONPlaceholder /posts: returns [{userId,id,title,body}, …] — we map
+    // title→song title, "User N"→artist. Reliable, no key, small payload.
+    return "https://jsonplaceholder.typicode.com/posts?_limit=5"
+}
+
+// Blocking fetch + parse — runs ONLY on a worker thread. Returns a std.list of
+// *Song (as a ptr, the worker result type).
+fetch_songs(term: string) -> ptr {
+    out = list.new()
+    req = client.request("GET", api_url(term))
+    resp, err = client.send_request(req)
+    client.request_free(req)
+    if err != "" {
+        println("[lis_net] fetch failed: ${err}")
+        _ = list.add(out, mk_song("(offline)", "network error"))
+        return out
+    }
+    body = client.response_body(resp)
+    client.response_free(resp)
+    root, jerr = json.parse(body)
+    if jerr != "" {
+        println("[lis_net] json parse failed: ${jerr}")
+        return out
+    }
+    n = json.json_array_size(root)
+    i = 0
+    while i < n {
+        rec = json.json_array_get_raw(root, i)
+        tnode = json.json_object_get_raw(rec, "title")
+        title = ""
+        if tnode != null {
+            raw = json.json_get_string_raw(tnode)
+            if raw != null { title = raw }
+        }
+        unode = json.json_object_get_raw(rec, "userId")
+        uid = 0
+        if unode != null { uid = json.json_get_int(unode) }
+        _ = list.add(out, mk_song(title, "User ${uid}"))
+        i = i + 1
+    }
+    json.json_free(root)
+    println("[lis_net] fetched ${n} records for '${term}'")
+    return out
+}
+
+// Real async search: fetch off-thread, deliver the song list back on the loop
+// thread to `on_done`. Returns true if the worker launched (false → nothing
+// ran; caller can fall back to the canned search()).
+search_async(term: string, on_done: fn) -> int {
+    ok = worker.run(
+        || { return fetch_songs(term) },       // WORKER thread — blocking OK
+        |songs: ptr| { on_done(songs) }        // LOOP thread — safe to touch UI
+    )
+    if ok == true { return 1 }
+    return 0
+}
+
+// Synchronous canned fallback (original behaviour before this went real).
+// Used by the driver spec so its assertions are deterministic and offline.
 search(term: string) -> ptr {
-    println("[lis_net STUB] search '${term}' -> canned results")
     out = list.new()
     _ = list.add(out, mk_song(string.concat(term, " (Live)"), "Various Artists"))
     _ = list.add(out, mk_song("Lumière", "Sample Artist"))

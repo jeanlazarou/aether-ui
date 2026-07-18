@@ -518,12 +518,18 @@ echo
 echo "=== Phase 7: AetherUIDriver LisMusic port spec ==="
 # LisMusic (apps/LisMusic): the three-region shell renders, sidebar nav drives
 # the right-page tab stack, search populates the each-list, transport wired.
-# Uses real contrib.sqlite for search history (history.db); clean it per run.
+# Real backends: contrib.sqlite (search history, history.db — cleaned per run),
+# std.audio (playback; NULL backend under headless CI), std.worker+std.http
+# (async search). LIS_OFFLINE=1 forces the deterministic canned search so the
+# spec's assertions don't depend on a live network. AETHER_UI_HEADLESS keeps
+# std.audio on its silent null backend.
 if [ "$AEOCHA_OK" -eq 1 ]; then
     rm -f "$ROOT/history.db"
+    export LIS_OFFLINE=1
     UI_SPEC=LisMusic/spec_lismusic \
     run_server_test "$ROOT/target/build/apps/LisMusic/bin/LisMusic" \
                     "$SCRIPT_DIR/tests/run_spec.sh" lismusic || FAIL=$((FAIL + 1))
+    unset LIS_OFFLINE
     rm -f "$ROOT/history.db"
 fi
 

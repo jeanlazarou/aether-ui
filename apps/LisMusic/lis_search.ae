@@ -12,7 +12,8 @@ import std.string
 import lis_config
 import lis_config (Config, set_search, search_term)
 import lis_net
-import lis_net (Song, search, song_title, song_artist)
+import lis_net (Song, search, search_async, song_title, song_artist)
+import std.os (os_getenv)
 import lis_audio
 import lis_audio (play_net, start_play)
 import lis_store
@@ -53,11 +54,27 @@ build_search_page(_ctx: ptr, c: *Config) -> ptr {
 }
 
 // Run the search: persist the term to history (REAL SQLite via lis_store),
-// fetch results (stubbed net), refresh the results each-list.
+// then fetch results and refresh the each-list.
+//
+// Default path is REAL + async: search_async runs the HTTP+JSON fetch on a
+// worker thread and delivers the parsed songs back on the loop thread, where
+// each_update refreshes the list — the window never freezes during the
+// round-trip. LIS_OFFLINE forces the deterministic canned path (the driver
+// spec sets it, so its assertions don't depend on a live network), and it's
+// also the fallback if the worker can't launch.
 run_search(c: *Config, results: ptr) {
     term = search_term(c)
     if string.length(term) == 0 { term = "music" }
     save_his(c.history, term)     // original: search recorded to the history table
-    songs = search(term)
-    each_update(results, songs)
+
+    if os_getenv("LIS_OFFLINE") != null {
+        each_update(results, search(term))
+        return
+    }
+    launched = search_async(term, |songs: ptr| {
+        each_update(results, songs)   // runs on the loop thread (worker drain)
+    })
+    if launched == 0 {
+        each_update(results, search(term))   // worker didn't start → canned
+    }
 }

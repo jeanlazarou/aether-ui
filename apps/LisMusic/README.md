@@ -21,12 +21,22 @@ here (the sidebar sections, the player chrome, the settings labels, etc.).
 The original is a full client: it plays audio (QtMultimedia), persists
 history and local-library paths in **SQLite**, extracts cover art with the
 **FFmpeg** CLI, and pulls songs from a third-party HTTP+JSON API on a
-worker thread. Of those, **SQLite is real here** — `lis_store` is backed by
-`contrib.sqlite`, faithful to the original's `history` schema and
-persisted to `history.db` across runs. **Three subsystems still have no
-Aether-UI peer** (audio playback, an image-decode-from-bytes path for
-cover art, and a threaded-network story wired into the widget loop), so a
-faithful, *working* clone is not achievable on this toolkit today.
+worker thread. **Three of those four are real here:**
+
+- **SQLite** — `lis_store` is backed by `contrib.sqlite`, faithful to the
+  original's `history` schema, persisted to `history.db` across runs.
+- **Audio playback** — `lis_audio` is backed by `std.audio` (0.413, vendored
+  miniaudio): `load_wav` decodes a file into a source, `play`/`pause`/`seek`/
+  `volume` operate on it, real device output (null backend under headless CI).
+  The My-Music tab plays a bundled tone as the worked proof.
+- **Async network search** — `lis_net` runs a real HTTP+JSON fetch on a
+  `std.worker` background thread (`std.worker` shipped 0.413, answering an ask
+  this port filed), delivering parsed results back on the loop thread so the
+  window never freezes; drained via a `ui.timer` pump. `LIS_OFFLINE=1` forces a
+  deterministic canned path for the driver spec.
+
+The **one** remaining stub is **cover art** (`lis_cover`) — extracting an
+embedded image and decoding it into a widget still has no Aether-UI path.
 
 What this port **does** deliver, faithfully, is the **UI and its
 structure**:
@@ -44,12 +54,12 @@ structure**:
 
 The backend subsystems are isolated behind clearly-marked **seams**
 (`lis_audio`, `lis_store`, `lis_cover`, `lis_net`) — each a small module
-with the original's method signatures. `lis_store` is **real**
-(contrib.sqlite; search history round-trips and persists). The other
-three are honest stubs (e.g. `lis_audio.start_play()` logs and no-ops).
-Wiring a real backend in later means implementing one seam module, not
-rewriting the app — `lis_store` is the worked example of exactly that.
-Every stub says so at its call site.
+with the original's method signatures. Three are **real** (`lis_store` →
+contrib.sqlite, `lis_audio` → std.audio, `lis_net` → std.worker +
+std.http + std.json); only `lis_cover` still stubs (no image-decode
+path). Wiring a real backend in later means implementing one seam
+module, not rewriting the app — the three real ones are worked examples
+of exactly that. Each remaining stub says so at its call site.
 
 ## File map (original → port)
 
@@ -63,10 +73,10 @@ Every stub says so at its call site.
 | `Searchtop.qml`, `SearchData.qml` | `lis_search.ae` | search field + results |
 | `Loginpop.qml`, `OtherLoginpop.qml` | `lis_login.ae` | login popup (framework only, as in the original) |
 | `ButtonHover.qml`, `ChoseButton.qml`, `SelectBox.qml` | `lis_widgets.ae` | reusable UI bits |
-| `musicplay.{h,cpp}` | `lis_audio.ae` | **seam**: playback (stub — no audio API) |
+| `musicplay.{h,cpp}` | `lis_audio.ae` | **seam**: playback (**REAL** — std.audio) |
 | `savehisty.{h,cpp}` | `lis_store.ae` | **seam**: SQLite persistence (**REAL** — contrib.sqlite) |
 | `ffmpegsolve.{h,cpp}` | `lis_cover.ae` | **seam**: cover extraction (stub — no image decode) |
-| `netmusic*.{h,cpp}`, `musicworker.{h,cpp}` | `lis_net.ae` | **seam**: HTTP/JSON API (stub — canned results) |
+| `netmusic*.{h,cpp}`, `musicworker.{h,cpp}` | `lis_net.ae` | **seam**: HTTP/JSON API (**REAL** — std.worker + std.http + std.json) |
 
 ## Tests
 

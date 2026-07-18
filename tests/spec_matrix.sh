@@ -43,7 +43,7 @@ SUITES=(
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"
-  "lismusic|apps/LisMusic|LisMusic/spec_lismusic|"
+  "lismusic|apps/LisMusic|LisMusic/spec_lismusic|LIS_OFFLINE=1"
 )
 
 # grand_perspective: one spec per component, each against a FRESH app scanning

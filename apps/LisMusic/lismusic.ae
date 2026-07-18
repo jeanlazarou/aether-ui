@@ -13,10 +13,11 @@
 // bar, in a vstack; the login is a modal overlay.
 
 import ui
-import ui (window, vstack, splitview, weight, scrollview,
+import ui (window, vstack, splitview, weight, scrollview, timer,
     ui_state_s, ui_state_b, ui_state_i, enable_test_server)
 import std.os (os_getenv)
 import std.string
+import std.worker
 
 import lis_config
 import lis_config (Config, mk_config, set_cover)
@@ -58,6 +59,13 @@ main() {
 
             // Bottom: the now-playing player bar (fixed height row).
             build_bottom(c)
+
+            // Worker pump: aether-ui installs no std.worker main-poster, so
+            // off-thread search completions (lis_net.search_async) queue until
+            // drained on the loop thread. A 60ms main-thread tick pumps them —
+            // this is the documented headless/loop path, and it's where the
+            // fetched song list lands back to refresh the results each-list.
+            _pump = timer(60) callback { _ = worker.drain(0) }
         }
 
         if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
