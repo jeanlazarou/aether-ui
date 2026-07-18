@@ -1,0 +1,91 @@
+// Aether UI reactive-binding example — list-typed state + computed state.
+//
+// Two reactivity features beyond the property bindings of bindings_demo:
+//
+//   • each_bind(group, list_state): an each() group tracks a LIST state. Every
+//     ui_set_list re-runs each_update automatically — the write site is one
+//     call, not each_update at every mutation. (The declarative form of the
+//     each_demo's explicit each_update.)
+//   • computed_s(compute, a, b): a string state recomputed by `compute`
+//     whenever input a or b changes. Bind it like any state.
+//
+// The driver spec drives both: pushing a new list refreshes the each group,
+// and changing an input restring the computed label.
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider,
+    each, each_bind, computed_s,
+    ui_state_list, ui_set_list,
+    ui_state_s, ui_set_s, ui_get_s,
+    bind_text, enable_test_server)
+import std.os (os_getenv)
+import std.string
+import std.list
+
+extern malloc(size: int) -> ptr
+
+struct Row { name: string }
+
+mk_row(name: string) -> ptr {
+    r = malloc(16) as *Row
+    r.name = name
+    return r as ptr
+}
+
+// A fresh two-row list (rows are Row structs, cast to ptr like every each item).
+two_rows(a: string, b: string) -> ptr {
+    out = list.new()
+    _ = list.add(out, mk_row(a))
+    _ = list.add(out, mk_row(b))
+    return out
+}
+
+main() {
+    // Initial list: two rows.
+    rows = ui_state_list(two_rows("alpha", "beta"))
+
+    // Computed: full name derived from two string inputs. The recompute
+    // closure writes `full` whenever `first` or `last` changes.
+    first = ui_state_s("Ada")
+    last  = ui_state_s("Lovelace")
+    full  = ui_state_s("")
+    computed_s(|| {
+        _ = ui_set_s(full, string.concat(ui_get_s(first), string.concat(" ", ui_get_s(last))))
+    }, first, last)
+
+    window("reactive bindings demo", 460, 380) {
+        vstack(8) {
+            // Computed label — tracks BOTH inputs, no manual recompute.
+            full_lbl = text("")
+            bind_text(full_lbl, full)
+            divider()
+
+            // each() group bound to the list state — no explicit each_update.
+            list_rows = each("v", 4, |item: ptr, i: int, parent: int| {
+                r = item as *Row
+                _t = text(parent, r.name)
+            })
+            each_bind(list_rows, rows)
+            divider()
+
+            hstack(10) {
+                // Replace the whole list — each_bind re-runs each_update for us.
+                _grow = btn("grow list") callback {
+                    l = list.new()
+                    _ = list.add(l, mk_row("gamma"))
+                    _ = list.add(l, mk_row("delta"))
+                    _ = list.add(l, mk_row("epsilon"))
+                    ui_set_list(rows, l)
+                }
+                _empty = btn("empty list") callback {
+                    ui_set_list(rows, list.new())
+                }
+                // Change a computed input — the full-name label restrings.
+                _rename = btn("rename") callback {
+                    _ = ui_set_s(last, "Byron")
+                }
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

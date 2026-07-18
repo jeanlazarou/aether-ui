@@ -96,12 +96,27 @@ void* aether_ui_get_widget(int handle) {
 // ---------------------------------------------------------------------------
 
 enum { AEUI_STATE_FLOAT = 0, AEUI_STATE_INT = 1,
-       AEUI_STATE_BOOL = 2, AEUI_STATE_STRING = 3 };
+       AEUI_STATE_BOOL = 2, AEUI_STATE_STRING = 3,
+       AEUI_STATE_LIST = 4 };  // opaque list ptr + revision (each_bind)
 typedef struct {
     int type;
     double num;   // float/int/bool payload
     char* str;    // string payload (owned)
+    void* list;   // LIST payload (opaque std.list ptr, NOT owned)
+    int rev;      // LIST: bumps on each set, so the driver sees a change
 } StateCell;
+
+// Generic state observers — a boxed Aether closure fired (no args) whenever a
+// state cell is set. The unifying primitive behind each_bind and computed
+// state: the ui layer registers a closure that re-runs each_update / recompute.
+typedef struct {
+    int state_handle;
+    AeClosure* closure;
+} StateObserver;
+
+static StateObserver* state_observers = NULL;
+static int state_observer_count = 0;
+static int state_observer_capacity = 0;
 
 enum { AEUI_BIND_TEXT = 0, AEUI_BIND_ENABLED = 1, AEUI_BIND_HIDDEN = 2,
        AEUI_BIND_VALUE = 3 };  // two-way: editable widget ⇄ string state
@@ -137,6 +152,8 @@ static int state_create_cell(int type, double num, const char* str) {
     c->type = type;
     c->num = num;
     c->str = str ? strdup(str) : NULL;
+    c->list = NULL;
+    c->rev = 0;
     state_count++;
     return state_count; // 1-based
 }
@@ -236,12 +253,62 @@ static void apply_prop_binding(PropBinding* b) {
     }
 }
 
+static void fire_state_observers(int state_handle) {
+    // Snapshot the count: an observer's closure may register more (e.g. a
+    // computed state that itself has observers) — those fire on their own set.
+    int n = state_observer_count;
+    for (int i = 0; i < n; i++) {
+        if (state_observers[i].state_handle == state_handle) {
+            AeClosure* c = state_observers[i].closure;
+            if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
+        }
+    }
+}
+
 static void update_prop_bindings(int state_handle) {
     for (int i = 0; i < prop_binding_count; i++) {
         if (prop_bindings[i].state_handle == state_handle) {
             apply_prop_binding(&prop_bindings[i]);
         }
     }
+    fire_state_observers(state_handle);
+}
+
+// Register a boxed closure fired whenever `state_handle` is set. Powers
+// each_bind (re-run each_update) and computed state (recompute).
+void aether_ui_state_on_change(int state_handle, void* boxed_closure) {
+    if (state_observer_count >= state_observer_capacity) {
+        state_observer_capacity = state_observer_capacity == 0 ? 16
+                                : state_observer_capacity * 2;
+        state_observers = realloc(state_observers,
+                                  sizeof(StateObserver) * state_observer_capacity);
+    }
+    state_observers[state_observer_count].state_handle = state_handle;
+    state_observers[state_observer_count].closure = (AeClosure*)boxed_closure;
+    state_observer_count++;
+}
+
+// LIST state: an opaque std.list ptr + a revision that bumps on each set.
+int aether_ui_state_create_list(void* list_ptr) {
+    int h = state_create_cell(AEUI_STATE_LIST, 0.0, NULL);
+    StateCell* c = state_cell(h);
+    if (c) { c->list = list_ptr; c->rev = 0; }
+    return h;
+}
+void* aether_ui_state_get_list(int handle) {
+    StateCell* c = state_cell(handle);
+    return (c && c->type == AEUI_STATE_LIST) ? c->list : NULL;
+}
+void aether_ui_state_set_list(int handle, void* list_ptr) {
+    StateCell* c = state_cell(handle);
+    if (!c || c->type != AEUI_STATE_LIST) return;
+    c->list = list_ptr;
+    c->rev++;
+    update_prop_bindings(handle);   // fires observers → each_bind re-runs
+}
+int aether_ui_state_list_rev(int handle) {
+    StateCell* c = state_cell(handle);
+    return (c && c->type == AEUI_STATE_LIST) ? c->rev : 0;
 }
 
 void aether_ui_state_set(int handle, double value) {
@@ -4793,6 +4860,11 @@ static void handle_test_request(int client_fd) {
             snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"string\",\"value\":\"%s\"}",
                      id, sv);
             free((void*)sv);
+        } else if (st == 4) {
+            // LIST: the ptr is opaque; expose the revision so a spec can see
+            // that a list-state changed (and thus each_bind re-ran).
+            snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"list\",\"rev\":%d}",
+                     id, aether_ui_state_list_rev(id));
         } else {
             snprintf(buf, sizeof(buf), "{\"id\":%d,\"value\":%.6f}",
                      id, aether_ui_state_get(id));

@@ -41,6 +41,7 @@ SUITES=(
   "bindings|examples/bindings_demo|bindings_demo/spec_bindings_demo|"
   "tabs|examples/tabs_demo|tabs_demo/spec_tabs_demo|"
   "menu|examples/menu|menu/spec_menu|"
+  "rbind|examples/rbind_demo|rbind_demo/spec_rbind_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"

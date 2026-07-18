@@ -60,7 +60,7 @@ fi
 # -------------------------------------------------------------------------
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -502,6 +502,15 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=menu/spec_menu \
     run_server_test "$(EX_BIN menu)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" menu || FAIL=$((FAIL + 1))
+fi
+
+echo "=== Phase 5k3: AetherUIDriver reactive-bindings spec (each_bind + computed) ==="
+# rbind: list-typed state drives each_update via each_bind; computed_s recomputes
+# a derived state when an input changes. Backend-agnostic (state layer).
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    UI_SPEC=rbind_demo/spec_rbind_demo \
+    run_server_test "$(EX_BIN rbind_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" rbind_demo || FAIL=$((FAIL + 1))
 fi
 
 echo "=== Phase 5l: AetherUIDriver game specs (falling_blocks / svg_tetris / rubiks_cube) ==="

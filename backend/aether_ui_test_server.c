@@ -750,6 +750,9 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
                 snprintf(body, sizeof(body), "{\"id\":%d,\"type\":\"string\",\"value\":\"%s\"}",
                          id, sv);
                 free((void*)sv);
+            } else if (st == 4) {
+                snprintf(body, sizeof(body), "{\"id\":%d,\"type\":\"list\",\"rev\":%d}",
+                         id, aether_ui_state_list_rev(id));
             } else {
                 snprintf(body, sizeof(body), "{\"id\":%d,\"value\":%.6f}",
                          id, aether_ui_state_get(id));

@@ -180,12 +180,15 @@ term in one result row — cosmetic, doesn't affect the spec.
   chrome fade-ins exist; per-entry slide/fade doesn't).
 - **Layout:** weight-share min-clamping (weighted children can be
   squeezed below their minimum), RTL.
-- **Bindings:** list-typed state (`each_bind`/`table_bind` — an update
-  to a list state drives today's explicit `each_update`/`table_update`
-  internally), ~~two-way binding (textfield ⇄ string state)~~ **DONE
-  2026-07-18** (`bind_value` / `textfield_bound`, 7/7 on GTK4 + win32),
-  computed/derived state. Design notes in
-  docs/design/reactivity-unification.md §5.
+- **Bindings:** ~~list-typed state (`each_bind`)~~ **DONE 2026-07-18**
+  (`ui_state_list` + `each_bind`; a `ui_set_list` re-runs `each_update`
+  via a generic state-observer primitive), ~~two-way binding~~ **DONE**
+  (`bind_value`/`textfield_bound`), ~~computed/derived state~~ **DONE**
+  (`computed_s` — a void recompute closure fired on input change, seeds
+  once). All three via the new `aether_ui_state_on_change` observer +
+  `AEUI_STATE_LIST` cell, in all three backends; 5/5 (rbind) + 7/7
+  (bindings) on GTK4. `table_bind` still open (needs the same over
+  table_update). Design notes in docs/design/reactivity-unification.md §5.
 - **Focus/shortcuts:** per-widget/conditional shortcut scopes, chorded
   shortcuts, auto menu↔shortcut binding (accel display exists; wiring
   is two lines by hand today).

@@ -364,7 +364,19 @@ int aether_ui_state_get_b(int handle);
 void aether_ui_state_set_s(int handle, const char* value);
 void aether_ui_state_set_i(int handle, int value);
 void aether_ui_state_set_b(int handle, int value);
-int aether_ui_state_type(int handle);
+int aether_ui_state_type(int handle);   // …4=list
+// LIST cells: an opaque std.list ptr + a revision that bumps on each set (so
+// a driver can observe that the list changed). Powers each_bind.
+int   aether_ui_state_create_list(void* list_ptr);
+void* aether_ui_state_get_list(int handle);
+void  aether_ui_state_set_list(int handle, void* list_ptr);
+int   aether_ui_state_list_rev(int handle);
+// Generic state observer: a boxed closure fired (no args) on every set of
+// state_handle. The unifying primitive behind each_bind (re-run each_update)
+// and computed state (recompute + re-set the derived cell).
+void  aether_ui_state_on_change(int state_handle, void* boxed_closure);
+// Two-way value binding: editable widget ⇄ string state (bind_value).
+void  aether_ui_bind_value(int state_handle, int widget_handle);
 // Property bindings: state → widget property links, applied on set.
 // decimals: float text formatting, -1 = smart. invert: negate the
 // truthiness before applying (enabled/hidden).
