@@ -4,7 +4,7 @@
 import ui
 import ui (window, vstack, text, btn,
     window_create, window_set_body, window_show, window_close,
-    root_vstack, ui_state_i, ui_get_i, ui_set_i, text_bound,
+    root_vstack, ui_state_i, ui_get_i, ui_set_i, text_bound, toast,
     enable_test_server_root)
 import std.os (os_getenv)
 import std.string
@@ -26,6 +26,11 @@ main() {
             win2 = window_create("Window 2", 260, 200)
             window_set_body(win2, w2root)
             window_show(win2)
+        }
+        // A toast opened on window 2 must land IN window 2, not the primary
+        // (multi-window §3: overlays honour the target window).
+        _toast = btn("toast in w2") callback {
+            if win2 > 0 { _ = toast(win2, "w2 toast", 5000) }
         }
         _close = btn("close window 2") callback {
             if win2 > 0 { window_close(win2) }

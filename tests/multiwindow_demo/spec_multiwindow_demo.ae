@@ -59,6 +59,16 @@ main() {
             aeocha.assert_eq(n, 2, "the shared count shows in both windows")
         }
 
+        aeocha.it("an overlay opened on window 2 lands in window 2") callback {
+            t = uidriver.widget_id_by_text("toast in w2")
+            uidriver.post_ok("/widget/${t}/click", "toast in window 2")
+            ok = uidriver.wait_body_contains("/widgets", "\"text\":\"w2 toast\"", 20)
+            aeocha.assert_true(ok, "the toast rendered")
+            tid = uidriver.widget_id_by_text("w2 toast")
+            w = uidriver.widget_int_field_by_id(tid, "window")
+            aeocha.assert_eq(w, 2, "the toast is in window 2, not the primary")
+        }
+
         aeocha.it("closing the second window leaves the first live") callback {
             uidriver.post_ok("/window/2/close", "close window 2")
             ok = uidriver.wait_body_contains("/windows", "\"id\":2,\"title\":\"Window 2\",\"live\":false", 20)
