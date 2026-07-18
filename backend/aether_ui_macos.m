@@ -14,6 +14,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <CoreText/CoreText.h>     // text metrics (CTLine typographic bounds)
 #import <ImageIO/ImageIO.h>       // headless canvas_write_png
+#import <objc/runtime.h>          // objc_setAssociatedObject (dbl-click fire)
 #include "aether_ui_backend.h"  // cross-platform backend ABI
 #include "aether_ui_system_extras.h"
 #include <stdint.h>
@@ -739,6 +740,42 @@ int aether_ui_text_create(const char* text) {
     [label setSelectable:NO];
     [label setBackgroundColor:[NSColor clearColor]];
     return register_widget_typed((__bridge void*)label, AUI_TEXT);
+}
+
+int aether_ui_text_wrapped_create(const char* text, int wrap_width_px) {
+    NSTextField* label = [NSTextField wrappingLabelWithString:
+        [NSString stringWithUTF8String:text ? text : ""]];
+    [label setEditable:NO];
+    [label setSelectable:NO];
+    [label setBackgroundColor:[NSColor clearColor]];
+    if (wrap_width_px > 0) {
+        [label setPreferredMaxLayoutWidth:(CGFloat)wrap_width_px];
+        [[label widthAnchor] constraintEqualToConstant:(CGFloat)wrap_width_px].active = YES;
+    }
+    int handle = register_widget_typed((__bridge void*)label, AUI_TEXT);
+    label.tag = 0x57524150;  // 'WRAP' marker so get_wrap can report it
+    return handle;
+}
+
+void aether_ui_text_set_anchor(int handle, int anchor) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSTextField class]]) return;
+    NSTextAlignment a = anchor == 1 ? NSTextAlignmentCenter
+                      : anchor == 2 ? NSTextAlignmentRight
+                                    : NSTextAlignmentLeft;
+    [(NSTextField*)v setAlignment:a];
+}
+
+int aether_ui_text_get_wrap(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSTextField class]]) return 0;
+    return ((NSTextField*)v).tag == 0x57524150 ? 1 : 0;
+}
+int aether_ui_text_get_anchor(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v || ![v isKindOfClass:[NSTextField class]]) return 0;
+    NSTextAlignment a = [(NSTextField*)v alignment];
+    return a == NSTextAlignmentCenter ? 1 : a == NSTextAlignmentRight ? 2 : 0;
 }
 
 void aether_ui_text_set_string(int handle, const char* text) {
@@ -3665,6 +3702,20 @@ void aether_ui_on_double_click_impl(int handle, void* boxed_closure) {
     rec.numberOfClicksRequired = 2;
     [v addGestureRecognizer:rec];
     retain_target(rec);
+    // Stash the closure for the driver's headless fire path.
+    objc_setAssociatedObject(v, "aeui_dblclick",
+        [NSValue valueWithPointer:boxed_closure], OBJC_ASSOCIATION_RETAIN);
+}
+
+int aether_ui_fire_double_click(int handle) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return 0;
+    NSValue* nv = objc_getAssociatedObject(v, "aeui_dblclick");
+    if (!nv) return 0;
+    AeClosure* c = (AeClosure*)[nv pointerValue];
+    if (!c || !c->fn) return 0;
+    ((void(*)(void*))c->fn)(c->env);
+    return 1;
 }
 
 void aether_ui_animate_opacity_impl(int handle, double target, int duration_ms) {

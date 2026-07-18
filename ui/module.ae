@@ -21,7 +21,7 @@ exports (
     splitview, split_position, split_set_position, on_layout, weight, wrap,
     tabs, tab, on_tab_change, tab_select, tab_selected,
     nav_push, nav_pop,
-    text, button, btn, spacer, divider,
+    text, text_wrapped, text_anchor, button, btn, spacer, divider,
     textfield, textfield_bound, securefield, toggle, toggle_group, slider, picker, picker_add,
     textarea, progressbar,
     ui_state, ui_get, ui_set, text_bound,
@@ -47,7 +47,8 @@ exports (
     transition,
     vg_tooltip_show, vg_tooltip_hide, vg_tooltip_drawn,
     each, each_update, each_count, each_parent,
-    listbox, listbox_update, listbox_select, listbox_selected, listbox_count,
+    listbox, listbox_multi, listbox_update, listbox_select, listbox_selected,
+    listbox_is_selected, listbox_count, on_row_double_click,
     on_select, add_css_class, remove_css_class,
     table_cols, table_col, table, table_update, table_select, table_selected,
     table_count, table_on_select, on_sort,
@@ -99,6 +100,8 @@ extern aether_ui_canvas_on_key_impl(canvas_id: int, boxed_closure: ptr)
 extern aether_ui_canvas_on_release_impl(canvas_id: int, boxed_closure: ptr)
 
 extern aether_ui_text_create(label: string) -> int
+extern aether_ui_text_wrapped_create(label: string, wrap_px: int) -> int
+extern aether_ui_text_set_anchor(handle: int, anchor: int)
 extern aether_ui_text_set_string(handle: int, text: string)
 extern aether_ui_button_create(label: string, boxed_closure: ptr) -> int
 extern aether_ui_button_create_plain(label: string) -> int
@@ -712,6 +715,26 @@ text(_ctx: ptr, label: string) {
         aether_ui_widget_add_child_ctx(_ctx, handle)
     }
     return handle
+}
+
+// text_wrapped(label, wrap_px): a multi-line label that wraps at wrap_px.
+text_wrapped(_ctx: ptr, label: string, wrap_px: int) {
+    handle = aether_ui_text_wrapped_create(label, wrap_px)
+    if _ctx != 0 {
+        aether_ui_widget_add_child_ctx(_ctx, handle)
+    }
+    return handle
+}
+
+// text_anchor(label_handle, anchor): "start" | "middle" | "end". Sets the
+// horizontal alignment of a text/label widget.
+text_anchor(handle: int, anchor: string) {
+    a = 0
+    if string.equals(anchor, "middle") == 1 { a = 1 }
+    if string.equals(anchor, "center") == 1 { a = 1 }
+    if string.equals(anchor, "end") == 1    { a = 2 }
+    if string.equals(anchor, "right") == 1  { a = 2 }
+    aether_ui_text_set_anchor(handle, a)
 }
 
 // button with immediate block — use for styling + onclick:
@@ -1456,9 +1479,12 @@ each_parent(ep: ptr) -> int {
 struct ListBox {
     group: ptr,        // the underlying each
     rows: ptr,         // intarr of row handles for the CURRENT render, or null
-    selected: int,     // selected row index, -1 = none
+    selected: int,     // single-select: selected row index, -1 = none
     on_sel: ptr,       // boxed |i: int| callback, or null
-    user_render: ptr   // boxed |item, i, row| row template
+    user_render: ptr,  // boxed |item, i, row| row template
+    multi: int,        // 0 = single-select, 1 = multi-select (toggle rows)
+    sel_flags: ptr,    // multi: intarr of 0/1 per row, or null
+    on_dbl: ptr        // boxed |i: int| row double-click callback, or null
 }
 
 _listbox_invoke_render(cb: fn, item: ptr, i: int, row: int) {
@@ -1471,6 +1497,21 @@ _listbox_invoke_sel(cb: fn, i: int) {
 
 _listbox_apply_selection(lb: *ListBox, i: int) {
     if lb.rows == null { return }
+    if lb.multi == 1 {
+        // Toggle row i's membership; class follows the flag.
+        if lb.sel_flags == null { return }
+        cur = intarr_get_raw(lb.sel_flags, i)
+        newv = 1
+        if cur == 1 { newv = 0 }
+        intarr_set_raw(lb.sel_flags, i, newv)
+        rowh = intarr_get_raw(lb.rows, i)
+        if rowh > 0 {
+            if newv == 1 { aether_ui_widget_add_css_class_impl(rowh, "aui-row-selected") }
+            else { aether_ui_widget_remove_css_class_impl(rowh, "aui-row-selected") }
+        }
+        lb.selected = i   // last-touched, for single-select callers
+        return
+    }
     if lb.selected >= 0 {
         oldh = intarr_get_raw(lb.rows, lb.selected)
         if oldh > 0 { aether_ui_widget_remove_css_class_impl(oldh, "aui-row-selected") }
@@ -1493,11 +1534,25 @@ _listbox_row_clicked(lbp: ptr, i: int) {
 
 // listbox(spacing, render) -> listbox-handle. render = |item, i, row|.
 listbox(_ctx: ptr, spacing: int, render: fn) -> ptr {
-    lb = malloc(40) as *ListBox
+    return _listbox_make(_ctx, spacing, render, 0)
+}
+
+// listbox_multi(spacing, render): like listbox but clicking rows TOGGLES their
+// selection — any number of rows can be selected at once. listbox_is_selected
+// reads a row's state; on_select fires with the toggled row's index.
+listbox_multi(_ctx: ptr, spacing: int, render: fn) -> ptr {
+    return _listbox_make(_ctx, spacing, render, 1)
+}
+
+_listbox_make(_ctx: ptr, spacing: int, render: fn, multi: int) -> ptr {
+    lb = malloc(64) as *ListBox
     lb.rows = null
     lb.selected = 0 - 1
     lb.on_sel = null
     lb.user_render = box_closure(render)
+    lb.multi = multi
+    lb.sel_flags = null
+    lb.on_dbl = null
     lbp = lb as ptr
     lb.group = each(_ctx, "v", spacing) callback |item: ptr, i: int, parent: int| {
         row = hstack(parent, 8)
@@ -1505,8 +1560,24 @@ listbox(_ctx: ptr, spacing: int, render: fn) -> ptr {
         ur = unbox_closure(lb.user_render)
         _listbox_invoke_render(ur, item, i, row)
         _oc = on_click(row) callback { _listbox_row_clicked(lbp, i) }
+        _od = on_double_click(row) callback { _listbox_row_double(lbp, i) }
     }
     return lbp
+}
+
+_listbox_row_double(lbp: ptr, i: int) {
+    lb = lbp as *ListBox
+    if lb.on_dbl != null {
+        cb = unbox_closure(lb.on_dbl)
+        _listbox_invoke_sel(cb, i)
+    }
+}
+
+// on_row_double_click(lb) callback |i: int| — fires when a row is double-
+// clicked (native gesture, or the driver's /widget/{row}/double_click).
+on_row_double_click(lbp: ptr, cb: fn) {
+    lb = lbp as *ListBox
+    lb.on_dbl = box_closure(cb)
 }
 
 // listbox_update(lb, items) — re-render the rows; selection resets.
@@ -1518,7 +1589,20 @@ listbox_update(lbp: ptr, items: ptr) {
     if sz < 1 { sz = 1 }
     lb.rows = intarr_new_raw(sz)
     lb.selected = 0 - 1
+    if lb.multi == 1 {
+        if lb.sel_flags != null { intarr_free(lb.sel_flags) }
+        lb.sel_flags = intarr_new_raw(sz)   // all 0 = nothing selected
+    }
     each_update(lb.group, items)
+}
+
+// Multi-select: is row i currently selected? (0/1). Single-select listboxes
+// answer via listbox_selected.
+listbox_is_selected(lbp: ptr, i: int) -> int {
+    lb = lbp as *ListBox
+    if lb.multi != 1 { return 0 }
+    if lb.sel_flags == null { return 0 }
+    return intarr_get_raw(lb.sel_flags, i)
 }
 
 // Programmatic selection (same path as a row click, incl. the callback).

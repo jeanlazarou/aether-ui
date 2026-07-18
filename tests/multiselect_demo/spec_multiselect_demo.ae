@@ -1,0 +1,49 @@
+// spec_multiselect_demo.ae — multi-select listbox.
+// Clicking rows TOGGLES their selection; several rows can be selected at
+// once. The driver reads each row's "classes" (.aui-row-selected) to count
+// the selected set as it toggles.
+import aeocha
+import uidriver
+import std.string
+
+// How many rows currently carry the selection class.
+selected_count() -> int {
+    b = uidriver.get_body("/widgets")
+    n = 0
+    rest = b
+    while string.contains(rest, "aui-row-selected") == 1 {
+        n = n + 1
+        idx = string.string_index_of(rest, "aui-row-selected")
+        rest = string.string_substring(rest, idx + 16, string.length(rest))
+    }
+    return n
+}
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    aeocha.describe(fw, "multi-select listbox over AetherUIDriver") {
+        aeocha.it("nothing selected initially") callback {
+            aeocha.assert_eq(selected_count(), 0, "no rows selected at start")
+        }
+
+        aeocha.it("toggling two rows selects both at once") callback {
+            t0 = uidriver.widget_id_by_text("toggle 0")
+            t2 = uidriver.widget_id_by_text("toggle 2")
+            uidriver.post_ok("/widget/${t0}/click", "toggle row 0 on")
+            uidriver.post_ok("/widget/${t2}/click", "toggle row 2 on")
+            ok = uidriver.wait_body_contains("/widgets", "aui-row-selected", 20)
+            aeocha.assert_true(ok, "a row is selected")
+            aeocha.assert_eq(selected_count(), 2, "both rows selected simultaneously")
+        }
+
+        aeocha.it("toggling a selected row deselects just that one") callback {
+            t0 = uidriver.widget_id_by_text("toggle 0")
+            uidriver.post_ok("/widget/${t0}/click", "toggle row 0 off")
+            // Row 2 stays selected; only row 0 cleared.
+            aeocha.assert_eq(selected_count(), 1, "one row remains selected")
+        }
+    }
+    aeocha.run_summary(fw)
+}

@@ -1,0 +1,25 @@
+// Aether UI typography example — wrapping labels + text anchor.
+import ui
+import ui (window, vstack, text, text_wrapped, text_anchor, divider,
+    enable_test_server)
+import std.os (os_getenv)
+
+main() {
+    window("typography", 360, 320) {
+        vstack(8) {
+            // A long paragraph that wraps at 300px into multiple lines.
+            _p = text_wrapped(
+                "This is a long paragraph that should wrap across several lines because it is far wider than the label's wrap width of three hundred pixels.",
+                300)
+            divider()
+            // Three short labels, each anchored differently.
+            l1 = text("left label")
+            text_anchor(l1, "start")
+            l2 = text("centered label")
+            text_anchor(l2, "middle")
+            l3 = text("right label")
+            text_anchor(l3, "end")
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

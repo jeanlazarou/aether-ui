@@ -282,7 +282,13 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
         }
     }
 
-    if (strcmp(type, "toggle") == 0) {
+    if (strcmp(type, "text") == 0) {
+        static const char* an[] = {"start", "middle", "end"};
+        int a = aether_ui_text_get_anchor(handle);
+        if (a < 0 || a > 2) a = 0;
+        n += snprintf(buf + n, bufsize - n, ",\"wrap\":%s,\"anchor\":\"%s\"",
+                      aether_ui_text_get_wrap(handle) ? "true" : "false", an[a]);
+    } else if (strcmp(type, "toggle") == 0) {
         n += snprintf(buf + n, bufsize - n, ",\"active\":%s",
                       h->toggle_active(handle) ? "true" : "false");
     } else if (strcmp(type, "slider") == 0) {
@@ -457,6 +463,16 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
     // strstr(verb) alone. Without the anchor, "/canvas/1/click" matches the
     // "/click" arm, gets read as widget id 0, and answers 404 "widget not
     // found" — a canvas click that looks like a missing widget.
+    } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/double_click")) {
+        // Fire the widget's double-click closure directly (a plain ABI call,
+        // like tabs_select) — headless-safe, no synthetic gesture. Must precede
+        // the /click arm, whose strstr would also match "/double_click".
+        int id = extract_id_from_path(path, "/widget/");
+        int fired = aether_ui_fire_double_click(id);
+        char body[64];
+        snprintf(body, sizeof(body), "{\"fired\":%s}", fired ? "true" : "false");
+        send_http(client_fd, 200, "OK", "application/json", body);
     } else if (method == 1 && strncmp(path, "/widget/", 8) == 0
                && strstr(path, "/click")) {
         AetherDriverActionCtx ctx = {0};

@@ -54,6 +54,14 @@ void aether_ui_surface_flush_deferred_impl(void);
 
 // Widget creation
 int aether_ui_text_create(const char* text);
+// Multi-line wrapping label (wraps at wrap_width_px, word boundaries) + text
+// anchor (0=start 1=middle 2=end). Driver reads back wrap/anchor for specs.
+int aether_ui_text_wrapped_create(const char* text, int wrap_width_px);
+void aether_ui_text_set_anchor(int handle, int anchor);
+int aether_ui_text_get_wrap(int handle);
+int aether_ui_text_get_anchor(int handle);
+// Driver-invoke a widget's double-click closure (headless-safe). 1 if fired.
+int aether_ui_fire_double_click(int handle);
 int aether_ui_button_create(const char* label, void* boxed_closure);
 int aether_ui_button_create_plain(const char* label);
 void aether_ui_set_onclick_ctx(void* ctx, void* boxed_closure);

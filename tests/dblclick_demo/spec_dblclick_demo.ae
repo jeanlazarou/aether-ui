@@ -1,0 +1,52 @@
+// spec_dblclick_demo.ae — listbox row double-click.
+// on_row_double_click fires when a row is double-clicked; the driver fires it
+// headlessly with POST /widget/{row}/double_click (no synthetic gesture).
+import aeocha
+import uidriver
+import std.string
+import std.json
+
+// The row (hstack) handle that contains the label `label`.
+row_of(label: string) -> int {
+    body = uidriver.get_body("/widgets")
+    v, _e = json.parse(body)
+    if v == null { return 0 }
+    r = 0
+    n = json.json_array_size(v)
+    i = 0
+    while i < n {
+        w = json.json_array_get_raw(v, i)
+        t = json.json_get_string_raw(json.json_object_get_raw(w, "text"))
+        if t != null { if string.equals(t, label) == 1 {
+            r = uidriver.field_int(w, "parent")
+        } }
+        i = i + 1
+    }
+    json.json_free(v)
+    return r
+}
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    aeocha.describe(fw, "row double-click over AetherUIDriver") {
+        aeocha.it("double-clicking a row fires on_row_double_click") callback {
+            aeocha.assert_contains(uidriver.get_body("/widgets"),
+                "\"text\":\"dbl: none\"", "status starts at none")
+            row = row_of("item 2")   // index 1
+            aeocha.assert_gt(row, 0, "found the row for item 2")
+            uidriver.post_ok("/widget/${row}/double_click", "double-click row 1")
+            ok = uidriver.wait_body_contains("/widgets", "\"text\":\"dbl: 1\"", 20)
+            aeocha.assert_true(ok, "the double-click callback ran with index 1")
+        }
+
+        aeocha.it("a different row reports its own index") callback {
+            row = row_of("item 3")   // index 2
+            uidriver.post_ok("/widget/${row}/double_click", "double-click row 2")
+            ok = uidriver.wait_body_contains("/widgets", "\"text\":\"dbl: 2\"", 20)
+            aeocha.assert_true(ok, "double-click reported index 2")
+        }
+    }
+    aeocha.run_summary(fw)
+}

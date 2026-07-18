@@ -1,0 +1,43 @@
+// Aether UI row double-click — listbox rows fire on_row_double_click. The
+// driver fires it headlessly via POST /widget/{row}/double_click.
+import ui
+import ui (window, vstack, text, listbox, listbox_update,
+    on_row_double_click, enable_test_server)
+import std.os (os_getenv)
+import std.string
+import std.list
+
+extern aether_ui_text_set_string(handle: int, text: string)
+extern malloc(size: int) -> ptr
+
+struct Item { name: string }
+mk_item(n: int) -> ptr {
+    it = malloc(16) as *Item
+    it.name = string.concat("item ", string.from_int(n))
+    return it as ptr
+}
+
+main() {
+    items = list.new()
+    k = 1
+    while k <= 3 {
+        _ = list.add(items, mk_item(k))
+        k = k + 1
+    }
+
+    window("double-click demo", 360, 300) {
+        vstack(8) {
+            status = text("dbl: none")
+            rows = listbox(2) callback |item: ptr, i: int, row: int| {
+                it = item as *Item
+                _t = text(row, it.name)
+            }
+            on_row_double_click(rows) callback |i: int| {
+                aether_ui_text_set_string(status,
+                    string.concat("dbl: ", string.from_int(i)))
+            }
+            listbox_update(rows, items)
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

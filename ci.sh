@@ -60,7 +60,7 @@ fi
 # -------------------------------------------------------------------------
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -511,6 +511,19 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=rbind_demo/spec_rbind_demo \
     run_server_test "$(EX_BIN rbind_demo)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" rbind_demo || FAIL=$((FAIL + 1))
+fi
+
+echo "=== Phase 5k4: AetherUIDriver typography / multi-select / double-click specs ==="
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    UI_SPEC=typo_demo/spec_typo_demo \
+    run_server_test "$(EX_BIN typo_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" typo_demo || FAIL=$((FAIL + 1))
+    UI_SPEC=multiselect_demo/spec_multiselect_demo \
+    run_server_test "$(EX_BIN multiselect_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" multiselect_demo || FAIL=$((FAIL + 1))
+    UI_SPEC=dblclick_demo/spec_dblclick_demo \
+    run_server_test "$(EX_BIN dblclick_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" dblclick_demo || FAIL=$((FAIL + 1))
 fi
 
 echo "=== Phase 5l: AetherUIDriver game specs (falling_blocks / svg_tetris / rubiks_cube) ==="

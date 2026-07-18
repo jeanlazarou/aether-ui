@@ -1,0 +1,51 @@
+// Aether UI multi-select listbox — clicking rows toggles selection; any number
+// of rows can be selected at once (.aui-row-selected on each). The driver reads
+// each row's "classes" to assert the selected set.
+import ui
+import ui (window, vstack, hstack, text, btn, divider,
+    listbox_multi, listbox_update, listbox_select, listbox_is_selected,
+    listbox_count, enable_test_server)
+import std.os (os_getenv)
+import std.string
+import std.list
+
+extern aether_ui_text_set_string(handle: int, text: string)
+extern malloc(size: int) -> ptr
+
+struct Item { name: string }
+
+mk_item(n: int) -> ptr {
+    it = malloc(16) as *Item
+    it.name = string.concat("item ", string.from_int(n))
+    return it as ptr
+}
+
+main() {
+    items = list.new()
+    k = 1
+    while k <= 4 {
+        _ = list.add(items, mk_item(k))
+        k = k + 1
+    }
+
+    window("multi-select demo", 400, 360) {
+        vstack(8) {
+            status = text("toggled: none")
+            divider()
+            rows = listbox_multi(2) callback |item: ptr, i: int, row: int| {
+                it = item as *Item
+                _t = text(row, it.name)
+            }
+            listbox_update(rows, items)   // seed the four rows
+            divider()
+            hstack(10) {
+                // Programmatic toggles so a spec can drive without geometry.
+                _t0 = btn("toggle 0") callback { listbox_select(rows, 0) }
+                _t2 = btn("toggle 2") callback { listbox_select(rows, 2) }
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null {
+            enable_test_server(9222)
+        }
+    }
+}

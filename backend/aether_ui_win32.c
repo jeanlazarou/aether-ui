@@ -208,6 +208,8 @@ typedef struct {
     AeClosure* on_double_click;
     AeClosure* on_change; // text/value change for input widgets
     int bound_state;      // two-way bind_value target (0 = none)
+    int text_wrap;        // WK_TEXT: multi-line wrapping label
+    int text_anchor;      // WK_TEXT: 0=start 1=middle 2=end
 
     // Per-widget data (union over kind)
     union {
@@ -1450,6 +1452,44 @@ int aether_ui_text_create(const char* text) {
     return register_widget_typed(h, WK_TEXT);
 }
 
+// Wrapping label: a STATIC with default (word-wrapping) style, given a fixed
+// width so it wraps in height. SS_LEFT already wraps multiline text to width.
+int aether_ui_text_wrapped_create(const char* text, int wrap_width_px) {
+    ensure_win_init();
+    HWND h = CreateWindowExW(0, L"STATIC", utf8_to_wide(text),
+        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
+        0, 0, 0, 0, widget_holder, NULL, GetModuleHandleW(NULL), NULL);
+    if (!h) return 0;
+    SendMessageW(h, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    int handle = register_widget_typed(h, WK_TEXT);
+    Widget* w = widget_at(handle);
+    if (w) {
+        w->text_wrap = 1;
+        if (wrap_width_px > 0) w->pref_width = wrap_width_px;
+    }
+    return handle;
+}
+
+void aether_ui_text_set_anchor(int handle, int anchor) {
+    Widget* w = widget_at(handle);
+    if (!w || w->kind != WK_TEXT || !w->hwnd) return;
+    w->text_anchor = anchor;
+    LONG_PTR st = GetWindowLongPtrW(w->hwnd, GWL_STYLE);
+    st &= ~(SS_LEFT | SS_CENTER | SS_RIGHT);
+    st |= anchor == 1 ? SS_CENTER : anchor == 2 ? SS_RIGHT : SS_LEFT;
+    SetWindowLongPtrW(w->hwnd, GWL_STYLE, st);
+    InvalidateRect(w->hwnd, NULL, TRUE);
+}
+
+int aether_ui_text_get_wrap(int handle) {
+    Widget* w = widget_at(handle);
+    return (w && w->kind == WK_TEXT) ? w->text_wrap : 0;
+}
+int aether_ui_text_get_anchor(int handle) {
+    Widget* w = widget_at(handle);
+    return (w && w->kind == WK_TEXT) ? w->text_anchor : 0;
+}
+
 void aether_ui_text_set_string(int handle, const char* text) {
     Widget* w = widget_at(handle);
     if (w && w->hwnd) SetWindowTextW(w->hwnd, utf8_to_wide(text));
@@ -2303,6 +2343,13 @@ void aether_ui_on_hover_impl(int handle, void* boxed_closure) {
 void aether_ui_on_double_click_impl(int handle, void* boxed_closure) {
     Widget* w = widget_at(handle);
     if (w) w->on_double_click = (AeClosure*)boxed_closure;
+}
+
+int aether_ui_fire_double_click(int handle) {
+    Widget* w = widget_at(handle);
+    if (!w || !w->on_double_click || !w->on_double_click->fn) return 0;
+    invoke_closure(w->on_double_click);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------

@@ -601,6 +601,41 @@ int aether_ui_text_create(const char* text) {
     return aether_ui_register_widget(label);
 }
 
+// A multi-line label that wraps at `wrap_width_px` (word boundaries).
+int aether_ui_text_wrapped_create(const char* text, int wrap_width_px) {
+    ensure_gtk_init();
+    GtkWidget* label = gtk_label_new(text ? text : "");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    if (wrap_width_px > 0) {
+        // Request the wrap width; the label grows in height to fit.
+        gtk_widget_set_size_request(label, wrap_width_px, -1);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), -1);
+    }
+    return aether_ui_register_widget(label);
+}
+
+// Text anchor: 0=start(left) 1=middle(center) 2=end(right). Sets label xalign.
+void aether_ui_text_set_anchor(int handle, int anchor) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !GTK_IS_LABEL(w)) return;
+    float x = anchor == 1 ? 0.5f : anchor == 2 ? 1.0f : 0.0f;
+    gtk_label_set_xalign(GTK_LABEL(w), x);
+}
+
+// Driver introspection for text widgets.
+int aether_ui_text_get_wrap(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    return (w && GTK_IS_LABEL(w) && gtk_label_get_wrap(GTK_LABEL(w))) ? 1 : 0;
+}
+int aether_ui_text_get_anchor(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !GTK_IS_LABEL(w)) return 0;
+    float x = gtk_label_get_xalign(GTK_LABEL(w));
+    return x > 0.75f ? 2 : x > 0.25f ? 1 : 0;
+}
+
 void aether_ui_text_set_string(int handle, const char* text) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (w && GTK_IS_LABEL(w)) {
@@ -3820,6 +3855,19 @@ void aether_ui_on_double_click_impl(int handle, void* boxed_closure) {
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 1);
     g_signal_connect(gesture, "pressed", G_CALLBACK(on_double_click), boxed_closure);
     gtk_widget_add_controller(w, GTK_EVENT_CONTROLLER(gesture));
+    // Stash the closure so the driver can fire it headlessly (no real gesture).
+    g_object_set_data(G_OBJECT(w), "aeui-dblclick", boxed_closure);
+}
+
+// Driver hook: invoke a widget's double-click closure directly. Returns 1 if
+// one was registered and fired, 0 otherwise.
+int aether_ui_fire_double_click(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return 0;
+    AeClosure* c = (AeClosure*)g_object_get_data(G_OBJECT(w), "aeui-dblclick");
+    if (!c || !c->fn) return 0;
+    ((void(*)(void*))c->fn)(c->env);
+    return 1;
 }
 
 // Click handler (single click on any widget, not just buttons)
@@ -4246,6 +4294,11 @@ static int widget_to_json(int handle, char* buf, int bufsize) {
                       ",\"tabSelected\":%d,\"tabCount\":%d",
                       aether_ui_tabs_selected(handle),
                       aether_ui_tabs_count(handle));
+    } else if (GTK_IS_LABEL(w)) {
+        static const char* an[] = {"start", "middle", "end"};
+        n += snprintf(buf + n, bufsize - n, ",\"wrap\":%s,\"anchor\":\"%s\"",
+                      aether_ui_text_get_wrap(handle) ? "true" : "false",
+                      an[aether_ui_text_get_anchor(handle)]);
     }
 
     // CSS classes set via ui.add_css_class — specs assert selection visuals
@@ -4402,6 +4455,9 @@ static gboolean test_action_idle(gpointer data) {
         case 10: // tab_select — activate tab[ival], report the resulting index
             aether_ui_tabs_select(ta->handle, ta->ival);
             ta->retval = aether_ui_tabs_selected(ta->handle);
+            break;
+        case 11: // double_click — fire the widget's dbl-click closure
+            ta->retval = aether_ui_fire_double_click(ta->handle);
             break;
     }
     ta->result = 0;
@@ -5101,7 +5157,9 @@ static void handle_test_request(int client_fd) {
         char* action_part = strchr(path + 8, '/');
         if (action_part) {
             ta.handle = atoi(path + 8);
-            if (strncmp(action_part, "/click", 6) == 0) {
+            if (strncmp(action_part, "/double_click", 13) == 0) {
+                ta.action = 11;
+            } else if (strncmp(action_part, "/click", 6) == 0) {
                 ta.action = 0;
             } else if (strncmp(action_part, "/set_text", 9) == 0) {
                 ta.action = 1;
