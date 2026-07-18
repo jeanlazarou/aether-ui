@@ -4303,6 +4303,21 @@ static gboolean pixel_req_idle(gpointer data) {
 
 typedef struct { int done; int handle; char type[32]; } FocusQuery;
 
+// The registry handle of the currently keyboard-focused widget, or 0. Safe to
+// call on the GTK main thread (where shortcuts fire) — no idle marshaling.
+// Walks up from GTK's focus target to a tracked widget (GTK focuses the GtkText
+// inside a GtkEntry; we want the entry's handle).
+int aether_ui_focused_widget(void) {
+    if (!primary_window) return 0;
+    GtkWidget* f = gtk_window_get_focus(primary_window);
+    while (f) {
+        int h = handle_for_widget(f);
+        if (h > 0) return h;
+        f = gtk_widget_get_parent(f);
+    }
+    return 0;
+}
+
 static gboolean focus_query_idle(gpointer data) {
     FocusQuery* fq = (FocusQuery*)data;
     fq->handle = 0;

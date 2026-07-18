@@ -4381,6 +4381,9 @@ static int hook_focused_widget(void) {
     return 0;
 }
 
+// Public focus getter (DSL / shortcut predicates).
+int aether_ui_focused_widget(void) { return hook_focused_widget(); }
+
 // ---------------------------------------------------------------------------
 // Tab order.
 //

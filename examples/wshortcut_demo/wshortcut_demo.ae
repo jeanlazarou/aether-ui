@@ -1,0 +1,31 @@
+// Aether UI per-widget shortcut scope — a shortcut active only while a
+// particular widget has focus. Two fields; Enter means different things
+// depending on which is focused (and nothing when neither is).
+import ui
+import ui (window, vstack, text, textfield, widget_shortcut, focus,
+    enable_test_server)
+import std.os (os_getenv)
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    status_h = 0
+    window("per-widget shortcut", 360, 220) {
+        vstack(8) {
+            status = text("status: idle")
+            status_h = status
+            name = textfield("name…") callback |_v: string| {}
+            city = textfield("city…") callback |_v: string| {}
+            // Enter in `name` submits the name; Enter in `city` submits the city.
+            widget_shortcut(name, "Return") callback {
+                aether_ui_text_set_string(status_h, "status: name submitted")
+            }
+            widget_shortcut(city, "Return") callback {
+                aether_ui_text_set_string(status_h, "status: city submitted")
+            }
+            // Focus the name field by default so the spec has a known start.
+            focus(name)
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

@@ -1,0 +1,46 @@
+// spec_wshortcut_demo.ae — per-widget shortcut scopes.
+// Two textfields; "Return" is bound per-widget, so the SAME combo fires a
+// different closure depending on which field has focus (and the status label
+// reports which). Focus is driven via POST /widget/{id}/focus.
+import aeocha
+import uidriver
+import std.string
+
+status() -> string {
+    b = uidriver.get_body("/widgets")
+    if string.contains(b, "\"text\":\"status: name submitted\"") == 1 { return "name" }
+    if string.contains(b, "\"text\":\"status: city submitted\"") == 1 { return "city" }
+    return "idle"
+}
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    // Identify the two fields by their creation-ordered ids (both textfields).
+    // widget_id_of returns the FIRST; we need both, so read the whole tree.
+    aeocha.describe(fw, "per-widget shortcut scope over AetherUIDriver") {
+        aeocha.it("Return in the name field fires the name shortcut") callback {
+            name = uidriver.widget_id_of("textfield", "")   // first textfield
+            aeocha.assert_gt(name, 0, "found the name field")
+            uidriver.focus_widget(name)
+            uidriver.window_key("Return")
+            ok = uidriver.wait_body_contains("/widgets", "status: name submitted", 20)
+            aeocha.assert_true(ok, "name shortcut fired while name focused")
+        }
+
+        aeocha.it("the SAME combo fires the city shortcut when city is focused") callback {
+            // The city field is the second textfield — its id is name+1 in
+            // creation order (both built back-to-back).
+            name = uidriver.widget_id_of("textfield", "")
+            city = name + 1
+            uidriver.focus_widget(city)
+            uidriver.window_key("Return")
+            ok = uidriver.wait_body_contains("/widgets", "status: city submitted", 20)
+            aeocha.assert_true(ok, "city shortcut fired while city focused")
+            // And it's genuinely scoped: status is now 'city', not 'name'.
+            aeocha.assert_str_eq(status(), "city", "the city scope won, not name")
+        }
+    }
+    aeocha.run_summary(fw)
+}

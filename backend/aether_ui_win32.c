@@ -4328,6 +4328,12 @@ static int hook_focused_widget(void) {
     return handle_for_hwnd(gti.hwndFocus);
 }
 
+// Public focus getter (for the DSL / shortcut predicates). Same UI-thread
+// focus, resolved to our registry handle.
+int aether_ui_focused_widget(void) {
+    return hook_focused_widget();
+}
+
 // dispatch_action: sends the ctx to the UI thread via AE_WM_DRIVER and
 // blocks until the WndProc fills in ctx->result. Runs on the server
 // thread — SendMessageW is synchronous so no explicit wait is needed.

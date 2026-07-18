@@ -411,6 +411,9 @@ void aether_ui_shortcut_chord_impl(const char* first_combo,
                                    const char* second_combo,
                                    void* boxed_closure);
 void aether_ui_focus_impl(int handle);
+// Registry handle of the currently keyboard-focused widget (0 = none). Safe on
+// the UI thread; used by per-widget shortcut scopes.
+int aether_ui_focused_widget(void);
 void aether_ui_context_menu_item_accel_impl(int handle, const char* label,
                                             const char* accel,
                                             void* boxed_closure);

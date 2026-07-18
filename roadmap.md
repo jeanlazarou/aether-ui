@@ -222,13 +222,15 @@ term in one result row — cosmetic, doesn't affect the spec.
 - **Focus/shortcuts:** ~~conditional shortcut scopes~~ **DONE 2026-07-18**
   (`shortcut_when(combo, enabled, cb)` — predicate-gated; inert combo
   propagates), ~~chorded shortcuts~~ **DONE** (`shortcut_chord(a, b, cb)`
-  — two-key sequence, 1.5s window). GTK4 AND win32 both real (win32 via a
-  real registry behind the /window/key path — 3/3 on both). macOS:
-  shortcut_when degrades to plain, chord stubbed (sibling TODO). Remaining:
-  per-widget scopes. ~~auto menu↔shortcut binding~~ **DONE 2026-07-18** —
-  `menu_item_accel(menu, label, accel, cb)` adds the item (accel shown
-  after the label) AND registers shortcut(accel, cb), so the action fires
-  from the menu or the keystroke with no separate wiring; 3/3.
+  — two-key sequence, 1.5s window). Real on ALL THREE (win32 registry
+  behind /window/key; macOS event_to_combo + chord machine, commit
+  2bd6b5a). ~~per-widget scopes~~ **DONE 2026-07-18** —
+  `widget_shortcut(widget, combo, cb)`: a combo active only while that
+  widget (or a descendant) has focus, built on shortcut_when + a new
+  `focused_widget()` getter (real on all three backends). 2/2 GTK4.
+  ~~auto menu↔shortcut binding~~ **DONE** — `menu_item_accel(menu, label,
+  accel, cb)` adds the item AND registers shortcut(accel, cb); 3/3. **The
+  whole Focus/shortcuts line is now closed.**
 - **Menus:** ~~GTK4 native menu wiring (GMenu/GActionGroup) is still the
   recorded stub~~ **DONE 2026-07-18** — the GTK4 menu bar is real
   (GtkPopoverMenuBar over a GMenu model; each item backed by a
