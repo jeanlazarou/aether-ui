@@ -22,7 +22,8 @@ exports (
     widget_id_by_text, widget_id_of, widget_id_last_of, widget_text_by_id, widget_bool_by_text,
     widget_int_field_by_id, field_str, field_int,
     canvas_w, canvas_h, canvas_widget_id,
-    wait_server, wait_body_contains
+    wait_server, wait_body_contains,
+    menus_body, menu_handle_with, menu_activate, menu_activate_item
 )
 
 import std.string
@@ -353,4 +354,52 @@ wait_server() {
         }
         i = i + 1
     }
+}
+
+// ─── Menus (GET /menus, POST /menu/{handle}/activate?label=X) ─────
+// The menu bar isn't in the widget tree; menus live in their own store.
+
+// The raw /menus body: [{"handle":N,"items":["New","Open",…]}, …].
+menus_body() -> string { return get_body("/menus") }
+
+// The menu handle that contains an item with exactly `label`; 0 if none.
+menu_handle_with(label: string) -> int {
+    body = get_body("/menus")
+    v, _jerr = json.parse(body)
+    if v == null { return 0 }
+    found = 0
+    n = json.json_array_size(v)
+    i = 0
+    while i < n {
+        m = json.json_array_get_raw(v, i)
+        items = json.json_object_get_raw(m, "items")
+        if items != null {
+            k = 0
+            kn = json.json_array_size(items)
+            while k < kn {
+                lab = json.json_get_string_raw(json.json_array_get_raw(items, k))
+                if lab != null { if string.equals(lab, label) == 1 {
+                    if found == 0 { found = field_int(m, "handle") }
+                } }
+                k = k + 1
+            }
+        }
+        i = i + 1
+    }
+    json.json_free(v)
+    return found
+}
+
+// Fire the menu item `label` under menu `handle` — the same closure the
+// native menu-bar click runs. Asserts the POST is 2xx. (Spaces in the label
+// must be sent as '+'; the server decodes them. Keep test labels space-free
+// or pass the '+'-encoded form.)
+menu_activate(handle: int, label: string) {
+    post_ok("/menu/${handle}/activate?label=${label}", "activate menu item ${label}")
+}
+
+// Convenience: find the item's menu and activate it in one call.
+menu_activate_item(label: string) {
+    h = menu_handle_with(label)
+    menu_activate(h, label)
 }

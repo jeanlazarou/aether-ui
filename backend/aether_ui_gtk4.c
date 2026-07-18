@@ -452,6 +452,7 @@ int aether_ui_surface_diag_count_impl(int container_handle) {
 }
 
 static void aeui_attach_pending_shortcuts(void);
+static void aeui_attach_pending_menus(GtkApplication* app, GtkWindow* window);
 
 static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     AppEntry* entry = (AppEntry*)user_data;
@@ -460,6 +461,7 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     gtk_window_set_default_size(GTK_WINDOW(window), entry->width, entry->height);
     primary_window = GTK_WINDOW(window);   // overlay layer resolves handle 0 here
     aeui_attach_pending_shortcuts();       // item 9: queued ui.shortcut regs
+    aeui_attach_pending_menus(gtk_app, GTK_WINDOW(window));  // real menu bar
 
     if (entry->root_handle > 0) {
         GtkWidget* root = aether_ui_get_widget(entry->root_handle);
@@ -5146,6 +5148,51 @@ static void handle_test_request(int client_fd) {
         }
     }
 
+    // GET /menus — every menu with its item labels (shared side-store).
+    if (method == 0 && strcmp(path, "/menus") == 0) {
+        int handles[64];
+        int nh = aether_ui_menu_handles(handles, 64);
+        char* body = (char*)malloc(64 + nh * 2048);
+        int pos = sprintf(body, "[");
+        for (int i = 0; i < nh; i++) {
+            if (i > 0) pos += sprintf(body + pos, ",");
+            int h = handles[i];
+            pos += sprintf(body + pos, "{\"handle\":%d,\"items\":[", h);
+            int ic = aether_ui_menu_item_count_for(h);
+            for (int k = 0; k < ic; k++) {
+                if (k > 0) pos += sprintf(body + pos, ",");
+                pos += snprintf(body + pos, 256, "\"%s\"",
+                                aether_ui_menu_item_label_at(h, k));
+            }
+            pos += sprintf(body + pos, "]}");
+        }
+        sprintf(body + pos, "]");
+        send_response(client_fd, 200, "OK", "application/json", body);
+        free(body);
+        close(client_fd);
+        return;
+    }
+
+    // POST /menu/{handle}/activate?label=X — fire the item's closure. This IS
+    // the real GTK4 path: the recorded closure is the same one the native
+    // GAction runs when the GtkPopoverMenuBar item is clicked.
+    if (method == 1 && strncmp(path, "/menu/", 6) == 0 && strstr(path, "/activate")) {
+        int handle = atoi(path + 6);
+        const char* v = extract_query_param(path, "label");
+        char label[256] = "";
+        if (v) {
+            strncpy(label, v, sizeof(label) - 1);
+            char* amp = strchr(label, '&'); if (amp) *amp = '\0';
+            for (char* p = label; *p; p++) if (*p == '+') *p = ' ';
+        }
+        int r = aether_ui_menu_item_invoke(handle, label);
+        if (r == 0)      send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        else if (r == 4) send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true,\"noClosure\":true}");
+        else             send_response(client_fd, 404, "Not Found", "application/json", "{\"error\":\"item not found\"}");
+        close(client_fd);
+        return;
+    }
+
     // GET /notifications
     if (method == 0 && strcmp(path, "/notifications") == 0) {
         int n = aether_ui_notif_count();
@@ -5324,14 +5371,42 @@ void aether_ui_widget_set_hidden(int handle, int hidden) {
 // worth wiring up.
 // ---------------------------------------------------------------------------
 
+// A menu (bar or submenu) is backed by a real GMenu model. Items append to
+// the menu's current section; each carries a per-item GAction name
+// (app.aeui.m<handle>.i<idx>). The GActions can only live on the GApplication,
+// which doesn't exist until app_run — the DSL builds the menu first — so we
+// build the GMenu models eagerly and QUEUE the (action_name → closure) pairs,
+// then register them all on the app in on_activate (same deferral shortcuts
+// use). menu_item_record still runs so the driver's /menu route reaches the
+// same closure by label independently of the native path.
 typedef struct {
-    int   is_bar;
-    char* label;
+    int     is_bar;
+    char*   label;
+    GMenu*  model;      // the bar's or submenu's GMenu
+    GMenu*  section;    // current section (separator starts a new one)
 } GtkMenuEntry;
 
 static GtkMenuEntry* gtk_menus = NULL;
 static int           gtk_menu_count = 0;
 static int           gtk_menu_capacity = 0;
+
+// Pending item actions, registered on the app in on_activate.
+typedef struct {
+    char*      action_name;   // "aeui.m2.i0" (no "app." prefix — that's the scope)
+    AeClosure* closure;
+} GtkMenuAction;
+
+static GtkMenuAction* gtk_menu_actions = NULL;
+static int            gtk_menu_action_count = 0;
+static int            gtk_menu_action_capacity = 0;
+
+// The bar to attach as the window menubar (set by menu_bar_attach).
+static GMenu* gtk_pending_menubar = NULL;
+
+static GtkMenuEntry* gtk_menu_at(int handle) {
+    if (handle < 1 || handle > gtk_menu_count) return NULL;
+    return &gtk_menus[handle - 1];
+}
 
 static int gtk_register_menu(int is_bar, const char* label) {
     if (gtk_menu_count >= gtk_menu_capacity) {
@@ -5339,8 +5414,13 @@ static int gtk_register_menu(int is_bar, const char* label) {
         gtk_menus = (GtkMenuEntry*)realloc(gtk_menus,
                                            sizeof(GtkMenuEntry) * gtk_menu_capacity);
     }
-    gtk_menus[gtk_menu_count].is_bar = is_bar;
-    gtk_menus[gtk_menu_count].label = label ? strdup(label) : NULL;
+    GtkMenuEntry* e = &gtk_menus[gtk_menu_count];
+    e->is_bar = is_bar;
+    e->label = label ? strdup(label) : NULL;
+    e->model = g_menu_new();
+    // Items go into a section so separators can split without rebuilding.
+    e->section = g_menu_new();
+    g_menu_append_section(e->model, NULL, G_MENU_MODEL(e->section));
     gtk_menu_count++;
     return gtk_menu_count;
 }
@@ -5353,24 +5433,83 @@ int aether_ui_menu_create(const char* label) {
     return gtk_register_menu(0, label);
 }
 
-void aether_ui_menu_add_item(int menu_handle, const char* label,
-                             void* boxed_closure) {
-    // Record into the cross-backend side-store so the AetherUIDriver
-    // /tray/{id}/menu/activate route (and any future menu_popup test
-    // route) can invoke the closure by label. The real GTK4 menu wiring
-    // (GMenuModel + GActionGroup) is still TODO — see the stub header
-    // comment above — but the closure is reachable from the driver today.
-    aether_ui_menu_item_record(menu_handle, label, boxed_closure);
+// The GAction trampoline: activate → the recorded closure.
+static void gtk_menu_action_cb(GSimpleAction* action, GVariant* param,
+                               gpointer user_data) {
+    (void)action; (void)param;
+    AeClosure* c = (AeClosure*)user_data;
+    if (c && c->fn) ((void(*)(void*))c->fn)(c->env);
 }
 
-void aether_ui_menu_add_separator(int menu_handle) { (void)menu_handle; }
+void aether_ui_menu_add_item(int menu_handle, const char* label,
+                             void* boxed_closure) {
+    // Driver path (unchanged): the side-store lets /menu/{h}/activate?label=…
+    // reach this closure by label on every backend.
+    aether_ui_menu_item_record(menu_handle, label, boxed_closure);
+
+    GtkMenuEntry* e = gtk_menu_at(menu_handle);
+    if (!e) return;
+
+    // Native path: append a GMenuItem bound to a unique per-item action, and
+    // queue that action for registration on the app in on_activate.
+    int idx = (int)g_menu_model_get_n_items(G_MENU_MODEL(e->section));
+    char action[64];
+    snprintf(action, sizeof(action), "aeui.m%d.i%d", menu_handle, idx);
+    char detailed[80];
+    snprintf(detailed, sizeof(detailed), "app.%s", action);
+    g_menu_append(e->section, label ? label : "", detailed);
+
+    if (gtk_menu_action_count >= gtk_menu_action_capacity) {
+        gtk_menu_action_capacity = gtk_menu_action_capacity == 0 ? 16
+                                 : gtk_menu_action_capacity * 2;
+        gtk_menu_actions = (GtkMenuAction*)realloc(gtk_menu_actions,
+                          sizeof(GtkMenuAction) * gtk_menu_action_capacity);
+    }
+    gtk_menu_actions[gtk_menu_action_count].action_name = strdup(action);
+    gtk_menu_actions[gtk_menu_action_count].closure = (AeClosure*)boxed_closure;
+    gtk_menu_action_count++;
+}
+
+void aether_ui_menu_add_separator(int menu_handle) {
+    // Close the current section and start a new one — GtkPopoverMenuBar draws
+    // an inter-section divider.
+    GtkMenuEntry* e = gtk_menu_at(menu_handle);
+    if (!e) return;
+    e->section = g_menu_new();
+    g_menu_append_section(e->model, NULL, G_MENU_MODEL(e->section));
+}
 
 void aether_ui_menu_bar_add_menu(int bar_handle, int menu_handle) {
-    (void)bar_handle; (void)menu_handle;
+    GtkMenuEntry* bar = gtk_menu_at(bar_handle);
+    GtkMenuEntry* sub = gtk_menu_at(menu_handle);
+    if (!bar || !sub) return;
+    g_menu_append_submenu(bar->model, sub->label ? sub->label : "",
+                          G_MENU_MODEL(sub->model));
 }
 
 void aether_ui_menu_bar_attach(int app_handle, int bar_handle) {
-    (void)app_handle; (void)bar_handle;
+    (void)app_handle;
+    GtkMenuEntry* bar = gtk_menu_at(bar_handle);
+    if (bar) gtk_pending_menubar = bar->model;
+}
+
+// Register the queued item actions on the app and set the menubar. Called from
+// on_activate once gtk_app exists.
+static void aeui_attach_pending_menus(GtkApplication* app, GtkWindow* window) {
+    for (int i = 0; i < gtk_menu_action_count; i++) {
+        GSimpleAction* act = g_simple_action_new(
+            gtk_menu_actions[i].action_name, NULL);
+        g_signal_connect(act, "activate",
+                         G_CALLBACK(gtk_menu_action_cb),
+                         gtk_menu_actions[i].closure);
+        g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(act));
+        g_object_unref(act);
+    }
+    if (gtk_pending_menubar) {
+        gtk_application_set_menubar(app, G_MENU_MODEL(gtk_pending_menubar));
+        gtk_application_window_set_show_menubar(
+            GTK_APPLICATION_WINDOW(window), TRUE);
+    }
 }
 
 void aether_ui_menu_popup(int menu_handle, int anchor_widget) {

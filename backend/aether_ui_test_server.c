@@ -771,6 +771,45 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         h->dispatch_action(&ctx);
         send_http(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
 
+    // --- /menus ---
+    // GET  /menus                          → every menu with its item labels
+    // POST /menu/{handle}/activate?label=X → fire that item's closure (the
+    //   SAME closure the native GTK4 GAction / macOS-NSMenu / win32 path runs)
+    // The menu-item side-store is shared across all three backends, so this
+    // proves item activation everywhere; the app-visible effect (a counter
+    // bump) is what the spec asserts, confirming the closure genuinely fired.
+    } else if (method == 0 && strcmp(path, "/menus") == 0) {
+        int handles[64];
+        int nh = aether_ui_menu_handles(handles, 64);
+        char* body = (char*)malloc(64 + nh * 2048);
+        int pos = sprintf(body, "[");
+        for (int i = 0; i < nh; i++) {
+            if (i > 0) pos += sprintf(body + pos, ",");
+            int h = handles[i];
+            pos += sprintf(body + pos, "{\"handle\":%d,\"items\":[", h);
+            int ic = aether_ui_menu_item_count_for(h);
+            for (int k = 0; k < ic; k++) {
+                if (k > 0) pos += sprintf(body + pos, ",");
+                pos += snprintf(body + pos, 256, "\"%s\"",
+                                aether_ui_menu_item_label_at(h, k));
+            }
+            pos += sprintf(body + pos, "]}");
+        }
+        sprintf(body + pos, "]");
+        send_http(client_fd, 200, "OK", "application/json", body);
+        free(body);
+    } else if (method == 1 && strncmp(path, "/menu/", 6) == 0
+               && strstr(path, "/activate")) {
+        int handle = extract_id_from_path(path, "/menu/");
+        const char* label = extract_query_param(path, "label");
+        int r = aether_ui_menu_item_invoke(handle, label ? label : "");
+        if (r == 0) send_http(client_fd, 200, "OK", "application/json",
+                              "{\"ok\":true}");
+        else if (r == 4) send_http(client_fd, 200, "OK", "application/json",
+                              "{\"ok\":true,\"noClosure\":true}");
+        else send_http(client_fd, 404, "Not Found", "text/plain",
+                       "no such menu item");
+
     // --- /tray ---
     // GET  /tray              → list of all registered tray records
     // GET  /tray/{id}         → single tray record (tooltip, menu_handle,

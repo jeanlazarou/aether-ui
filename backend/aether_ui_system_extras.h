@@ -115,6 +115,10 @@ int  aether_ui_menu_item_invoke(int menu_handle, const char* label);
 // also call _record, which Phase 1 doesn't do.
 int          aether_ui_menu_item_count_for(int menu_handle);
 const char*  aether_ui_menu_item_label_at(int menu_handle, int index);
+// Distinct menu handles that have at least one recorded item, in first-seen
+// order, written into out[] (up to max). Returns the count. Lets the driver's
+// GET /menus enumerate menus without a separate menu registry.
+int          aether_ui_menu_handles(int* out, int max);
 
 // ---------------------------------------------------------------------------
 // Headless

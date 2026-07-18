@@ -187,9 +187,15 @@ term in one result row — cosmetic, doesn't affect the spec.
 - **Focus/shortcuts:** per-widget/conditional shortcut scopes, chorded
   shortcuts, auto menu↔shortcut binding (accel display exists; wiring
   is two lines by hand today).
-- **Menus:** GTK4 native menu wiring (GMenu/GActionGroup) is still the
-  recorded stub — menu items don't fire on GTK4; the drawn context menu
-  is the working surface.
+- **Menus:** ~~GTK4 native menu wiring (GMenu/GActionGroup) is still the
+  recorded stub~~ **DONE 2026-07-18** — the GTK4 menu bar is real
+  (GtkPopoverMenuBar over a GMenu model; each item backed by a
+  GSimpleAction on the app, registered in on_activate; separators split
+  sections). `examples/menu` + `tests/menu/spec_menu` (GET /menus, POST
+  /menu/{h}/activate, effect-observed counter) — 4/4 on GTK4. Driver
+  routes added to BOTH servers (house rule 5). Remaining menu work:
+  `menu_popup` (standalone popup) is still a no-op; the drawn context
+  menu remains the right-click surface.
 
 ## 3. Backlog (real, smaller, or gated)
 

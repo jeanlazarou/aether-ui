@@ -337,6 +337,20 @@ const char* aether_ui_menu_item_label_at(int menu_handle, int index) {
     return "";
 }
 
+int aether_ui_menu_handles(int* out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_menu_item_count; i++) {
+        if (!g_menu_items[i].in_use) continue;
+        int h = g_menu_items[i].menu_handle;
+        int dup = 0;
+        for (int j = 0; j < n; j++) { if (out[j] == h) { dup = 1; break; } }
+        if (dup) continue;
+        if (n >= max) break;
+        out[n++] = h;
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // Cross-backend headless park fallback.
 //

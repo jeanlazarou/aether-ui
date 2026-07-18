@@ -8,6 +8,7 @@
 //   ./build/menu.exe      (Windows)
 
 import ui
+import std.os (os_getenv)
 
 extern println(s: string)
 
@@ -59,5 +60,11 @@ main() {
     ui.menu_bar_add(bar, help_menu)
 
     ui.attach_menu_bar(app, bar)
+
+    // Driver-testable: the spec drives the menu bar over the AetherUIDriver
+    // (GET /menus, POST /menu/{h}/activate) and checks the counter text.
+    if os_getenv("AETHER_UI_TEST_PORT") != null {
+        ui.enable_test_server_root(9222, root)
+    }
     ui.app_start(app, root)
 }
