@@ -189,7 +189,11 @@ term in one result row — cosmetic, doesn't affect the spec.
   now covers `<path>` (silhouette follows the real outline via
   fill_path_in_buffer_scaled + path_bounds, not a bbox rect) and `<text>`
   (offset dark copy under the glyphs; crisp — a blurred glyph shadow needs
-  a glyph rasterizer vg lacks). test_effects 22 assertions. Remaining:
+  a glyph rasterizer vg lacks). test_effects 22/22 on GTK4 AND win32
+  (winbaz — required rebuilding winbaz's aether toolchain WITH libpcre2:
+  it lacked std.regex, so the SVG path parser returned no edges and path
+  shadows silently no-op'd. Fixed the real cause — static libpcre2-8 on
+  MinGW needs -DPCRE2_STATIC, aether commit 1896e5f0). Remaining:
   **backdrop blur** / materials (frosted scrim) — needs framebuffer
   readback under a region (vg has none) or a native material
   (NSVisualEffectView / win32 acrylic / GTK has no clean backdrop-filter);
