@@ -72,6 +72,7 @@ exports (
 import std.string
 import std.map
 import std.list
+import std.floatarr
 import vg.grammar.context
 import vg.grammar.shapes
 import vg.grammar.element
@@ -1107,12 +1108,30 @@ flush_one_tracked(ctx: ptr, be: ptr, p: ptr, es: ptr) {
             sbh = sr * 2.0
             ok_sh = 1
         }
+        sh_path = ""
+        if pend.kind == 3 {
+            // Path-accurate shadow: bbox from the outline, silhouette filled by
+            // the actual `d` string in render_shadow_path.
+            dstr, _sd = map.get(a, "d")
+            if dstr != null {
+                bb, _bbe = floatarr.new(4)
+                if rasterize.path_bounds(dstr, bb as ptr) == 1 {
+                    sbx = floatarr.get_unchecked(bb, 0)
+                    sby = floatarr.get_unchecked(bb, 1)
+                    sbw = floatarr.get_unchecked(bb, 2)
+                    sbh = floatarr.get_unchecked(bb, 3)
+                    sh_path = dstr
+                    ok_sh = 1
+                }
+                floatarr.free(bb)
+            }
+        }
         if ok_sh == 1 {
-            nc = render_as_raster.render_shadow(ctx, be, pend.kind,
+            nc = render_as_raster.render_shadow_path(ctx, be, pend.kind,
                 sbx, sby, sbw, sbh,
                 element.element_shadow_dx(el), element.element_shadow_dy(el),
                 element.element_shadow_sigma(el), element.element_shadow_color(el),
-                element.element_shadow_cache(el))
+                element.element_shadow_cache(el), sh_path)
             element.element_set_shadow_cache(el, nc)
         }
     }
@@ -1211,9 +1230,43 @@ element_is_interactive(el: ptr) -> int {
     return 0
 }
 
+// Emit one <text> at (x,y) in `fill`, reusing pend's font/anchor/content.
+_emit_text(ctx: ptr, be: ptr, pend: *VgPending, x: float, y: float, fill: string) {
+    s = "<svg><text x='"
+    s = string.concat(s, string.from_float(x))
+    s = string.concat(s, "' y='")
+    s = string.concat(s, string.from_float(y))
+    if pend.font_size > 0.0 {
+        s = string.concat(s, "' font-size='")
+        s = string.concat(s, string.from_float(pend.font_size))
+    }
+    s = string.concat(s, "' fill='")
+    s = string.concat(s, fill)
+    if string.length(pend.anchor) > 0 {
+        s = string.concat(s, "' text-anchor='")
+        s = string.concat(s, pend.anchor)
+    }
+    s = string.concat(s, "'>")
+    s = string.concat(s, pend.content)
+    s = string.concat(s, "</text></svg>")
+    root = parser.parse_svg(s)
+    node_h = parser.node_child_at(root, 0)
+    _ = shapes.shape_text(ctx, be, node_h)
+}
+
 flush_text(ctx: ptr, be: ptr, p: ptr) {
     pend = p as *VgPending
     el = pend.element
+    // Text shadow: an offset copy in the shadow colour, drawn BEFORE the real
+    // text so it sits under. Crisp offset (blur>0 would need a glyph
+    // rasterizer, which vg doesn't have) — the standard non-blurred
+    // text-shadow. Stroke/full styling stay on the real text below.
+    if element.element_shadow_on(el) == 1 {
+        _emit_text(ctx, be, pend,
+            pend.tx + element.element_shadow_dx(el),
+            pend.ty + element.element_shadow_dy(el),
+            element.element_shadow_color(el))
+    }
     s = "<svg><text x='"
     s = string.concat(s, string.from_float(pend.tx))
     s = string.concat(s, "' y='")

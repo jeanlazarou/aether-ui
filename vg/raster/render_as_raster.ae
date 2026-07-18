@@ -38,7 +38,7 @@
 // codegen bug (aether/fn_bare_name_env_shift.md). The convention is
 // to always pass a `callback { ... }` block, which works correctly.
 
-exports ( render_as_raster, render_shadow )
+exports ( render_as_raster, render_shadow, render_shadow_path )
 
 import std.bytes
 import std.string
@@ -279,6 +279,17 @@ render_shadow(ctx: ptr, backend: ptr, kind: int,
               bx: float, by: float, bw: float, bh: float,
               dx: float, dy: float, sigma: float, color: string,
               cache: ptr) -> ptr {
+    return render_shadow_path(ctx, backend, kind, bx, by, bw, bh,
+                              dx, dy, sigma, color, cache, "")
+}
+
+// Extended form: for kind 3 (path), path_d is the path's `d` string so the
+// shadow silhouette follows the actual outline, not a bbox rect. off_x/off_y
+// place the path so its bbox origin (bx,by) lands at `expand` in the buffer.
+render_shadow_path(ctx: ptr, backend: ptr, kind: int,
+              bx: float, by: float, bw: float, bh: float,
+              dx: float, dy: float, sigma: float, color: string,
+              cache: ptr, path_d: string) -> ptr {
     avg_scale = transform.affine_average_scale_p(rendering.current_transform(ctx))
     scale = rendering.map_length(ctx, 1.0) * avg_scale
 
@@ -322,6 +333,17 @@ render_shadow(ctx: ptr, backend: ptr, kind: int,
             pr = px_w / 2.0
             rasterize.fill_circle_in_buffer(pixels, buf_w, buf_h,
                 expand + pr, expand + pr, pr, scr, scg, scb, sca)
+        } else if kind == 3 {
+            // Path-accurate: rasterize the actual outline. Map user coord v to
+            // (v - b)*scale + expand, i.e. off = expand - b*scale.
+            if string.length(path_d) > 0 {
+                rasterize.fill_path_in_buffer_scaled(pixels, buf_w, buf_h,
+                    path_d, expand - bx * scale, expand - by * scale, scale,
+                    scr, scg, scb, sca, rasterize.FILL_NONZERO())
+            } else {
+                rasterize.fill_rect_in_buffer(pixels, buf_w, buf_h,
+                    expand, expand, px_w, px_h, scr, scg, scb, sca)
+            }
         } else {
             rasterize.fill_rect_in_buffer(pixels, buf_w, buf_h,
                 expand, expand, px_w, px_h, scr, scg, scb, sca)

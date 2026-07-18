@@ -25,6 +25,8 @@ exports (
     fill_rect_in_buffer,
     fill_circle_in_buffer,
     fill_path_in_buffer,
+    fill_path_in_buffer_scaled,
+    path_bounds,
     apply_clip_mask,
     FILL_NONZERO, FILL_EVENODD
 )
@@ -355,6 +357,12 @@ subdivide(x0: float, y0: float,
 // buffer; caller passes it to scanline rendering, then frees.
 
 path_to_edges(path_str: string, off_x: float, off_y: float, count_out: *IntCell) -> ptr {
+    return path_to_edges_scaled(path_str, off_x, off_y, 1.0, count_out)
+}
+
+// Scaled variant: each coord maps v -> v*scale + off. Used by the shadow
+// rasterizer, which fills a path silhouette into a px-scaled buffer.
+path_to_edges_scaled(path_str: string, off_x: float, off_y: float, scale: float, count_out: *IntCell) -> ptr {
     edges, _ = floatarr.new(EDGES_CAP())
     count = mk_cell(0)
 
@@ -409,7 +417,7 @@ path_to_edges(path_str: string, off_x: float, off_y: float, count_out: *IntCell)
                 ns1 = regex.find_all_start(num_fa, 1); ne1 = regex.find_all_end(num_fa, 1)
                 v0, _ = string.to_double(string.substring(args_str, ns0, ne0))
                 v1, _ = string.to_double(string.substring(args_str, ns1, ne1))
-                cx = v0 + off_x; cy = v1 + off_y
+                cx = v0 * scale + off_x; cy = v1 * scale + off_y
                 sx = cx; sy = cy
             }
         }
@@ -419,7 +427,7 @@ path_to_edges(path_str: string, off_x: float, off_y: float, count_out: *IntCell)
                 ns1 = regex.find_all_start(num_fa, 1); ne1 = regex.find_all_end(num_fa, 1)
                 v0, _ = string.to_double(string.substring(args_str, ns0, ne0))
                 v1, _ = string.to_double(string.substring(args_str, ns1, ne1))
-                ex = v0 + off_x; ey = v1 + off_y
+                ex = v0 * scale + off_x; ey = v1 * scale + off_y
                 append_edge(edges, count, cx, cy, ex, ey)
                 cx = ex; cy = ey
             }
@@ -433,9 +441,9 @@ path_to_edges(path_str: string, off_x: float, off_y: float, count_out: *IntCell)
                 v3, _ = string.to_double(read_at(args_str, num_fa, 3))
                 v4, _ = string.to_double(read_at(args_str, num_fa, 4))
                 v5, _ = string.to_double(read_at(args_str, num_fa, 5))
-                cp1x = v0 + off_x; cp1y = v1 + off_y
-                cp2x = v2 + off_x; cp2y = v3 + off_y
-                x3   = v4 + off_x; y3   = v5 + off_y
+                cp1x = v0 * scale + off_x; cp1y = v1 * scale + off_y
+                cp2x = v2 * scale + off_x; cp2y = v3 * scale + off_y
+                x3   = v4 * scale + off_x; y3   = v5 * scale + off_y
                 flatten_cubic(cx, cy, cp1x, cp1y, cp2x, cp2y, x3, y3, edges, count, 0)
                 cx = x3; cy = y3
             }
@@ -491,8 +499,47 @@ fill_path_in_buffer(buf: ptr, buf_w: int, buf_h: int,
                     path_str: string, off_x: float, off_y: float,
                     r: int, g: int, b: int, a: int,
                     fill_rule: int) {
+    fill_path_in_buffer_scaled(buf, buf_w, buf_h, path_str, off_x, off_y,
+                               1.0, r, g, b, a, fill_rule)
+}
+
+// User-space bounding box of a path's `d` string, written into out[0..3] as
+// (x, y, w, h). Returns 1 if the path had any geometry, 0 if empty.
+path_bounds(path_str: string, out: ptr) -> int {
     count_out = mk_cell(0)
-    edges = path_to_edges(path_str, off_x, off_y, count_out)
+    edges = path_to_edges(path_str, 0.0, 0.0, count_out)
+    nf = count_out.v
+    if nf == 0 { floatarr.free(edges); return 0 }
+    minx = floatarr.get_unchecked(edges, 0)
+    miny = floatarr.get_unchecked(edges, 1)
+    maxx = minx
+    maxy = miny
+    i = 0
+    while i < nf {
+        v = floatarr.get_unchecked(edges, i)
+        if (i % 2) == 0 {
+            if v < minx { minx = v }
+            if v > maxx { maxx = v }
+        } else {
+            if v < miny { miny = v }
+            if v > maxy { maxy = v }
+        }
+        i = i + 1
+    }
+    floatarr.free(edges)
+    floatarr.set_unchecked(out, 0, minx)
+    floatarr.set_unchecked(out, 1, miny)
+    floatarr.set_unchecked(out, 2, maxx - minx)
+    floatarr.set_unchecked(out, 3, maxy - miny)
+    return 1
+}
+
+fill_path_in_buffer_scaled(buf: ptr, buf_w: int, buf_h: int,
+                    path_str: string, off_x: float, off_y: float, scale: float,
+                    r: int, g: int, b: int, a: int,
+                    fill_rule: int) {
+    count_out = mk_cell(0)
+    edges = path_to_edges_scaled(path_str, off_x, off_y, scale, count_out)
     n_floats = count_out.v
     if n_floats == 0 {
         floatarr.free(edges)

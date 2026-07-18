@@ -72,6 +72,55 @@ main() {
     assert_eq_str("re-flush kind 0 is the shadow", record.backend_kind(bk, 0), "raster")
     assert_true("cached mask identical across flushes", string.equals(px1, px2))
 
+    // ── path shadow: silhouette follows the outline, bbox-sized mask ──
+    ctxp = mk_ctx()
+    bkp = record.backend_new()
+    scenep = vg.scene_new(ctxp, bkp)
+    vg.scene_set_deferred(scenep, 1)
+    rootp = vg.vg_root(scenep)
+
+    // Triangle: bbox (30,30) 40x40.
+    pn = vg.path(rootp, "M 30 30 L 70 30 L 50 70 Z")
+    vg.fill(pn, "#3366cc")
+    vg.shadow(pn, 3.0, 4.0, 2.0, "#000000")
+    vg.vg_flush(scenep)
+
+    assert_eq_str("path shadow raster first", record.backend_kind(bkp, 0), "raster")
+    assert_eq_str("the path flushes after its shadow", record.backend_kind(bkp, 1), "path")
+    wp = record.backend_opt_get(bkp, 0, "w")
+    wpv, _wpe = string.to_double(wp)
+    assert_near("path mask width = bbox 40 + 2*3sigma", wpv, 52.0)
+    xp = record.backend_opt_get(bkp, 0, "x")
+    xpv, _xpe = string.to_double(xp)
+    assert_near("path mask x = bboxX 30 + dx 3 - expand 6", xpv, 27.0)
+    pxp = record.backend_opt_get(bkp, 0, "rawPixels")
+    assert_true("path mask has pixels", string.length(pxp) > 0)
+
+    // ── text shadow: offset dark copy BEFORE the real text ──────────
+    ctxt = mk_ctx()
+    bkt = record.backend_new()
+    scenet = vg.scene_new(ctxt, bkt)
+    vg.scene_set_deferred(scenet, 1)
+    roott = vg.vg_root(scenet)
+
+    tn = vg.text(roott, 10.0, 20.0, "Hi")
+    vg.fill(tn, "#ffffff")
+    vg.shadow(tn, 2.0, 2.0, 0.0, "#000000")
+    vg.vg_flush(scenet)
+
+    // Two text draws: the shadow copy first (offset + dark), then the real one.
+    assert_eq_str("text shadow copy first", record.backend_kind(bkt, 0), "text")
+    assert_eq_str("real text second", record.backend_kind(bkt, 1), "text")
+    sxt = record.backend_opt_get(bkt, 0, "x")
+    sxv, _sxe = string.to_double(sxt)
+    assert_near("shadow text x = 10 + dx 2", sxv, 12.0)
+    syt = record.backend_opt_get(bkt, 0, "y")
+    syv, _sye = string.to_double(syt)
+    assert_near("shadow text y = 20 + dy 2", syv, 22.0)
+    rxt = record.backend_opt_get(bkt, 1, "x")
+    rxv, _rxe = string.to_double(rxt)
+    assert_near("real text x unchanged = 10", rxv, 10.0)
+
     // ── group opacity markers ─────────────────────────────────────
     ctx2 = mk_ctx()
     bk2 = record.backend_new()
