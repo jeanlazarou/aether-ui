@@ -414,6 +414,22 @@ running, +1 for the two-way binding assertion).
   doesn't hang and returns "". Build any app calling them and confirm it
   links; a real pick needs a human at the Mac.
 
+- **Typography / multi-select / row double-click** (landed 2026-07-18, commit
+  06543a9). Verified 5+3+2 on GTK4 + win32. macOS mirrors: text_wrapped uses
+  `NSTextField wrappingLabelWithString` + a width constraint; multi-select is
+  pure module.ae (no backend); double-click's fire path uses
+  `objc_setAssociatedObject` (needs `#import <objc/runtime.h>`, added). Run:
+  ```
+  for d in typo_demo multiselect_demo dblclick_demo; do
+    ./build.sh examples/$d/$d.ae build/$d
+    AETHER_UI_TEST_PORT=9222 ./build/$d &        # keep_alive:true
+    UI_SPEC=$d/spec_$d tests/run_spec.sh          # expect 3 / 3 / 2
+    pkill -f build/$d
+  done
+  ```
+  Watch-out: the double-click fire is a plain closure invoke (no NSEvent), so
+  it's headless-safe; if it 0-fires, check the assoc-object key survived.
+
 ## macOS vs winbaz — the cheat sheet
 
 | | winbaz | Mac mini |

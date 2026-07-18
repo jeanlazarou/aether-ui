@@ -169,11 +169,15 @@ term in one result row — cosmetic, doesn't affect the spec.
 
 ## 2. Deferred from the ranked items (recorded at each closeout)
 
-- **Typography:** multi-line wrap (`text_wrapped`), text-anchor
-  middle/end.
+- **Typography:** ~~multi-line wrap (`text_wrapped`), text-anchor
+  middle/end~~ **DONE 2026-07-18** (`text_wrapped` + `text_anchor`;
+  wrap/anchor in the text JSON; 3/3 GTK4+win32). Remaining: text-anchor
+  for CANVAS/vg text (this covers native labels).
 - **Table/list:** virtualization (the GtkColumnView / recycled-cell vs
-  handle-registry question), delegate cells (%-bars, chips), row
-  double-click, multi-select, **tree mode**.
+  handle-registry question), delegate cells (%-bars, chips), ~~row
+  double-click~~ **DONE** (`on_row_double_click` +
+  POST /widget/{id}/double_click; 2/2), ~~multi-select~~ **DONE**
+  (`listbox_multi`/`listbox_is_selected`; toggle rows; 3/3), **tree mode**.
 - **Effects:** shadows on paths/text (rect+circle only today),
   **backdrop blur** / materials (frosted scrim).
 - **Transitions:** enter/exit transitions on overlay ENTRIES (the
