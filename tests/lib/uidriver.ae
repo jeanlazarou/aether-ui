@@ -19,7 +19,7 @@ exports (
     click, click_widget, toggle_widget, key, move_to, resize_window,
     window_key, focus_widget, focused_widget,
     set_state, state_value_int,
-    widget_id_by_text, widget_id_of, widget_text_by_id, widget_bool_by_text,
+    widget_id_by_text, widget_id_of, widget_id_last_of, widget_text_by_id, widget_bool_by_text,
     widget_int_field_by_id, field_str, field_int,
     canvas_w, canvas_h, canvas_widget_id,
     wait_server, wait_body_contains
@@ -212,6 +212,34 @@ widget_id_of(wtype: string, text: string) -> int {
             }
         }
         if tok == 1 { if found == 0 { found = field_int(w, "id") } }
+        i = i + 1
+    }
+    json.json_free(v)
+    return found
+}
+
+// Like widget_id_of, but returns the LAST match rather than the first — for
+// disambiguating duplicate labels (e.g. a "Search" tab-strip button vs. the
+// "Search" search-bar button, which is built later so it sorts last).
+widget_id_last_of(wtype: string, text: string) -> int {
+    body = get_body("/widgets")
+    v, _jerr = json.parse(body)
+    if v == null { return 0 }
+    found = 0
+    n = json.json_array_size(v)
+    i = 0
+    while i < n {
+        w = json.json_array_get_raw(v, i)
+        tok = 1
+        if string.length(wtype) > 0 {
+            if string.equals(field_str(w, "type"), wtype) == 0 { tok = 0 }
+        }
+        if tok == 1 {
+            if string.length(text) > 0 {
+                if string.equals(field_str(w, "text"), text) == 0 { tok = 0 }
+            }
+        }
+        if tok == 1 { found = field_int(w, "id") }
         i = i + 1
     }
     json.json_free(v)

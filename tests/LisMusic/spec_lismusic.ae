@@ -59,7 +59,9 @@ main() {
             tf = uidriver.widget_id_of("textfield", "")
             aeocha.assert_gt(tf, 0, "search textfield found")
             uidriver.post_ok("/widget/${tf}/set_text?v=lumiere", "type search term")
-            sb = uidriver.widget_id_by_text("Search")
+            // Two buttons read "Search": the tab-strip tab and the search-bar
+            // button. The search-bar one is built later, so take the last match.
+            sb = uidriver.widget_id_last_of("button", "Search")
             uidriver.post_ok("/widget/${sb}/click", "click Search")
             ok = uidriver.wait_body_contains("/widgets", "Sample Artist", 20)
             aeocha.assert_true(ok, "a canned result row rendered")
