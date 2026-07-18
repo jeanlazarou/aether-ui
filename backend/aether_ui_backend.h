@@ -173,6 +173,12 @@ int aether_ui_window_create_impl(const char* title, int width, int height);
 void aether_ui_window_set_body_impl(int win_handle, int root_handle);
 void aether_ui_window_show_impl(int win_handle);
 void aether_ui_window_close_impl(int win_handle);
+/* Unified driver window view: 1 = primary, 2.. = extras. */
+int  aether_ui_window_count_impl(void);
+const char* aether_ui_window_title_impl(int win_handle);
+int  aether_ui_window_is_open_impl(int win_handle);
+int  aether_ui_widget_window_impl(int widget_handle);   /* widget's window, 0=none */
+void aether_ui_close_window_by_handle_impl(int win_handle);
 
 /* In-window overlay layer (roadmap item 1). */
 int aether_ui_overlay_open_impl(int win_handle, int content_handle,

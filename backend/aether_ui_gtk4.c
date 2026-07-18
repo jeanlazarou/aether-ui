@@ -397,7 +397,8 @@ static int app_count = 0;
 static int app_capacity = 0;
 
 // The primary application window (set in on_activate). The overlay layer
-// resolves handle 0 to this — the driver's common "main window" case.
+// resolves handle 0 to this — the driver's common "main window" case. It is
+// also window handle 1 in the multi-window registry (extra_windows below).
 static GtkWindow* primary_window = NULL;
 
 // ---------------------------------------------------------------------------
@@ -530,6 +531,7 @@ int aether_ui_surface_diag_count_impl(int container_handle) {
 
 static void aeui_attach_pending_shortcuts(void);
 static void aeui_attach_pending_menus(GtkApplication* app, GtkWindow* window);
+static void aeui_register_primary_window(GtkWindow* w, const char* title);
 
 static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     AppEntry* entry = (AppEntry*)user_data;
@@ -537,6 +539,7 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     gtk_window_set_title(GTK_WINDOW(window), entry->title);
     gtk_window_set_default_size(GTK_WINDOW(window), entry->width, entry->height);
     primary_window = GTK_WINDOW(window);   // overlay layer resolves handle 0 here
+    aeui_register_primary_window(GTK_WINDOW(window), entry->title);  // = handle 1
     aeui_attach_pending_shortcuts();       // item 9: queued ui.shortcut regs
     aeui_attach_pending_menus(gtk_app, GTK_WINDOW(window));  // real menu bar
 
@@ -589,6 +592,7 @@ void aether_ui_app_run_raw(int app_handle) {
     g_application_run(G_APPLICATION(e->gtk_app), 0, NULL);
     g_object_unref(e->gtk_app);
 }
+
 
 // ---------------------------------------------------------------------------
 // Widget creation
@@ -2986,15 +2990,57 @@ int aether_ui_vg_tooltip_drawn_impl(void) {
     return getenv("SOMMELIER_VERSION") != NULL;
 }
 
-// Multi-window support
+// Multi-window support. Two numbering spaces coexist:
+//   - The OVERLAY win_handle: 0 = primary, N = extra_windows[N-1]. Historical;
+//     aeui_resolve_window keeps it (overlays/menus were written against it).
+//   - The DRIVER window handle: 1 = primary, 2.. = extras. Unified so /windows
+//     and the "window":N widget field number every window consistently.
 typedef struct {
     GtkWindow* window;
-    int root_handle;
+    char*      title;
+    int        root_handle;
+    int        live;
 } WindowEntry;
 
 static WindowEntry* extra_windows = NULL;
 static int extra_window_count = 0;
 static int extra_window_capacity = 0;
+
+// The primary window's title/live, tracked so the unified driver view (handle
+// 1) can report them alongside the extras.
+static char* primary_title = NULL;
+static int   primary_live = 0;
+
+// The application is HELD once per live window and released when each closes,
+// so the loop stays alive exactly while ≥1 window is live — deterministic
+// regardless of present-vs-realize (headless windows aren't "shown", which
+// otherwise confuses GTK's implicit last-window-close exit).
+static GApplication* aeui_held_app(void) {
+    return (app_count > 0 && apps[0].gtk_app) ? G_APPLICATION(apps[0].gtk_app)
+                                              : NULL;
+}
+
+static void on_extra_window_destroyed(GtkWindow* w, gpointer data) {
+    (void)data;
+    int was_live = 0;
+    if (primary_window == w) { was_live = primary_live; primary_live = 0; }
+    else {
+        for (int i = 0; i < extra_window_count; i++)
+            if (extra_windows[i].window == w) {
+                was_live = extra_windows[i].live; extra_windows[i].live = 0; break;
+            }
+    }
+    GApplication* app = aeui_held_app();
+    if (was_live && app) g_application_release(app);  // may exit the loop at 0
+}
+
+static void aeui_register_primary_window(GtkWindow* w, const char* title) {
+    primary_title = strdup(title ? title : "");
+    primary_live = 1;
+    g_signal_connect(w, "destroy", G_CALLBACK(on_extra_window_destroyed), NULL);
+    GApplication* app = aeui_held_app();
+    if (app) g_application_hold(app);
+}
 
 // Resolve an overlay window handle: 0 = the primary app window; >0 indexes
 // the extra_windows table (1-based).
@@ -3010,13 +3056,24 @@ int aether_ui_window_create_impl(const char* title, int width, int height) {
         extra_window_capacity = extra_window_capacity == 0 ? 8 : extra_window_capacity * 2;
         extra_windows = realloc(extra_windows, sizeof(WindowEntry) * extra_window_capacity);
     }
-    GtkWidget* win = gtk_window_new();
+    // Attach to the RUNNING application so the window shares the loop's
+    // lifecycle (keeps the app alive while open; loop exits when the last
+    // window closes). A bare gtk_window_new() is invisible to the app and
+    // wouldn't hold it open.
+    GtkApplication* app = (app_count > 0) ? apps[0].gtk_app : NULL;
+    GtkWidget* win = app ? gtk_application_window_new(app) : gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(win), title ? title : "");
     gtk_window_set_default_size(GTK_WINDOW(win), width, height);
     WindowEntry* e = &extra_windows[extra_window_count++];
     e->window = GTK_WINDOW(win);
+    e->title = strdup(title ? title : "");
     e->root_handle = 0;
-    return extra_window_count; // 1-based
+    e->live = 1;
+    g_signal_connect(win, "destroy",
+                     G_CALLBACK(on_extra_window_destroyed), NULL);
+    GApplication* gapp = aeui_held_app();
+    if (gapp) g_application_hold(gapp);  // released when this window closes
+    return extra_window_count; // 1-based (overlay space)
 }
 
 void aether_ui_window_set_body_impl(int win_handle, int root_handle) {
@@ -3029,7 +3086,52 @@ void aether_ui_window_set_body_impl(int win_handle, int root_handle) {
 
 void aether_ui_window_show_impl(int win_handle) {
     if (win_handle < 1 || win_handle > extra_window_count) return;
-    gtk_window_present(extra_windows[win_handle - 1].window);
+    const char* headless = getenv("AETHER_UI_HEADLESS");
+    if (headless && headless[0] && headless[0] != '0') {
+        gtk_widget_realize(GTK_WIDGET(extra_windows[win_handle - 1].window));
+    } else {
+        gtk_window_present(extra_windows[win_handle - 1].window);
+    }
+}
+
+// ── Unified driver window view (handle 1 = primary, 2.. = extras) ──
+int aether_ui_window_count_impl(void) { return 1 + extra_window_count; }
+
+const char* aether_ui_window_title_impl(int win_handle) {
+    if (win_handle == 1) return primary_title ? primary_title : "";
+    int idx = win_handle - 2;
+    if (idx < 0 || idx >= extra_window_count) return "";
+    return extra_windows[idx].title ? extra_windows[idx].title : "";
+}
+
+int aether_ui_window_is_open_impl(int win_handle) {
+    if (win_handle == 1) return primary_live;
+    int idx = win_handle - 2;
+    if (idx < 0 || idx >= extra_window_count) return 0;
+    return extra_windows[idx].live;
+}
+
+// The DRIVER window handle a widget currently lives in (top-level ancestor), or
+// 0 if unmounted. 1 = primary, 2.. = extras.
+int aether_ui_widget_window_impl(int widget_handle) {
+    GtkWidget* w = aether_ui_get_widget(widget_handle);
+    if (!w) return 0;
+    GtkRoot* root = gtk_widget_get_root(w);
+    if (!root || !GTK_IS_WINDOW(root)) return 0;
+    GtkWindow* gw = GTK_WINDOW(root);
+    if (gw == primary_window) return 1;
+    for (int i = 0; i < extra_window_count; i++)
+        if (extra_windows[i].window == gw) return i + 2;
+    return 0;
+}
+
+// close_window by the DRIVER handle (1 = primary, 2.. = extras).
+void aether_ui_close_window_by_handle_impl(int win_handle) {
+    GtkWindow* gw = NULL;
+    if (win_handle == 1) gw = primary_window;
+    else if (win_handle - 2 >= 0 && win_handle - 2 < extra_window_count)
+        gw = extra_windows[win_handle - 2].window;
+    if (gw) gtk_window_destroy(gw);
 }
 
 void aether_ui_window_close_impl(int win_handle) {
@@ -4303,6 +4405,15 @@ static gboolean pixel_req_idle(gpointer data) {
 
 typedef struct { int done; int handle; char type[32]; } FocusQuery;
 
+// Close a window on the GTK thread (window ops must not run off it).
+typedef struct { int win_handle; int done; } WindowCloseReq;
+static gboolean window_close_idle(gpointer data) {
+    WindowCloseReq* wc = (WindowCloseReq*)data;
+    aether_ui_close_window_by_handle_impl(wc->win_handle);
+    wc->done = 1;
+    return G_SOURCE_REMOVE;
+}
+
 // The registry handle of the currently keyboard-focused widget, or 0. Safe to
 // call on the GTK main thread (where shortcuts fire) — no idle marshaling.
 // Walks up from GTK's focus target to a tracked widget (GTK focuses the GtkText
@@ -4442,6 +4553,10 @@ static int widget_to_json(int handle, char* buf, int bufsize) {
     // Parent handle
     int parent_id = parent_handle_for(handle);
     n += snprintf(buf + n, bufsize - n, ",\"parent\":%d", parent_id);
+    // Multi-window: which top-level window this widget lives in (1=primary,
+    // 2..=extras, 0=unmounted). Lets a spec target/assert widgets per window.
+    n += snprintf(buf + n, bufsize - n, ",\"window\":%d",
+                  aether_ui_widget_window_impl(handle));
 
     // Current allocation (0x0 until mapped). Tests use a canvas's real size
     // to compute the viewBox→pixel mapping after a /window/resize.
@@ -5540,6 +5655,35 @@ static void handle_test_request(int client_fd) {
     }
 
     // GET /menus — every menu with its item labels (shared side-store).
+    // GET /windows — every top-level window (1=primary, 2..=extras).
+    if (method == 0 && strcmp(path, "/windows") == 0) {
+        int nw = aether_ui_window_count_impl();
+        char* body = (char*)malloc(64 + nw * 256);
+        int pos = sprintf(body, "[");
+        for (int i = 1; i <= nw; i++) {
+            if (i > 1) pos += sprintf(body + pos, ",");
+            pos += snprintf(body + pos, 256,
+                "{\"id\":%d,\"title\":\"%s\",\"live\":%s}",
+                i, aether_ui_window_title_impl(i),
+                aether_ui_window_is_open_impl(i) ? "true" : "false");
+        }
+        sprintf(body + pos, "]");
+        send_response(client_fd, 200, "OK", "application/json", body);
+        free(body);
+        close(client_fd);
+        return;
+    }
+    // POST /window/{id}/close — close a window by its driver handle.
+    if (method == 1 && strncmp(path, "/window/", 8) == 0 && strstr(path, "/close")) {
+        int id = atoi(path + 8);
+        WindowCloseReq wc = { id, 0 };
+        g_idle_add(window_close_idle, &wc);
+        while (!wc.done) usleep(1000);
+        send_response(client_fd, 200, "OK", "application/json", "{\"ok\":true}");
+        close(client_fd);
+        return;
+    }
+
     if (method == 0 && strcmp(path, "/menus") == 0) {
         int handles[64];
         int nh = aether_ui_menu_handles(handles, 64);

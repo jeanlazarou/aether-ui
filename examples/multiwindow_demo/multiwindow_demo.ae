@@ -1,0 +1,40 @@
+// Aether UI multi-window — a main window with a button that opens a second,
+// co-equal top-level window. Cross-window state: a shared counter is shown in
+// BOTH windows and a button in the second bumps it.
+import ui
+import ui (window, vstack, text, btn,
+    window_create, window_set_body, window_show, window_close,
+    root_vstack, ui_state_i, ui_get_i, ui_set_i, text_bound,
+    enable_test_server_root)
+import std.os (os_getenv)
+import std.string
+
+main() {
+    count = ui_state_i(0)
+    win2 = 0
+
+    main_root = root_vstack(10) {
+        text("Main window")
+        text_bound(count, "count: ", "")
+        _open = btn("open window 2") callback {
+            // Build the second window's body.
+            w2root = root_vstack(8) {
+                text("Second window")
+                text_bound(count, "count: ", "")   // same state, both windows
+                _b = btn("bump") callback { _ = ui_set_i(count, ui_get_i(count) + 1) }
+            }
+            win2 = window_create("Window 2", 260, 200)
+            window_set_body(win2, w2root)
+            window_show(win2)
+        }
+        _close = btn("close window 2") callback {
+            if win2 > 0 { window_close(win2) }
+        }
+    }
+
+    app = ui.app_create("Multi-window demo", 320, 240)
+    if os_getenv("AETHER_UI_TEST_PORT") != null {
+        enable_test_server_root(9222, main_root)
+    }
+    ui.app_start(app, main_root)
+}
