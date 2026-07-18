@@ -430,6 +430,19 @@ running, +1 for the two-way binding assertion).
   Watch-out: the double-click fire is a plain closure invoke (no NSEvent), so
   it's headless-safe; if it 0-fires, check the assoc-object key survived.
 
+- **Tree mode + table delegate cells + table_bind** (landed 2026-07-18, commit
+  3e684db). ALL pure module.ae — no backend/C, so macOS behaves identically to
+  GTK4+win32 (no per-backend failure mode). Verified 3+2 on GTK4+win32. A Mac
+  run is confirmation-only:
+  ```
+  for d in tree_demo tabledeleg_demo; do
+    ./build.sh examples/$d/$d.ae build/$d
+    AETHER_UI_TEST_PORT=9222 ./build/$d &        # keep_alive:true
+    UI_SPEC=$d/spec_$d tests/run_spec.sh          # expect 3 / 2
+    pkill -f build/$d
+  done
+  ```
+
 ## macOS vs winbaz — the cheat sheet
 
 | | winbaz | Mac mini |

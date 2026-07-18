@@ -174,10 +174,13 @@ term in one result row — cosmetic, doesn't affect the spec.
   wrap/anchor in the text JSON; 3/3 GTK4+win32). Remaining: text-anchor
   for CANVAS/vg text (this covers native labels).
 - **Table/list:** virtualization (the GtkColumnView / recycled-cell vs
-  handle-registry question), delegate cells (%-bars, chips), ~~row
-  double-click~~ **DONE** (`on_row_double_click` +
-  POST /widget/{id}/double_click; 2/2), ~~multi-select~~ **DONE**
-  (`listbox_multi`/`listbox_is_selected`; toggle rows; 3/3), **tree mode**.
+  handle-registry question — the one real remaining table item),
+  ~~delegate cells (%-bars, chips)~~ **DONE** (`table_col_delegate` — a
+  column whose cells a closure builds widgets into), ~~row double-click~~
+  **DONE**, ~~multi-select~~ **DONE**, ~~**tree mode**~~ **DONE**
+  (`tree`/`tree_node`/`tree_add_child` — hierarchical rows, disclosure
+  toggle, independent subtrees; 3/3). All pure module.ae (backend-
+  agnostic); tree+delegate+table_bind verified GTK4+win32.
 - **Effects:** shadows on paths/text (rect+circle only today),
   **backdrop blur** / materials (frosted scrim).
 - **Transitions:** enter/exit transitions on overlay ENTRIES (the
