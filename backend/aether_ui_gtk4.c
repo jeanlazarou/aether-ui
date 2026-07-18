@@ -5513,7 +5513,26 @@ static void aeui_attach_pending_menus(GtkApplication* app, GtkWindow* window) {
 }
 
 void aether_ui_menu_popup(int menu_handle, int anchor_widget) {
-    (void)menu_handle; (void)anchor_widget;
+    // A standalone popup of a menu's GMenu model, anchored under the widget.
+    // Like the win32 TrackPopupMenu / macOS popUpMenuPositioningItem paths,
+    // this shows real UI, so it's a no-op under headless (CI, smoke tests) —
+    // there's no seat to dismiss it and no user to see it. The items remain
+    // reachable via the /menu/{h}/activate driver route regardless.
+    {
+        const char* hl = getenv("AETHER_UI_HEADLESS");
+        if (hl && hl[0] && hl[0] != '0') return;
+    }
+    GtkMenuEntry* e = gtk_menu_at(menu_handle);
+    GtkWidget* anchor = aether_ui_get_widget(anchor_widget);
+    if (!e || !e->model || !anchor) return;
+
+    GtkWidget* pop = gtk_popover_menu_new_from_model(G_MENU_MODEL(e->model));
+    gtk_widget_set_parent(pop, anchor);
+    gtk_popover_set_has_arrow(GTK_POPOVER(pop), FALSE);
+    gtk_popover_set_position(GTK_POPOVER(pop), GTK_POS_BOTTOM);
+    // Free the popover when it closes (it unparents itself on dispose).
+    g_signal_connect(pop, "closed", G_CALLBACK(gtk_widget_unparent), NULL);
+    gtk_popover_popup(GTK_POPOVER(pop));
 }
 
 // ---------------------------------------------------------------------------

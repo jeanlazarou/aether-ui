@@ -192,10 +192,15 @@ term in one result row — cosmetic, doesn't affect the spec.
   (GtkPopoverMenuBar over a GMenu model; each item backed by a
   GSimpleAction on the app, registered in on_activate; separators split
   sections). `examples/menu` + `tests/menu/spec_menu` (GET /menus, POST
-  /menu/{h}/activate, effect-observed counter) — 4/4 on GTK4. Driver
-  routes added to BOTH servers (house rule 5). Remaining menu work:
-  `menu_popup` (standalone popup) is still a no-op; the drawn context
-  menu remains the right-click surface.
+  /menu/{h}/activate, effect-observed counter) — **4/4 on GTK4 AND
+  win32** (macOS expected-parity: same shared side-store + shared server
+  routes, unverified this pass). Driver routes added to BOTH servers
+  (house rule 5). `menu_popup` (standalone popup of a GMenu model) is now
+  real on GTK4 too — `gtk_popover_menu_new_from_model` anchored under the
+  widget, headless-no-op like the win32/macOS TrackPopupMenu/
+  popUpMenuPositioningItem paths (so no driver assertion — the items stay
+  reachable via /menu/{h}/activate). The drawn context menu remains the
+  right-click surface.
 
 ## 3. Backlog (real, smaller, or gated)
 
