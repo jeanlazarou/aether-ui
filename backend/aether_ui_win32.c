@@ -2740,8 +2740,11 @@ int aether_ui_widget_window_impl(int widget_handle) {
 }
 void aether_ui_close_window_by_handle_impl(int win_handle) {
     if (win_handle < 1 || win_handle > w32_window_count) return;
-    if (w32_windows[win_handle - 1].live)
-        DestroyWindow(w32_windows[win_handle - 1].hwnd);  // fires WM_DESTROY
+    if (!w32_windows[win_handle - 1].live) return;
+    // This may be called from the HTTP server thread; DestroyWindow must run on
+    // the window's OWNING (UI) thread, so post WM_CLOSE (async, thread-safe) —
+    // the WndProc then DestroyWindow's it and WM_DESTROY marks it dead.
+    PostMessageW(w32_windows[win_handle - 1].hwnd, WM_CLOSE, 0, 0);
 }
 
 void aether_ui_window_set_body_impl(int win_handle, int root_handle) {
