@@ -52,6 +52,7 @@ SUITES=(
   "polish|examples/polish_demo|polish_demo/spec_polish_demo|"
   "vlist|examples/vlist_demo|vlist_demo/spec_vlist_demo|"
   "wshortcut|examples/wshortcut_demo|wshortcut_demo/spec_wshortcut_demo|"
+  "multiwindow|examples/multiwindow_demo|multiwindow_demo/spec_multiwindow_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"

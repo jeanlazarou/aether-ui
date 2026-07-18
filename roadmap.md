@@ -262,9 +262,19 @@ term in one result row — cosmetic, doesn't affect the spec.
   backends (GtkStackSwitcher/GtkStack, NSTabView, win32 strip-over-zstack);
   `tabs_demo` 4/4 everywhere. (This backlog note was stale.)
 - **Drag & drop** — inter-widget first (list reorder), inter-app later. M.
-- **Multi-window** — one window per app today (surface table is
-  single-window by design). M, needs a driver story (window ids in
-  `/widgets`). Defer until an app needs it.
+- ~~**Multi-window**~~ **DONE 2026-07-18** — co-equal top-level windows.
+  One event loop owns N windows (`window_create`/`window_set_body`/
+  `window_show`/`window_close`); the loop stays alive while ≥1 window is
+  live (GTK4 g_application_hold per window / win32 WM_DESTROY last-close
+  count / macOS applicationShouldTerminateAfterLastWindowClosed). Driver
+  story: `GET /windows`, `"window":N` per widget, `POST /window/{id}/close`
+  — on BOTH servers. Cross-window shared state works (state layer is
+  window-agnostic). `multiwindow_demo` + spec 5/5 on GTK4 AND win32 (open,
+  list, per-widget tag, cross-window bump, close-leaves-primary-live).
+  macOS coded (mirrors the pattern) — sibling verify. Design:
+  docs/design/multi-window.md. NB the ~50 single-window sites (overlays/
+  menus/sheets → primary) aren't yet per-window — a secondary window's
+  overlay still parents to the primary (design §3, a follow-up).
 - **Accessibility** — native widgets get GTK/AppKit a11y free; anything
   vg-DRAWN (the dropdown, a plan-B table) needs a semantics bridge
   eventually — this is the real cost of the drawn path, and why Flutter

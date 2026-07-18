@@ -462,3 +462,19 @@ References on the aeb side:
   docs/run-policy-class-and-cloud-leverage.md   (run_on=host/vm, lease auth, image selection)
   the winbaz VM facts + MSYS2 quoting law live in the aeb session's memory
 ```
+
+- **Multi-window** (co-equal top-level windows; landed 2026-07-18). macOS impl
+  mirrors GTK4/win32: unified accessors over primary + extra_windows
+  (NSMutableArray); the last-close rule is already native
+  (applicationShouldTerminateAfterLastWindowClosed → YES). Verify:
+  ```
+  ./build.sh examples/multiwindow_demo/multiwindow_demo.ae build/multiwindow_demo
+  AETHER_UI_TEST_PORT=9222 ./build/multiwindow_demo &     # keep_alive:true
+  UI_SPEC=multiwindow_demo/spec_multiwindow_demo tests/run_spec.sh  # expect 5/5
+  ```
+  Watch-outs: (1) headless — a secondary NSWindow must NOT become key/visible
+  under AETHER_UI_HEADLESS or the spec's live/close assertions skew; window_show
+  should no-op when headless (GTK4/win32 do). (2) close-from-driver runs on the
+  server thread — AppKit -[NSWindow close] off the main thread is unsafe;
+  marshal to the main thread (dispatch_async(dispatch_get_main_queue,...)) if
+  the close assertion fails, like win32's PostMessage(WM_CLOSE) fix.
