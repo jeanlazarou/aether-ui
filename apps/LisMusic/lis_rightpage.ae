@@ -46,8 +46,8 @@ build_right(_ctx: ptr, c: *Config) -> int {
             }
             tab("My Music") {
                 text("Local Music")
-                text("(The original imports *.mp3 / *.flv here; cover art via")
-                text(" FFmpeg is still stubbed in lis_cover.)")
+                text("(The original imports *.mp3 / *.flv here. Cover art now")
+                text(" decodes from bytes; only extraction stubs — lis_cover.)")
                 // REAL audio (std.audio): load + play a bundled WAV. This is
                 // the worked proof that lis_audio does real device playback —
                 // the transport bar + seek/volume then operate on it.

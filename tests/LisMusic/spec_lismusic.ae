@@ -24,6 +24,9 @@ main() {
             aeocha.assert_contains(b, "Local Music", "sidebar nav present")
             aeocha.assert_contains(b, "\"type\":\"tabs\"", "right-page tab stack present")
             aeocha.assert_contains(b, "Lumière", "player shows the now-playing title")
+            // The album cover is a real image widget decoded from bytes
+            // (ui.image_from_bytes, no temp file) — proves the new primitive.
+            aeocha.assert_contains(b, "\"type\":\"image\"", "cover art image (decoded from bytes) present")
         }
 
         aeocha.it("sidebar nav switches the right-page tab") callback {

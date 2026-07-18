@@ -35,8 +35,13 @@ worker thread. **Three of those four are real here:**
   window never freezes; drained via a `ui.timer` pump. `LIS_OFFLINE=1` forces a
   deterministic canned path for the driver spec.
 
-The **one** remaining stub is **cover art** (`lis_cover`) — extracting an
-embedded image and decoding it into a widget still has no Aether-UI path.
+**Cover art** (`lis_cover`) is now half-real: the DECODE+display path is
+real (`ui.image_from_bytes` decodes encoded image bytes straight into a
+widget — GdkTexture / GDI+ / NSImage, no temp file), so the player bar
+shows a real decoded cover. Only the EXTRACTION half stubs — pulling the
+embedded art *out of* an audio container (ID3 APIC / FLAC PICTURE, the
+original's FFmpeg route) has no in-process extractor yet, so it shows a
+bundled cover rather than the song's own art.
 
 What this port **does** deliver, faithfully, is the **UI and its
 structure**:
@@ -54,12 +59,12 @@ structure**:
 
 The backend subsystems are isolated behind clearly-marked **seams**
 (`lis_audio`, `lis_store`, `lis_cover`, `lis_net`) — each a small module
-with the original's method signatures. Three are **real** (`lis_store` →
-contrib.sqlite, `lis_audio` → std.audio, `lis_net` → std.worker +
-std.http + std.json); only `lis_cover` still stubs (no image-decode
-path). Wiring a real backend in later means implementing one seam
-module, not rewriting the app — the three real ones are worked examples
-of exactly that. Each remaining stub says so at its call site.
+with the original's method signatures. Three are fully **real** (`lis_store` → contrib.sqlite, `lis_audio` →
+std.audio, `lis_net` → std.worker + std.http + std.json), and
+`lis_cover`'s decode+display half is real too (`ui.image_from_bytes`);
+only cover EXTRACTION from the audio container still stubs. Wiring a
+real backend in later means implementing one seam module, not rewriting
+the app — the real ones are worked examples of exactly that. Each remaining stub says so at its call site.
 
 ## File map (original → port)
 
@@ -75,7 +80,7 @@ of exactly that. Each remaining stub says so at its call site.
 | `ButtonHover.qml`, `ChoseButton.qml`, `SelectBox.qml` | `lis_widgets.ae` | reusable UI bits |
 | `musicplay.{h,cpp}` | `lis_audio.ae` | **seam**: playback (**REAL** — std.audio) |
 | `savehisty.{h,cpp}` | `lis_store.ae` | **seam**: SQLite persistence (**REAL** — contrib.sqlite) |
-| `ffmpegsolve.{h,cpp}` | `lis_cover.ae` | **seam**: cover extraction (stub — no image decode) |
+| `ffmpegsolve.{h,cpp}` | `lis_cover.ae` | **seam**: cover art — decode REAL (ui.image_from_bytes); extraction stubs |
 | `netmusic*.{h,cpp}`, `musicworker.{h,cpp}` | `lis_net.ae` | **seam**: HTTP/JSON API (**REAL** — std.worker + std.http + std.json) |
 
 ## Tests

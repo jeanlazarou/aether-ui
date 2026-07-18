@@ -9,18 +9,28 @@
 // this port); their intent is noted.
 
 import ui
-import ui (vstack, hstack, text, btn, slider, divider, bind_text)
+import ui (vstack, hstack, text, btn, slider, divider, bind_text,
+    image_from_bytes, image_size)
 import lis_config
 import lis_config (Config, toggle_play, playing)
 import lis_audio
 import lis_audio (Player, start_play, stop_play, is_playing, set_voice, seek_frac)
+import lis_cover
+import lis_cover (cover_bytes)
 
 exports ( build_bottom )
 
 build_bottom(_ctx: ptr, c: *Config) {
     hstack(16) {
-        // Left: title + artist, bound to Config's now-playing state (the
-        // original binds these to player.titleChanged / authorChanged).
+        // Left: the album cover (original: the rotating cover disc). REAL
+        // decode-from-bytes via ui.image_from_bytes — lis_cover reads the
+        // cover image and hands the encoded bytes here, decoded with no temp
+        // file (the ffmpeg-temp-jpg dance the original does).
+        cdata, clen = cover_bytes("")
+        cover = image_from_bytes(cdata, clen)
+        image_size(cover, 56, 56)
+        // Title + artist, bound to Config's now-playing state (the original
+        // binds these to player.titleChanged / authorChanged).
         vstack(2) {
             t_title = text("")
             bind_text(t_title, c.st_title)

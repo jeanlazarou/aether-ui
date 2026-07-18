@@ -28,7 +28,7 @@ import lis_rightpage (build_right)
 import lis_bottom
 import lis_bottom (build_bottom)
 import lis_cover
-import lis_cover (DEFAULT_COVER)
+import lis_cover (DEFAULT_COVER_PATH)
 
 main() {
     c = mk_config()
@@ -41,7 +41,7 @@ main() {
             c.st_author = ui_state_s("Unknown")
             c.st_playing = ui_state_b(0)
             c.st_search = ui_state_s("")
-            c.st_cover = ui_state_s(DEFAULT_COVER())
+            c.st_cover = ui_state_s(DEFAULT_COVER_PATH())
             c.st_page = ui_state_i(0)
 
             // Top region: sidebar | right page. The original nests LeftPage +

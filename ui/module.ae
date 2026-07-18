@@ -51,7 +51,7 @@ exports (
     table_cols, table_col, table, table_update, table_select, table_selected,
     table_count, table_on_select, on_sort,
     sheet_create, sheet_set_body, sheet_present, sheet_dismiss,
-    image, image_size,
+    image, image_from_bytes, image_size,
     canvas_create, canvas_begin_path, canvas_move_to, canvas_line_to,
     canvas_stroke, canvas_stroke_cj, canvas_fill_rect, canvas_clip_rect, canvas_clear, canvas_redraw, canvas_write_png,
     canvas_arc, canvas_close_path, canvas_fill, canvas_fill_text, canvas_stroke_text,
@@ -271,6 +271,7 @@ extern aether_ui_sheet_present_impl(handle: int)
 extern aether_ui_sheet_dismiss_impl(handle: int)
 
 extern aether_ui_image_create(filepath: string) -> int
+extern aether_ui_image_from_bytes(data: string, length: int) -> int
 extern aether_ui_image_set_size(handle: int, width: int, height: int)
 
 // Menus
@@ -1644,6 +1645,20 @@ sheet_dismiss(handle: int) {
 // Image widget
 image(_ctx: ptr, filepath: string) {
     handle = aether_ui_image_create(filepath)
+    if _ctx != 0 {
+        aether_ui_widget_add_child_ctx(_ctx, handle)
+    }
+    return handle
+}
+
+// image_from_bytes(data, length) — decode encoded image bytes (PNG / JPEG /
+// GIF / BMP …) straight into an image widget, no temp file. `data` is a
+// byte string (binary-safe via the explicit length — e.g. from a network
+// fetch, a generated buffer, or an embedded-art blob). GTK4 decodes via
+// GdkTexture, win32 via GDI+, macOS via NSImage. Decode failure leaves an
+// empty image (the widget still exists, so the tree is stable).
+image_from_bytes(_ctx: ptr, data: string, length: int) {
+    handle = aether_ui_image_from_bytes(data, length)
     if _ctx != 0 {
         aether_ui_widget_add_child_ctx(_ctx, handle)
     }

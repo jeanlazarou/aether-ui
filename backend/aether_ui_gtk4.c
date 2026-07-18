@@ -2732,6 +2732,27 @@ int aether_ui_image_create(const char* filepath) {
     return aether_ui_register_widget(img);
 }
 
+// Decode encoded image bytes into an image widget (no temp file). GTK4's
+// gdk_texture_new_from_bytes handles PNG/JPEG/etc. via the pixbuf loaders;
+// the resulting GdkTexture is a GdkPaintable a GtkImage displays directly.
+int aether_ui_image_from_bytes(const char* data, int length) {
+    ensure_gtk_init();
+    GtkWidget* img = gtk_image_new();
+    if (data && length > 0) {
+        GBytes* bytes = g_bytes_new(data, (gsize)length);
+        GError* err = NULL;
+        GdkTexture* tex = gdk_texture_new_from_bytes(bytes, &err);
+        g_bytes_unref(bytes);
+        if (tex) {
+            gtk_image_set_from_paintable(GTK_IMAGE(img), GDK_PAINTABLE(tex));
+            g_object_unref(tex);
+        } else if (err) {
+            g_clear_error(&err);   // stays an empty image on decode failure
+        }
+    }
+    return aether_ui_register_widget(img);
+}
+
 void aether_ui_image_set_size(int handle, int width, int height) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (w && GTK_IS_IMAGE(w)) {

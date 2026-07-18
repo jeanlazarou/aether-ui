@@ -2685,6 +2685,19 @@ int aether_ui_image_create(const char* filepath) {
     return register_widget_typed((__bridge void*)iv, AUI_IMAGE);
 }
 
+// Decode encoded image bytes into an image view (no temp file). NSImage
+// initWithData: uses the same ImageIO decoders as the file path — PNG /
+// JPEG / GIF / etc. NB written from Linux; verify on the Mac.
+int aether_ui_image_from_bytes(const char* data, int length) {
+    NSImageView* iv = [[NSImageView alloc] init];
+    if (data && length > 0) {
+        NSData* d = [NSData dataWithBytes:data length:(NSUInteger)length];
+        NSImage* img = [[NSImage alloc] initWithData:d];
+        if (img) [iv setImage:img];   // stays empty on decode failure
+    }
+    return register_widget_typed((__bridge void*)iv, AUI_IMAGE);
+}
+
 void aether_ui_image_set_size(int handle, int width, int height) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (v) {

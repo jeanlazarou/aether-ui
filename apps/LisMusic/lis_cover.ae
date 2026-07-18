@@ -1,26 +1,40 @@
-// lis_cover.ae — cover-art SEAM (original: ffmpegsolve.h / ffmpegsolve.cpp).
+// lis_cover.ae — cover art (original: ffmpegsolve.h / ffmpegsolve.cpp).
 //
 // The original shells out to the FFmpeg CLI to pull the embedded cover image
-// out of a local audio file and writes it to a temp path the QML Image loads.
-// Aether can spawn processes (std.host), but there is no ui-layer path to
-// decode arbitrary image bytes into a widget, so this stays a stub: it
-// returns a bundled placeholder cover path. Wiring real extraction later
-// means implementing THIS module.
+// out of an audio file, writes it to a temp JPEG, and QML's Image loads that
+// path. Two halves: (a) EXTRACT the embedded bytes, (b) DECODE + display them.
 //
-// Original surface: getcover(localpath) -> coverpath (emitted as a signal)
+// Half (b) is now REAL: ui.image_from_bytes decodes encoded image bytes
+// (PNG/JPEG/…) straight into a widget with no temp file (GdkTexture on GTK4,
+// GDI+ on win32, NSImage on macOS). cover_bytes() reads a cover image into a
+// (bytes, length) pair the caller hands to image_from_bytes.
+//
+// Half (a) — pulling the album art OUT of the audio container (ID3v2 APIC /
+// FLAC PICTURE / the FFmpeg route) — is the remaining stub: there's no
+// in-process embedded-art extractor yet, so cover_bytes returns a bundled
+// cover rather than the song's own art. Wiring real extraction later means
+// only changing which bytes this returns; the decode+display path is done.
 
 import std.string
+import std.fs
 
 extern println(s: string)
 
-exports ( extract_cover, DEFAULT_COVER )
+exports ( cover_bytes, DEFAULT_COVER_PATH )
 
-// The placeholder cover shown when real extraction isn't wired.
-DEFAULT_COVER() -> string { return "Resrc/Pic/24.png" }
+// The bundled cover shown until real extraction lands.
+DEFAULT_COVER_PATH() -> string { return "apps/LisMusic/assets_cover.png" }
 
-// Extract embedded cover art from `audio_path`. STUB — returns the
-// placeholder; the original returns an FFmpeg-written temp PNG path.
-extract_cover(audio_path: string) -> string {
-    println("[lis_cover STUB] extract_cover ${audio_path} -> placeholder")
-    return DEFAULT_COVER()
+// Cover art for `audio_path` as (bytes, length) — feed to ui.image_from_bytes.
+// STUB half: returns the bundled cover's bytes, not the song's embedded art
+// (no in-process extractor yet). REAL half: those bytes are genuine encoded
+// PNG that image_from_bytes decodes with no temp file.
+cover_bytes(audio_path: string) -> (string, int) {
+    _ = audio_path   // ignored until an extractor lands
+    data, n, err = fs.read_binary(DEFAULT_COVER_PATH())
+    if err != "" {
+        println("[lis_cover] cover read failed: ${err}")
+        return "", 0
+    }
+    return data, n
 }

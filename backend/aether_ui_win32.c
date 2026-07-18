@@ -2587,6 +2587,42 @@ int aether_ui_image_create(const char* filepath) {
     return register_widget_typed(h, WK_IMAGE);
 }
 
+// GDI+ decode from an in-memory IStream — same decoders as the file path,
+// no temp file. A growable HGlobal stream (ole32, already linked — the same
+// primitive the screenshot path uses) is filled with the encoded bytes and
+// rewound; GDI+ decodes PNG/JPEG/etc. off it.
+__declspec(dllimport) int __stdcall GdipCreateBitmapFromStream(
+    void* stream, void** bitmap);
+
+int aether_ui_image_from_bytes(const char* data, int length) {
+    ensure_win_init();
+    HWND h = CreateWindowExW(0, L"STATIC", L"",
+        WS_CHILD | WS_VISIBLE | SS_BITMAP,
+        0, 0, 0, 0, widget_holder, NULL, GetModuleHandleW(NULL), NULL);
+    if (!h) return 0;
+    if (data && length > 0) {
+        ensure_gdiplus();
+        if (gdiplus_started) {
+            IStream* stream = NULL;
+            if (CreateStreamOnHGlobal(NULL, TRUE, &stream) == S_OK && stream) {
+                ULONG wrote = 0;
+                stream->lpVtbl->Write(stream, data, (ULONG)length, &wrote);
+                LARGE_INTEGER zero; zero.QuadPart = 0;
+                stream->lpVtbl->Seek(stream, zero, STREAM_SEEK_SET, NULL);
+                void* gdi_bitmap = NULL;
+                if (GdipCreateBitmapFromStream(stream, &gdi_bitmap) == 0 && gdi_bitmap) {
+                    HBITMAP hbm = NULL;
+                    GdipCreateHBITMAPFromBitmap(gdi_bitmap, &hbm, 0);
+                    GdipDisposeImage(gdi_bitmap);
+                    if (hbm) SendMessageW(h, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)hbm);
+                }
+                stream->lpVtbl->Release(stream);
+            }
+        }
+    }
+    return register_widget_typed(h, WK_IMAGE);
+}
+
 void aether_ui_image_set_size(int handle, int width, int height) {
     Widget* w = widget_at(handle);
     if (w) { w->pref_width = width; w->pref_height = height; }

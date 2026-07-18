@@ -190,6 +190,13 @@ void aether_ui_sheet_present_impl(int handle);
 void aether_ui_sheet_dismiss_impl(int handle);
 
 int aether_ui_image_create(const char* filepath);
+// Decode encoded image bytes (PNG / JPEG / GIF / BMP …) into an image
+// widget — no temp file. `data` is a byte buffer of `length` bytes (an
+// AetherString on the caller side, binary-safe via the explicit length).
+// Returns an image widget handle; on decode failure an empty image (the
+// widget still exists so the tree is stable). For downloaded/generated/
+// embedded-art bytes that never touch disk.
+int aether_ui_image_from_bytes(const char* data, int length);
 void aether_ui_image_set_size(int handle, int width, int height);
 
 // Menus (Group 5b) — native menu bars and context menus.
