@@ -80,11 +80,14 @@ main() {
                 }
             }
         }
-    }
-
-    port = os_getenv("AETHER_UI_TEST_PORT")
-    if string.length(port) > 0 {
-        pnum, _pe = string.to_int(port)
-        enable_test_server(pnum)
+        // Arm the driver INSIDE the window(){} block: on GTK4 the block owns
+        // the event loop and never returns, so a call after it never runs
+        // (there was no server on GTK4 — win32 auto-starts from AETHER_UI_TEST_
+        // PORT, which is why winbaz still passed).
+        port = os_getenv("AETHER_UI_TEST_PORT")
+        if string.length(port) > 0 {
+            pnum, _pe = string.to_int(port)
+            enable_test_server(pnum)
+        }
     }
 }
