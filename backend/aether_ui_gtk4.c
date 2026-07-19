@@ -2185,6 +2185,116 @@ void aether_ui_set_tooltip(int handle, const char* text) {
     if (w) gtk_widget_set_tooltip_text(w, text);
 }
 
+// ── Accessibility (semantics layer) ──────────────────────────────────
+// Map our cross-platform role vocabulary <-> GtkAccessibleRole. Roles GTK4
+// can't retarget after construction are still reported from the side-store so
+// the driver reflects the author's intent; LABEL/DESCRIPTION are set for real
+// via gtk_accessible_update_property (screen-reader-visible).
+static const struct { const char* name; GtkAccessibleRole role; } aeui_a11y_roles[] = {
+    {"button", GTK_ACCESSIBLE_ROLE_BUTTON},
+    {"checkbox", GTK_ACCESSIBLE_ROLE_CHECKBOX},
+    {"radio", GTK_ACCESSIBLE_ROLE_RADIO},
+    {"link", GTK_ACCESSIBLE_ROLE_LINK},
+    {"heading", GTK_ACCESSIBLE_ROLE_HEADING},
+    {"image", GTK_ACCESSIBLE_ROLE_IMG},
+    {"group", GTK_ACCESSIBLE_ROLE_GROUP},
+    {"list", GTK_ACCESSIBLE_ROLE_LIST},
+    {"listitem", GTK_ACCESSIBLE_ROLE_LIST_ITEM},
+    {"tab", GTK_ACCESSIBLE_ROLE_TAB},
+    {"tablist", GTK_ACCESSIBLE_ROLE_TAB_LIST},
+    {"menu", GTK_ACCESSIBLE_ROLE_MENU},
+    {"menuitem", GTK_ACCESSIBLE_ROLE_MENU_ITEM},
+    {"dialog", GTK_ACCESSIBLE_ROLE_DIALOG},
+    {"alert", GTK_ACCESSIBLE_ROLE_ALERT},
+    {"textbox", GTK_ACCESSIBLE_ROLE_TEXT_BOX},
+    {"slider", GTK_ACCESSIBLE_ROLE_SLIDER},
+    {"progressbar", GTK_ACCESSIBLE_ROLE_PROGRESS_BAR},
+    {"none", GTK_ACCESSIBLE_ROLE_PRESENTATION},
+};
+
+// GtkAccessibleRole -> our name (for readback of the AUTO role). Only the
+// vocabulary we expose is mapped; anything else reports "".
+static const char* aeui_a11y_role_name(GtkAccessibleRole r) {
+    for (size_t i = 0; i < G_N_ELEMENTS(aeui_a11y_roles); i++)
+        if (aeui_a11y_roles[i].role == r) return aeui_a11y_roles[i].name;
+    return "";
+}
+
+void aether_ui_a11y_set_role_impl(int handle, const char* role) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !role) return;
+    // Stash the requested role name; GTK4 fixes a widget's role at
+    // construction, so the side-store is the authoritative author intent the
+    // driver reports. (A future construction-time role map can honour it on
+    // the platform side for our own container widgets.)
+    g_object_set_data_full(G_OBJECT(w), "aeui-a11y-role",
+                           g_strdup(role), g_free);
+}
+
+void aether_ui_a11y_set_label_impl(int handle, const char* name) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !name) return;
+    gtk_accessible_update_property(GTK_ACCESSIBLE(w),
+        GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
+    g_object_set_data_full(G_OBJECT(w), "aeui-a11y-name",
+                           g_strdup(name), g_free);
+}
+
+void aether_ui_a11y_set_description_impl(int handle, const char* desc) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w || !desc) return;
+    gtk_accessible_update_property(GTK_ACCESSIBLE(w),
+        GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, desc, -1);
+    g_object_set_data_full(G_OBJECT(w), "aeui-a11y-desc",
+                           g_strdup(desc), g_free);
+}
+
+// Driver readback: report the EFFECTIVE role/name/description. Role prefers an
+// explicit override, else the widget's real GtkAccessibleRole. Name/desc
+// prefer the in-process AT view (gtk_test_accessible_check_property), else our
+// side-store, else the widget's own text (a button's label is its auto name).
+void aether_ui_a11y_get_impl(int handle,
+                             char* role, int rolesz,
+                             char* name, int namesz,
+                             char* desc, int descsz) {
+    if (role && rolesz) role[0] = '\0';
+    if (name && namesz) name[0] = '\0';
+    if (desc && descsz) desc[0] = '\0';
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return;
+
+    if (role && rolesz) {
+        const char* over = g_object_get_data(G_OBJECT(w), "aeui-a11y-role");
+        const char* rn = over ? over
+            : aeui_a11y_role_name(gtk_accessible_get_accessible_role(GTK_ACCESSIBLE(w)));
+        g_strlcpy(role, rn ? rn : "", rolesz);
+    }
+
+    if (name && namesz) {
+        // Effective accessible name: our side-store (set for real via
+        // gtk_accessible_update_property(LABEL)) if present, else the widget's
+        // own label text — a button/label's auto accessible name. (We read the
+        // side-store rather than round-tripping through the test-AT here
+        // because this can run on the test-server thread, where touching GTK's
+        // AT-context internals is unsafe.)
+        const char* store = g_object_get_data(G_OBJECT(w), "aeui-a11y-name");
+        if (store && store[0]) {
+            g_strlcpy(name, store, namesz);
+        } else if (GTK_IS_BUTTON(w)) {
+            const char* lbl = gtk_button_get_label(GTK_BUTTON(w));
+            if (lbl) g_strlcpy(name, lbl, namesz);
+        } else if (GTK_IS_LABEL(w)) {
+            const char* lbl = gtk_label_get_text(GTK_LABEL(w));
+            if (lbl) g_strlcpy(name, lbl, namesz);
+        }
+    }
+
+    if (desc && descsz) {
+        const char* store = g_object_get_data(G_OBJECT(w), "aeui-a11y-desc");
+        if (store) g_strlcpy(desc, store, descsz);
+    }
+}
+
 void aether_ui_set_distribution(int handle, int distribution) {
     GtkWidget* w = aether_ui_get_widget(handle);
     if (w && GTK_IS_BOX(w)) {
@@ -4764,6 +4874,20 @@ static int widget_to_json(int handle, char* buf, int bufsize) {
         }
     }
 
+    // Accessibility: effective role + accessible name (emitted only when
+    // present, so existing specs are unaffected).
+    {
+        char role[64] = "", name[512] = "", desc[512] = "";
+        aether_ui_a11y_get_impl(handle, role, sizeof(role), name, sizeof(name),
+                                desc, sizeof(desc));
+        if (role[0]) n += snprintf(buf + n, bufsize - n, ",\"role\":\"%s\"", role);
+        if (name[0]) {
+            char ne[1040];
+            aeui_json_escape(name, ne, (int)sizeof(ne));
+            n += snprintf(buf + n, bufsize - n, ",\"a11y_name\":\"%s\"", ne);
+        }
+    }
+
     n += snprintf(buf + n, bufsize - n, "}");
     return n;
 }
@@ -5242,6 +5366,34 @@ static void handle_test_request(int client_fd) {
         free(rq.out);
         close(client_fd);
         return;
+    }
+
+    // GET /widget/{id}/a11y — effective accessible role/name/description.
+    // Side-store reads are thread-safe, so no GTK-thread marshalling needed.
+    if (method == 0 && strncmp(path, "/widget/", 8) == 0) {
+        char* suffix = strchr(path + 8, '/');
+        if (suffix && strcmp(suffix, "/a11y") == 0) {
+            int id = atoi(path + 8);
+            if (!aether_ui_get_widget(id)) {
+                send_response(client_fd, 404, "Not Found", "application/json",
+                              "{\"error\":\"widget not found\"}");
+                close(client_fd);
+                return;
+            }
+            char role[64] = "", name[512] = "", desc[512] = "";
+            aether_ui_a11y_get_impl(id, role, sizeof(role), name, sizeof(name),
+                                    desc, sizeof(desc));
+            char ne[1040], de[1040];
+            aeui_json_escape(name, ne, (int)sizeof(ne));
+            aeui_json_escape(desc, de, (int)sizeof(de));
+            char body[2200];
+            snprintf(body, sizeof(body),
+                     "{\"role\":\"%s\",\"name\":\"%s\",\"description\":\"%s\"}",
+                     role, ne, de);
+            send_response(client_fd, 200, "OK", "application/json", body);
+            close(client_fd);
+            return;
+        }
     }
 
     // GET /widget/{id}/children — list child widget handles

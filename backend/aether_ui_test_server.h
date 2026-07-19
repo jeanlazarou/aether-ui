@@ -97,6 +97,12 @@ typedef struct {
     void (*widget_classes_into)(int handle, char* buf, int bufsize);
     int  (*focused_widget)(void);
 
+    // Optional: fill the widget's EFFECTIVE accessible role/name/description
+    // (auto when unset). NULL hook → /widget/{id}/a11y returns 501 and the
+    // /widgets JSON omits the role/a11y_name fields.
+    void (*widget_a11y)(int handle, char* role, int rolesz,
+                        char* name, int namesz, char* desc, int descsz);
+
     // Optional: capture the application's root window to a PNG byte buffer.
     // On success, set *out_data (caller-freed with free()) and *out_len,
     // return 0. On failure, return non-zero. NULL hook → 501.

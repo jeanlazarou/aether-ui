@@ -2270,6 +2270,102 @@ void aether_ui_set_tooltip(int handle, const char* text) {
     if (v) [v setToolTip:[NSString stringWithUTF8String:text ? text : ""]];
 }
 
+// ── Accessibility (semantics layer) ──────────────────────────────────
+// NSView conforms to NSAccessibility, so set the role/label/help directly on
+// the view — real, VoiceOver-visible. The driver reads the effective values
+// back. See docs/design/accessibility.md.
+static NSAccessibilityRole aeui_ns_role(const char* role) {
+    if (!role) return nil;
+    if (!strcmp(role, "button"))      return NSAccessibilityButtonRole;
+    if (!strcmp(role, "checkbox"))    return NSAccessibilityCheckBoxRole;
+    if (!strcmp(role, "radio"))       return NSAccessibilityRadioButtonRole;
+    if (!strcmp(role, "link"))        return NSAccessibilityLinkRole;
+    if (!strcmp(role, "heading"))     return NSAccessibilityStaticTextRole;
+    if (!strcmp(role, "image"))       return NSAccessibilityImageRole;
+    if (!strcmp(role, "group"))       return NSAccessibilityGroupRole;
+    if (!strcmp(role, "list"))        return NSAccessibilityListRole;
+    if (!strcmp(role, "listitem"))    return NSAccessibilityRowRole;
+    if (!strcmp(role, "tab"))         return NSAccessibilityRadioButtonRole;
+    if (!strcmp(role, "tablist"))     return NSAccessibilityTabGroupRole;
+    if (!strcmp(role, "menu"))        return NSAccessibilityMenuRole;
+    if (!strcmp(role, "menuitem"))    return NSAccessibilityMenuItemRole;
+    if (!strcmp(role, "dialog"))      return NSAccessibilitySheetRole;
+    if (!strcmp(role, "textbox"))     return NSAccessibilityTextFieldRole;
+    if (!strcmp(role, "slider"))      return NSAccessibilitySliderRole;
+    if (!strcmp(role, "progressbar")) return NSAccessibilityProgressIndicatorRole;
+    if (!strcmp(role, "none"))        return NSAccessibilityUnknownRole;
+    return nil;
+}
+
+// Our role name for an NSAccessibilityRole (readback of an override/auto role).
+static const char* aeui_role_name_from_ns(NSAccessibilityRole r) {
+    if (!r) return "";
+    if ([r isEqualToString:NSAccessibilityButtonRole])            return "button";
+    if ([r isEqualToString:NSAccessibilityCheckBoxRole])          return "checkbox";
+    if ([r isEqualToString:NSAccessibilityRadioButtonRole])       return "radio";
+    if ([r isEqualToString:NSAccessibilityLinkRole])              return "link";
+    if ([r isEqualToString:NSAccessibilityStaticTextRole])        return "heading";
+    if ([r isEqualToString:NSAccessibilityImageRole])             return "image";
+    if ([r isEqualToString:NSAccessibilityGroupRole])             return "group";
+    if ([r isEqualToString:NSAccessibilityListRole])              return "list";
+    if ([r isEqualToString:NSAccessibilityRowRole])               return "listitem";
+    if ([r isEqualToString:NSAccessibilityTabGroupRole])          return "tablist";
+    if ([r isEqualToString:NSAccessibilityMenuRole])              return "menu";
+    if ([r isEqualToString:NSAccessibilityMenuItemRole])          return "menuitem";
+    if ([r isEqualToString:NSAccessibilityTextFieldRole])         return "textbox";
+    if ([r isEqualToString:NSAccessibilitySliderRole])            return "slider";
+    if ([r isEqualToString:NSAccessibilityProgressIndicatorRole]) return "progressbar";
+    return "";
+}
+
+void aether_ui_a11y_set_role_impl(int handle, const char* role) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    NSAccessibilityRole r = aeui_ns_role(role);
+    if (r) [v setAccessibilityRole:r];
+}
+
+void aether_ui_a11y_set_label_impl(int handle, const char* name) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    [v setAccessibilityLabel:[NSString stringWithUTF8String:name ? name : ""]];
+}
+
+void aether_ui_a11y_set_description_impl(int handle, const char* desc) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    [v setAccessibilityHelp:[NSString stringWithUTF8String:desc ? desc : ""]];
+}
+
+void aether_ui_a11y_get_impl(int handle,
+                             char* role, int rolesz,
+                             char* name, int namesz,
+                             char* desc, int descsz) {
+    if (role && rolesz) role[0] = '\0';
+    if (name && namesz) name[0] = '\0';
+    if (desc && descsz) desc[0] = '\0';
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return;
+    if (role && rolesz) {
+        const char* rn = aeui_role_name_from_ns([v accessibilityRole]);
+        strncpy(role, rn, rolesz - 1); role[rolesz - 1] = '\0';
+    }
+    if (name && namesz) {
+        NSString* lbl = [v accessibilityLabel];
+        // Fall back to the view's accessible title (a button's label) when no
+        // explicit label was set.
+        if (!lbl || lbl.length == 0) {
+            if ([v respondsToSelector:@selector(accessibilityTitle)])
+                lbl = [v accessibilityTitle];
+        }
+        if (lbl) { strncpy(name, lbl.UTF8String, namesz - 1); name[namesz - 1] = '\0'; }
+    }
+    if (desc && descsz) {
+        NSString* h = [v accessibilityHelp];
+        if (h) { strncpy(desc, h.UTF8String, descsz - 1); desc[descsz - 1] = '\0'; }
+    }
+}
+
 void aether_ui_set_distribution(int handle, int distribution) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (v && [v isKindOfClass:[NSStackView class]]) {
@@ -4506,6 +4602,11 @@ static void hook_widget_classes_into(int handle, char* buf, int bufsize) {
     if (c) snprintf(buf, bufsize, "%s", c);
 }
 
+static void hook_widget_a11y(int handle, char* role, int rolesz,
+                             char* name, int namesz, char* desc, int descsz) {
+    aether_ui_a11y_get_impl(handle, role, rolesz, name, namesz, desc, descsz);
+}
+
 static int hook_focused_widget(void) {
     NSWindow* win = primary_window;
     if (!win) return 0;
@@ -4893,6 +4994,7 @@ static const AetherDriverHooks macos_driver_hooks = {
     .widget_enabled       = hook_widget_enabled,
     .widget_rect          = hook_widget_rect,
     .widget_classes_into  = hook_widget_classes_into,
+    .widget_a11y          = hook_widget_a11y,
     .focused_widget       = hook_focused_widget,
     .screenshot_png       = hook_screenshot_png,
 };

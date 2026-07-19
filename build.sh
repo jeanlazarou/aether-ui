@@ -115,7 +115,7 @@ case "$OS" in
             -L"$AETHER_LIB_PATH" -laether \
             -o "$ACTUAL_OUT" \
             -luser32 -lgdi32 -lgdiplus -lmsimg32 -lcomctl32 -lcomdlg32 \
-            -lshell32 -lole32 -luuid -ldwmapi -luxtheme \
+            -lshell32 -lole32 -luuid -loleacc -ldwmapi -luxtheme \
             -lws2_32 -lbcrypt -pthread -lm
         OUTPUT="$ACTUAL_OUT"
         ;;

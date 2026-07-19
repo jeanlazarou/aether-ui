@@ -156,6 +156,19 @@ void aether_ui_set_height(int handle, int height);
 void aether_ui_set_opacity(int handle, double opacity);
 void aether_ui_set_enabled(int handle, int enabled);
 void aether_ui_set_tooltip(int handle, const char* text);
+
+// Accessibility (semantics layer). Set the platform accessible role/name/
+// description on a widget; backends map to GtkAccessible / MSAA /
+// NSAccessibility. See docs/design/accessibility.md.
+void aether_ui_a11y_set_role_impl(int handle, const char* role);
+void aether_ui_a11y_set_label_impl(int handle, const char* name);
+void aether_ui_a11y_set_description_impl(int handle, const char* desc);
+// Driver readback: fill role/name/description with the widget's EFFECTIVE
+// accessible values (auto when unset). Any buffer may be left empty.
+void aether_ui_a11y_get_impl(int handle,
+                             char* role, int rolesz,
+                             char* name, int namesz,
+                             char* desc, int descsz);
 void aether_ui_set_distribution(int handle, int distribution);
 void aether_ui_set_alignment(int handle, int alignment);
 void aether_ui_match_parent_width(int handle);

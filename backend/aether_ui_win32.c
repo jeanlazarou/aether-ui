@@ -46,6 +46,8 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <shlobj.h>
+#include <initguid.h>   // materialise CLSID_AccPropServices / IID_IAccPropServices
+#include <oleacc.h>     // MSAA Dynamic Annotation (accessible name/role override)
 
 #include <stdlib.h>
 #include <string.h>
@@ -238,6 +240,14 @@ typedef struct {
     // uses to drop the widget from /widgets (parity with GTK4's weak-ref slot
     // nulling).
     int dead;
+
+    // Accessibility side-store (semantics layer). role/name/desc are the
+    // author's a11y intent; MSAA surfaces name/description via WM_GETOBJECT
+    // (get_accName/get_accDescription) over the standard accessible object,
+    // and the driver reads these back. All owned (utf8), NULL = unset.
+    char* a11y_role;
+    char* a11y_name;
+    char* a11y_desc;
 
     // CSS-class mirror (item 4/8 parity): win32 has no CSS, but the class
     // LIST is the driver's selection-visibility contract (.aui-row-selected)
@@ -2481,6 +2491,134 @@ void aether_ui_set_tooltip(int handle, const char* text) {
     SendMessageW(tooltip_hwnd, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 }
 
+// ── Accessibility (semantics layer) ──────────────────────────────────
+// Store the author's a11y intent AND push it into MSAA via Dynamic Annotation
+// (IAccPropServices::SetHwndPropStr/SetHwndProp) so a real AT client (Narrator)
+// reads the overridden name/role — no custom IAccessible needed. The driver
+// reads the side-store back. See docs/design/accessibility.md.
+static char* a11y_dup(const char* s) { return (s && *s) ? _strdup(s) : NULL; }
+
+// Our role vocabulary -> MSAA ROLE_SYSTEM_* (0 = leave the system role).
+static long w32_msaa_role(const char* role) {
+    if (!role) return 0;
+    if (!strcmp(role, "button"))      return ROLE_SYSTEM_PUSHBUTTON;
+    if (!strcmp(role, "checkbox"))    return ROLE_SYSTEM_CHECKBUTTON;
+    if (!strcmp(role, "radio"))       return ROLE_SYSTEM_RADIOBUTTON;
+    if (!strcmp(role, "link"))        return ROLE_SYSTEM_LINK;
+    if (!strcmp(role, "heading"))     return ROLE_SYSTEM_STATICTEXT;
+    if (!strcmp(role, "image"))       return ROLE_SYSTEM_GRAPHIC;
+    if (!strcmp(role, "group"))       return ROLE_SYSTEM_GROUPING;
+    if (!strcmp(role, "list"))        return ROLE_SYSTEM_LIST;
+    if (!strcmp(role, "listitem"))    return ROLE_SYSTEM_LISTITEM;
+    if (!strcmp(role, "tab"))         return ROLE_SYSTEM_PAGETAB;
+    if (!strcmp(role, "tablist"))     return ROLE_SYSTEM_PAGETABLIST;
+    if (!strcmp(role, "menu"))        return ROLE_SYSTEM_MENUPOPUP;
+    if (!strcmp(role, "menuitem"))    return ROLE_SYSTEM_MENUITEM;
+    if (!strcmp(role, "dialog"))      return ROLE_SYSTEM_DIALOG;
+    if (!strcmp(role, "alert"))       return ROLE_SYSTEM_ALERT;
+    if (!strcmp(role, "textbox"))     return ROLE_SYSTEM_TEXT;
+    if (!strcmp(role, "slider"))      return ROLE_SYSTEM_SLIDER;
+    if (!strcmp(role, "progressbar")) return ROLE_SYSTEM_PROGRESSBAR;
+    return 0;
+}
+
+// Push a name/role annotation onto a window via MSAA Dynamic Annotation.
+// Best-effort: if COM/oleacc isn't available the side-store still drives the
+// driver, so a failure here is silent.
+static void w32_annotate(HWND hwnd, const char* name, const char* role) {
+    if (!hwnd) return;
+    IAccPropServices* svc = NULL;
+    HRESULT hr = CoCreateInstance(&CLSID_AccPropServices, NULL,
+        CLSCTX_INPROC_SERVER, &IID_IAccPropServices, (void**)&svc);
+    if (FAILED(hr) || !svc) return;
+    if (name && *name) {
+        wchar_t* wn = _wcsdup(utf8_to_wide(name));
+        svc->lpVtbl->SetHwndPropStr(svc, hwnd, OBJID_CLIENT, CHILDID_SELF,
+            PROPID_ACC_NAME, wn);
+        free(wn);
+    }
+    long r = w32_msaa_role(role);
+    if (r) {
+        VARIANT v; VariantInit(&v); v.vt = VT_I4; v.lVal = r;
+        svc->lpVtbl->SetHwndProp(svc, hwnd, OBJID_CLIENT, CHILDID_SELF,
+            PROPID_ACC_ROLE, v);
+    }
+    svc->lpVtbl->Release(svc);
+}
+
+void aether_ui_a11y_set_role_impl(int handle, const char* role) {
+    Widget* w = widget_at(handle);
+    if (!w) return;
+    free(w->a11y_role);
+    w->a11y_role = a11y_dup(role);
+    w32_annotate(w->hwnd, w->a11y_name, w->a11y_role);
+}
+
+void aether_ui_a11y_set_label_impl(int handle, const char* name) {
+    Widget* w = widget_at(handle);
+    if (!w) return;
+    free(w->a11y_name);
+    w->a11y_name = a11y_dup(name);
+    w32_annotate(w->hwnd, w->a11y_name, w->a11y_role);
+}
+
+void aether_ui_a11y_set_description_impl(int handle, const char* desc) {
+    Widget* w = widget_at(handle);
+    if (!w) return;
+    free(w->a11y_desc);
+    w->a11y_desc = a11y_dup(desc);
+}
+
+// Map a widget kind to its default (auto) accessible role — what MSAA already
+// exposes for standard controls, reported when the author set none.
+static const char* w32_auto_role(WidgetKind k) {
+    switch (k) {
+        case WK_BUTTON:      return "button";
+        case WK_CHECKBOX:    return "checkbox";
+        case WK_TEXT:        return "heading";   // a static label
+        case WK_TEXTFIELD:   return "textbox";
+        case WK_SLIDER:      return "slider";
+        case WK_PROGRESSBAR: return "progressbar";
+        default:             return "";
+    }
+}
+
+// Driver readback: effective role/name/description (auto when unset). Name
+// falls back to the control's own window text (a button's label = its name).
+void aether_ui_a11y_get_impl(int handle,
+                             char* role, int rolesz,
+                             char* name, int namesz,
+                             char* desc, int descsz) {
+    if (role && rolesz) role[0] = '\0';
+    if (name && namesz) name[0] = '\0';
+    if (desc && descsz) desc[0] = '\0';
+    Widget* w = widget_at(handle);
+    if (!w) return;
+
+    if (role && rolesz) {
+        const char* r = w->a11y_role ? w->a11y_role : w32_auto_role(w->kind);
+        strncpy(role, r ? r : "", rolesz - 1); role[rolesz - 1] = '\0';
+    }
+    if (name && namesz) {
+        if (w->a11y_name) {
+            strncpy(name, w->a11y_name, namesz - 1); name[namesz - 1] = '\0';
+        } else {
+            // The control's own text is its auto accessible name.
+            int len = GetWindowTextLengthW(w->hwnd);
+            if (len > 0) {
+                wchar_t* wbuf = (wchar_t*)malloc((len + 1) * sizeof(wchar_t));
+                GetWindowTextW(w->hwnd, wbuf, len + 1);
+                const char* u = wide_to_utf8(wbuf);
+                strncpy(name, u ? u : "", namesz - 1); name[namesz - 1] = '\0';
+                free(wbuf);
+            }
+        }
+    }
+    if (desc && descsz && w->a11y_desc) {
+        strncpy(desc, w->a11y_desc, descsz - 1); desc[descsz - 1] = '\0';
+    }
+}
+
 void aether_ui_set_distribution(int handle, int distribution) {
     Widget* w = widget_at(handle);
     if (w) w->stack.distribution = distribution;
@@ -4470,6 +4608,11 @@ static void hook_widget_classes_into(int handle, char* buf, int bufsize) {
     snprintf(buf, bufsize, "%s", w->classes ? w->classes : "");
 }
 
+static void hook_widget_a11y(int handle, char* role, int rolesz,
+                             char* name, int namesz, char* desc, int descsz) {
+    aether_ui_a11y_get_impl(handle, role, rolesz, name, namesz, desc, descsz);
+}
+
 static int hook_focused_widget(void) {
     // GetFocus() is PER-THREAD (the HTTP thread's queue never has focus)
     // — query the UI thread's focus via GetGUIThreadInfo.
@@ -4821,6 +4964,7 @@ static const AetherDriverHooks win32_driver_hooks = {
     .widget_enabled       = hook_widget_enabled,
     .widget_rect          = hook_widget_rect,
     .widget_classes_into  = hook_widget_classes_into,
+    .widget_a11y          = hook_widget_a11y,
     .focused_widget       = hook_focused_widget,
     .screenshot_png       = hook_screenshot_png,
 };

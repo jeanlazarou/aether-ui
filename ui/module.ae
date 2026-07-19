@@ -38,6 +38,7 @@ exports (
     style_bg_color, style_text_color, style_font_size, style_font_bold,
     style_bg_gradient, style_corner_radius, style_opacity,
     style_enabled, style_tooltip,
+    a11y_role, a11y_label, a11y_description,
     edge_insets, width, height, distribution, alignment,
     fill_width, fill_height, margin, margin_of,
     alert, clipboard_write, open_url, open_file, save_file, is_dark_mode,
@@ -230,6 +231,9 @@ extern aether_ui_set_height(handle: int, height: int)
 extern aether_ui_set_opacity(handle: int, opacity: float)
 extern aether_ui_set_enabled(handle: int, enabled: int)
 extern aether_ui_set_tooltip(handle: int, text: string)
+extern aether_ui_a11y_set_role_impl(handle: int, role: string)
+extern aether_ui_a11y_set_label_impl(handle: int, name: string)
+extern aether_ui_a11y_set_description_impl(handle: int, desc: string)
 extern aether_ui_set_distribution(handle: int, distribution: int)
 extern aether_ui_set_alignment(handle: int, alignment: int)
 extern aether_ui_match_parent_width(handle: int)
@@ -1247,6 +1251,34 @@ style_tooltip(handle: int, text: string) -> int {
     return handle
 }
 
+// ── Accessibility (semantics layer) ──────────────────────────────────
+// Set the platform accessible role/name/description on any widget. Native
+// widgets already carry sane a11y for free; these OVERRIDE it where the auto
+// value is wrong or missing (icon-only buttons, plain containers acting as
+// groups/listitems, drawn controls). Backends map to GtkAccessible / MSAA /
+// NSAccessibility; the driver reads back the real accessible state via
+// GET /widget/{id}/a11y. See docs/design/accessibility.md.
+//
+// role vocabulary: button checkbox radio link heading image group list
+// listitem tab tablist menu menuitem dialog alert textbox slider
+// progressbar none  ("none" hides a decorative widget from the a11y tree).
+a11y_role(handle: int, role: string) -> int {
+    aether_ui_a11y_set_role_impl(handle, role)
+    return handle
+}
+
+// The accessible NAME (what a screen reader announces).
+a11y_label(handle: int, name: string) -> int {
+    aether_ui_a11y_set_label_impl(handle, name)
+    return handle
+}
+
+// A longer accessible description (announced after the name).
+a11y_description(handle: int, desc: string) -> int {
+    aether_ui_a11y_set_description_impl(handle, desc)
+    return handle
+}
+
 edge_insets(handle: int, top: float, right: float, bottom: float, left: float) -> int {
     aether_ui_set_edge_insets(handle, top, right, bottom, left)
     return handle
@@ -1637,7 +1669,10 @@ _listbox_make(_ctx: ptr, spacing: int, render: fn, multi: int) -> ptr {
         _listbox_invoke_render(ur, item, i, row)
         _oc = on_click(row) callback { _listbox_row_clicked(lbp, i) }
         _od = on_double_click(row) callback { _listbox_row_double(lbp, i) }
+        // Built-in a11y: each row is a listitem so an AT sees list structure.
+        _ar = a11y_role(row, "listitem")
     }
+    _agl = a11y_role(each_parent(lb.group), "list")
     return lbp
 }
 

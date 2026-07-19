@@ -1,0 +1,63 @@
+// Aether UI accessibility example (roadmap: Accessibility).
+//
+// Native widgets carry platform a11y for free; a11y_role/a11y_label/
+// a11y_description OVERRIDE or supply it where the auto value is wrong or
+// missing. Backends map to GtkAccessible / MSAA / NSAccessibility; the driver
+// reads the effective values back via GET /widget/{id}/a11y (and /widgets
+// entries gain "role"/"a11y_name").
+//
+// This demo shows:
+//   * a plain button — auto role "button", auto name = its label;
+//   * an icon-only button ("⚙") given an explicit a11y_label so an AT has a
+//     name to announce (its glyph is not a useful name);
+//   * a heading (a text tagged role "heading");
+//   * a listbox whose rows are auto-tagged "listitem" (built-in a11y).
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider, listbox, listbox_update,
+    a11y_role, a11y_label, a11y_description, enable_test_server)
+import std.os (os_getenv)
+import std.string
+import std.list
+
+extern malloc(size: int) -> ptr
+struct Row { label: string }
+mk_row(s: string) -> ptr {
+    r = malloc(16) as *Row
+    r.label = s
+    return r as ptr
+}
+
+main() {
+    window("a11y demo", 460, 400) {
+        vstack(10) {
+            title = text("Accessibility demo")
+            _h = a11y_role(title, "heading")
+            divider()
+
+            hstack(10) {
+                // Plain button: auto role button, auto name "Save".
+                _save = btn("Save") callback { }
+
+                // Icon-only button: the glyph is no name — give it one.
+                gear = btn("⚙") callback { }
+                _gl = a11y_label(gear, "Settings")
+                _gd = a11y_description(gear, "Open the settings panel")
+            }
+            divider()
+
+            items = list.new()
+            _ = list.add(items, mk_row("Alpha"))
+            _ = list.add(items, mk_row("Beta"))
+            _ = list.add(items, mk_row("Gamma"))
+            rows = listbox(2) callback |item: ptr, i: int, row: int| {
+                r = item as *Row
+                _t = text(row, r.label)
+            }
+            listbox_update(rows, items)
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

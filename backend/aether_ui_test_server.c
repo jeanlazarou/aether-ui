@@ -284,6 +284,27 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
         }
     }
 
+    // Accessibility: the widget's effective role + accessible name (auto when
+    // unset). Emitted only when present so existing specs are unaffected. The
+    // name reuses the same JSON escaping the text field needs.
+    if (h->widget_a11y) {
+        char role[64] = "", name[512] = "", desc[512] = "";
+        h->widget_a11y(handle, role, sizeof(role), name, sizeof(name),
+                       desc, sizeof(desc));
+        if (role[0]) n += snprintf(buf + n, bufsize - n, ",\"role\":\"%s\"", role);
+        if (name[0]) {
+            char ne[1040]; int j = 0;
+            for (int i = 0; name[i] && j < (int)sizeof(ne) - 8; i++) {
+                unsigned char ch = (unsigned char)name[i];
+                if (ch == '"' || ch == '\\') { ne[j++] = '\\'; ne[j++] = (char)ch; }
+                else if (ch < 0x20) { ne[j++] = ' '; }
+                else ne[j++] = (char)ch;
+            }
+            ne[j] = '\0';
+            n += snprintf(buf + n, bufsize - n, ",\"a11y_name\":\"%s\"", ne);
+        }
+    }
+
     if (strcmp(type, "text") == 0) {
         static const char* an[] = {"start", "middle", "end"};
         int a = aether_ui_text_get_anchor(handle);
@@ -427,6 +448,39 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
                 send_http(client_fd, 200, "OK", "application/json", body);
                 free(body);
             }
+        }
+    } else if (method == 0 && strncmp(path, "/widget/", 8) == 0
+               && strstr(path, "/a11y")) {
+        // GET /widget/{id}/a11y — the widget's effective accessible
+        // role/name/description (auto when unset). Must precede the generic
+        // /widget/{id} GET, whose match is a prefix of this path.
+        int id = extract_id_from_path(path, "/widget/");
+        if (!h->widget_a11y) {
+            send_http(client_fd, 501, "Not Implemented", "text/plain",
+                      "/a11y not supported by this backend");
+        } else {
+            char role[64] = "", name[512] = "", desc[512] = "";
+            h->widget_a11y(id, role, sizeof(role), name, sizeof(name),
+                           desc, sizeof(desc));
+            // Escape name/desc minimally (quotes/backslash/control).
+            char ne[1040], de[1040];
+            for (int p = 0; p < 2; p++) {
+                const char* src = p == 0 ? name : desc;
+                char* out = p == 0 ? ne : de;
+                int j = 0;
+                for (int i = 0; src[i] && j < (int)sizeof(ne) - 8; i++) {
+                    unsigned char ch = (unsigned char)src[i];
+                    if (ch == '"' || ch == '\\') { out[j++] = '\\'; out[j++] = (char)ch; }
+                    else if (ch < 0x20) { out[j++] = ' '; }
+                    else out[j++] = (char)ch;
+                }
+                out[j] = '\0';
+            }
+            char body[2200];
+            snprintf(body, sizeof(body),
+                     "{\"role\":\"%s\",\"name\":\"%s\",\"description\":\"%s\"}",
+                     role, ne, de);
+            send_http(client_fd, 200, "OK", "application/json", body);
         }
     } else if (method == 0 && strcmp(path, "/screenshot") == 0) {
         if (!h->screenshot_png) {
