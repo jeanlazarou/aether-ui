@@ -4351,7 +4351,15 @@ static int hook_widget_count(void) { return widget_count; }
 
 static const char* hook_widget_type(int handle) {
     Widget* w = widget_at(handle);
-    return w ? widget_kind_name(w->kind) : "null";
+    // The registry never shrinks (widgets are never unregistered), so a row
+    // that clear_children DestroyWindow'd still has a live Widget* here. Its
+    // HWND is dead, though — report it as "null" so the shared server drops it
+    // from /widgets, matching GTK4 (where destroy also unregisters). Without
+    // this, a rebuilt listbox leaves stale rows the driver can still resolve
+    // by text — and firing their captured on_drop(i) reorders by a STALE index.
+    if (!w) return "null";
+    if (!IsWindow(w->hwnd)) return "null";
+    return widget_kind_name(w->kind);
 }
 
 static void hook_widget_text_into(int handle, char* buf, int bufsize) {
