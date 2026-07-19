@@ -370,9 +370,10 @@ Without `keep_alive`, your backgrounded `build/testable &` is killed the instant
 
 The items below landed + were verified on GTK4/win32 first; this is the record
 of running them on the Mac and ticking them off. Full `tests/spec_matrix.sh` is
-**145/145 green** on macOS after this work. Most batches were correct by
-construction; the two-way binding, the weight min-clamp, the scoped/chorded
-shortcuts, and multi-window each needed an AppKit-specific fix (detailed below).
+**160/160 green** on macOS after this work (plus the animations-ON ci Phase 5h2).
+Most batches were correct by construction; the two-way binding, the weight
+min-clamp, the scoped/chorded shortcuts, multi-window, drag-reorder, and the
+overlay exit-transition each needed an AppKit-specific fix (detailed below).
 
 - **Native menu bar** (commits dcdb68f/61da9d3) — ✅ green, no code change, as
   predicted. `spec_menu` is 4/4 and `GET /menus` returns exactly
@@ -494,3 +495,35 @@ References on the aeb side:
      and `overlay_open_impl` resolves `win_handle → overlay_host_for(win_handle)`
      — the app-level handle is 1-based into `extra_windows`, 0 = primary. The
      spec's `window:2`-on-the-toast assertion now passes.
+
+- **Per-window menu bars** (commits 5d870ed…a43df3c) — ✅ 2/2 on `winmenu_demo`,
+  no code change. macOS has one OS-level menu bar, but the driver reads the
+  shared side-store, which records the per-window bar regardless.
+
+- **Drag-to-reorder listbox** (commits f7f34d9…d9333fb) — ✅ 5/5 on `reorder_demo`,
+  needed **two AppKit fixes**. (1) The demo starts its driver via the `window(){}`
+  block form, whose body owns the event loop — so `enable_test_server` called
+  AFTER the block was never reached and there was NO server at all on macOS.
+  win32/GTK4 auto-start the server from their run loop when `AETHER_UI_TEST_PORT`
+  is set; `surface_run_impl` now does the same (idempotent, so a demo calling it
+  inside the block still starts exactly one). (2) `/widget/{id}/drop` calls
+  `fire_row_drop` directly on the HTTP server thread, and its closure runs
+  `listbox_move` → a full re-render (AppKit mutations) → abort. Marshalled to the
+  main thread (same class of bug as the window-close fix).
+
+- **Overlay enter/exit transitions** (commits 1fbfe66…8c1823c) — ✅ 3/3 on
+  `overlaytr_demo` in both modes, needed a real tween. The sibling left it a
+  no-op (`is_exiting` always 0), which passes the animations-OFF matrix run but
+  FAILS ci Phase 5h2 (animations ON), which asserts `exiting:1` during the exit.
+  `overlay_close_impl` now plays an `NSAnimationContext` opacity fade over the
+  entry's stored `trans_ms`, holding `exiting:1` for the duration and flipping
+  `live:0` in the completion; `AETHER_UI_NO_ANIMATION` skips it (instant, the
+  deterministic contract). `transition_overlay` stores the duration on the entry.
+
+- **Accessibility semantics** (commit bd8e942) — ✅ 5/5 on `a11y_demo`, needed an
+  auto-role fallback. Explicit `a11y_role` overrides read back fine via the native
+  `[v accessibilityRole]`, but AppKit computes a control's DEFAULT role lazily and
+  it reads back EMPTY from the driver's server-thread query — so a plain button
+  reported role `""`. `a11y_get` now falls back to a widget-type→role map
+  (`aeui_auto_role_for_type`, mirroring win32's `w32_auto_role`) when the native
+  role is empty.

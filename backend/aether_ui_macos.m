@@ -727,6 +727,17 @@ void aether_ui_surface_run_impl(int container_handle,
     int app = aether_ui_app_create(title, width, height);
     s->app_handle = app;
     aether_ui_app_set_body(app, container_handle);
+    // Auto-start the driver test server when AETHER_UI_TEST_PORT is set, as
+    // win32/GTK4 do in their run loops. The window(){} block form OWNS the
+    // event loop, so a demo that calls enable_test_server AFTER the block never
+    // reaches it — without this, such a demo has no driver on macOS. Idempotent
+    // (enable_test_server_impl guards test_server_started), so a demo that calls
+    // it INSIDE the block still starts exactly one server.
+    const char* test_port_env = getenv("AETHER_UI_TEST_PORT");
+    if (test_port_env) {
+        int port = atoi(test_port_env);
+        if (port > 0) aether_ui_enable_test_server_impl(port, container_handle);
+    }
     aether_ui_app_run_raw(app);
 }
 
@@ -2337,6 +2348,24 @@ void aether_ui_a11y_set_description_impl(int handle, const char* desc) {
     [v setAccessibilityHelp:[NSString stringWithUTF8String:desc ? desc : ""]];
 }
 
+// Default (auto) accessible role for a widget kind — mirrors win32's
+// w32_auto_role, so a control the author never explicitly tagged still reports
+// the same role on all three backends. AppKit computes a view's DEFAULT role
+// lazily and it reads back empty from the driver's (server-thread) query, so
+// unlike an explicit setAccessibilityRole override we can't rely on the native
+// value here — infer from the type instead.
+static const char* aeui_auto_role_for_type(int t) {
+    switch (t) {
+        case AUI_BUTTON:      return "button";
+        case AUI_TOGGLE:      return "checkbox";
+        case AUI_TEXT:        return "heading";   // a static label
+        case AUI_TEXTFIELD:   return "textbox";
+        case AUI_SLIDER:      return "slider";
+        case AUI_PROGRESSBAR: return "progressbar";
+        default:              return "";
+    }
+}
+
 void aether_ui_a11y_get_impl(int handle,
                              char* role, int rolesz,
                              char* name, int namesz,
@@ -2347,7 +2376,10 @@ void aether_ui_a11y_get_impl(int handle,
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (!v) return;
     if (role && rolesz) {
+        // An explicit override reads back from the native role; when none was
+        // set (native default is empty here) fall back to the type's auto-role.
         const char* rn = aeui_role_name_from_ns([v accessibilityRole]);
+        if (!rn || !rn[0]) rn = aeui_auto_role_for_type(get_widget_type(handle));
         strncpy(role, rn, rolesz - 1); role[rolesz - 1] = '\0';
     }
     if (name && namesz) {
@@ -2690,6 +2722,8 @@ typedef struct {
     AeClosure* on_dismiss;
     int modal;
     int live;
+    int exiting;    // 1 while the exit tween plays (before live flips to 0)
+    int trans_ms;   // per-entry transition duration; 0 = no tween (instant)
 } OverlayEntry;
 
 static OverlayEntry* overlays = NULL;
@@ -2805,15 +2839,50 @@ int aether_ui_overlay_open_impl(int win_handle, int content_handle,
     return handle;
 }
 
-void aether_ui_overlay_close_impl(int overlay_handle) {
+// True when the app was launched with AETHER_UI_NO_ANIMATION — the CI/matrix
+// default. Transitions then resolve to their end-state instantly (no tween),
+// which is the deterministic contract specs assert against.
+static int aeui_animations_off(void) {
+    const char* v = getenv("AETHER_UI_NO_ANIMATION");
+    return v && v[0] && v[0] != '0';
+}
+
+// Tear an overlay entry's views out of the tree and mark it dead. Shared by the
+// instant path and the animated path's completion.
+static void overlay_finalize_close(int overlay_handle) {
     OverlayEntry* e = overlay_at(overlay_handle);
-    if (!e || !e->live) return;   // idempotent
+    if (!e) return;
     e->live = 0;
+    e->exiting = 0;
     if (e->scrim)   [e->scrim removeFromSuperview];
     if (e->content) [e->content removeFromSuperview];
     e->scrim = nil;
     e->content = nil;
     if (overlay_host) [overlay_host layoutSubtreeIfNeeded];
+}
+
+void aether_ui_overlay_close_impl(int overlay_handle) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    if (!e || !e->live) return;   // idempotent
+    // Animated exit: play the fade-out tween, THEN remove. is_exiting reads 1
+    // for the duration so a spec can observe the exit before the entry dies
+    // (Phase 5h2). AETHER_UI_NO_ANIMATION and untransitioned entries skip it.
+    if (e->trans_ms > 0 && e->content && !aeui_animations_off()) {
+        e->exiting = 1;
+        int dur_ms = e->trans_ms;
+        int cap = overlay_handle;
+        NSView* content = e->content;
+        NSView* scrim = e->scrim;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
+            ctx.duration = (double)dur_ms / 1000.0;
+            [[content animator] setAlphaValue:0.0];
+            if (scrim) [[scrim animator] setAlphaValue:0.0];
+        } completionHandler:^{
+            overlay_finalize_close(cap);
+        }];
+        return;
+    }
+    overlay_finalize_close(overlay_handle);
 }
 
 void aether_ui_overlay_set_on_dismiss_impl(int overlay_handle, void* boxed_closure) {
@@ -2833,18 +2902,20 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     return e ? e->modal : 0;
 }
 
-// Per-entry overlay transitions. AppKit could tween via Core Animation layers
-// (CABasicAnimation on the content view), but that's a follow-up — for now the
-// transition is a no-op and exit is instant, so is_exiting is always 0. Same
-// end-state as AETHER_UI_NO_ANIMATION on GTK4; the model still works.
+// Per-entry overlay transitions. AppKit tweens the content's opacity via the
+// NSView animator on close (see overlay_close_impl); the `kind` (fade/slide-*)
+// currently all resolve to a fade — a directional slide is a refinement. When
+// animations are off the tween is skipped and exit is instant.
 void aether_ui_overlay_set_transition_impl(int overlay_handle,
                                            const char* kind, int ms) {
-    (void)overlay_handle; (void)kind; (void)ms;
+    (void)kind;
+    OverlayEntry* e = overlay_at(overlay_handle);
+    if (e) e->trans_ms = ms > 0 ? ms : 0;
 }
 
 int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
-    (void)overlay_handle;
-    return 0;
+    OverlayEntry* e = overlay_at(overlay_handle);
+    return e ? e->exiting : 0;
 }
 
 // Escape closes the TOPMOST live overlay. Returns 1 if one was closed, so the
@@ -4115,7 +4186,14 @@ int aether_ui_fire_row_drop(int row_handle, int src_index) {
     if (!nv) return 0;
     AeClosure* c = (AeClosure*)[nv pointerValue];
     if (!c || !c->fn) return 0;
-    ((void(*)(void*, intptr_t))c->fn)(c->env, (intptr_t)src_index);
+    // The driver's /widget/{id}/drop route calls in on the HTTP server thread,
+    // and this closure runs listbox_move → a full re-render (AppKit mutations).
+    // Marshal to the main thread or AppKit aborts the process.
+    void (^fire)(void) = ^{
+        ((void(*)(void*, intptr_t))c->fn)(c->env, (intptr_t)src_index);
+    };
+    if ([NSThread isMainThread]) fire();
+    else dispatch_sync(dispatch_get_main_queue(), fire);
     return 1;
 }
 
