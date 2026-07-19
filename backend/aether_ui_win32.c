@@ -1034,6 +1034,14 @@ static void stack_do_layout(HWND stack_hwnd) {
             if (mc[i].weight == 0 &&
                 (cw->kind == WK_SPLITVIEW || cw->kind == WK_SCROLLVIEW))
                 mc[i].weight = 1;
+            // Canvases mirror GTK's hexpand/vexpand=true default — but only
+            // when the app didn't pin the primary-axis size explicitly
+            // (falling_blocks fixes its board size; gp's treemap must grow).
+            if (mc[i].weight == 0 && cw->kind == WK_CANVAS) {
+                int pinned = (orientation == 1) ? (cw->pref_height > 0)
+                                                : (cw->pref_width > 0);
+                if (!pinned) mc[i].weight = 1;
+            }
         } else {
             cw_w = 100; ch_h = 24;
         }

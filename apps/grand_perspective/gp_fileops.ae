@@ -15,7 +15,7 @@ exports (
 
 import std.list
 import std.string
-import std.os (run_capture)
+import std.os (run_capture, os_getenv)
 import ui (set_button_label)
 import gp_model
 import gp_model (FileEntry, bump_ancestors, fmt_size)
@@ -95,10 +95,30 @@ do_delete(s: *AppState) {
 
 execute_trash(s: *AppState) {
     e = s.selected
+    // Platform trash: `gio trash` on Linux/macOS; on Windows the REAL
+    // Recycle Bin via the VB FileSystem shim (SHFileOperation underneath) —
+    // cmd `del` would be a permanent delete, which is not what Delete means.
+    win = os_getenv("OS")
     av = list.new()
-    _ = list.add(av, "trash")
-    _ = list.add(av, e.path)
-    _tout, tstatus, terr = run_capture("gio", av, null)
+    tstatus = 0
+    terr = ""
+    if string.equals(win, "Windows_NT") == 1 {
+        cmdline = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('"
+        cmdline = string.concat(cmdline, e.path)
+        cmdline = string.concat(cmdline, "','OnlyErrorDialogs','SendToRecycleBin')")
+        _ = list.add(av, "-NoProfile")
+        _ = list.add(av, "-Command")
+        _ = list.add(av, cmdline)
+        _wout, wstatus, werr = run_capture("powershell", av, null)
+        tstatus = wstatus
+        terr = werr
+    } else {
+        _ = list.add(av, "trash")
+        _ = list.add(av, e.path)
+        _gout, gstatus, gerr = run_capture("gio", av, null)
+        tstatus = gstatus
+        terr = gerr
+    }
     list.free(av)
     disarm_delete(s)
     ok = 1
