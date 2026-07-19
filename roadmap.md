@@ -235,8 +235,13 @@ term in one result row — cosmetic, doesn't affect the spec.
   (`computed_s` — a void recompute closure fired on input change, seeds
   once). All three via the new `aether_ui_state_on_change` observer +
   `AEUI_STATE_LIST` cell, in all three backends; 5/5 (rbind) + 7/7
-  (bindings) on GTK4. `table_bind` still open (needs the same over
-  table_update). Design notes in docs/design/reactivity-unification.md §5.
+  (bindings) on GTK4. ~~`table_bind`~~ **DONE 2026-07-18** (it was already
+  landed in the table-delegate batch — this note was stale) — `table_bind(t,
+  list_state)` is the each_bind sibling over `table_update`: a `ui_set_list`
+  re-runs the table render. `tabledeleg_demo` + `spec_tabledeleg_demo` assert
+  it re-renders on list-state change (new rows + delegate re-run, old rows
+  cleared); registered in ci.sh + spec_matrix. **The reactivity line is now
+  fully closed.** Design notes in docs/design/reactivity-unification.md §5.
 - **Focus/shortcuts:** ~~conditional shortcut scopes~~ **DONE 2026-07-18**
   (`shortcut_when(combo, enabled, cb)` — predicate-gated; inert combo
   propagates), ~~chorded shortcuts~~ **DONE** (`shortcut_chord(a, b, cb)`
