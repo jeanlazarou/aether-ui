@@ -892,11 +892,10 @@ static void measure_widget(Widget* w, int* out_w, int* out_h) {
 static int w32_subtree_greedy(Widget* w, int orientation) {
     if (!w) return 0;
     if (w->kind == WK_SPLITVIEW || w->kind == WK_SCROLLVIEW) return 1;
-    if (w->kind == WK_CANVAS) {
-        int pinned = (orientation == 1) ? (w->pref_height > 0)
-                                        : (w->pref_width > 0);
-        return !pinned;
-    }
+    if (w->kind == WK_CANVAS) return 1;   // GTK4 canvases hexpand/vexpand
+                                          // regardless of their initial dims
+                                          // (gp creates its treemap WITH dims
+                                          // and still grows on resize there)
     if (w->kind == WK_VSTACK || w->kind == WK_HSTACK || w->kind == WK_ZSTACK
         || w->kind == WK_TABS || w->kind == WK_WRAP) {
         for (HWND c = GetWindow(w->hwnd, GW_CHILD); c;
