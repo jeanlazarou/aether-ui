@@ -261,7 +261,17 @@ term in one result row — cosmetic, doesn't affect the spec.
 - ~~**Tab view** (`ui.tabs`)~~ **DONE** — real tab strip on all three
   backends (GtkStackSwitcher/GtkStack, NSTabView, win32 strip-over-zstack);
   `tabs_demo` 4/4 everywhere. (This backlog note was stale.)
-- **Drag & drop** — inter-widget first (list reorder), inter-app later. M.
+- ~~**Drag & drop** (list reorder)~~ **DONE 2026-07-19** — `listbox_reorderable`
+  rows are a native drag source + drop target; a drop fires
+  `on_drop(src)` → `listbox_move(src, target)`, rebuilding the list in the
+  new order (`on_reorder |from,to|`, `listbox_items` for the live list).
+  GTK4 GtkDragSource/GtkDropTarget is real; win32/macOS store the closure
+  (native OLE/AppKit drag is the inter-app follow-up). Driver-fire path
+  `POST /widget/{row}/drop?src=N` on both servers; `reorder_demo` 5/5 on
+  winbaz. Uncovered + fixed a win32 driver bug: the never-shrinking widget
+  registry left rebuilt-listbox rows resolvable by text, so a second drag
+  reordered by a stale index — now dead subtrees report type "null" (GTK4
+  parity via its weak-ref slot nulling). Inter-app drag & drop still TODO.
 - ~~**Multi-window**~~ **DONE 2026-07-18** — co-equal top-level windows.
   One event loop owns N windows (`window_create`/`window_set_body`/
   `window_show`/`window_close`); the loop stays alive while ≥1 window is
