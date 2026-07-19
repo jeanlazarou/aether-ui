@@ -328,6 +328,23 @@ term in one result row — cosmetic, doesn't affect the spec.
   GtkPopoverMenuBar in the window's content; win32 SetMenu's the HWND;
   macOS uses the app-global OS bar (best-effort). `winmenu_demo` + spec
   **2/2 on GTK4 AND win32 (winbaz)**. **Multi-window is now complete.**
+- **Styling/theming (the swiby-shaped CSS-alike)** — **DONE 2026-07-19**
+  (was never on the ranked list; added after a gap-analysis against Swiby's
+  banking demo). `create_styles()` + `st_color/st_bg/st_font_size/st_bold/
+  st_radius` build a cascading sheet (selectors: `kind`, `class.kind`,
+  bare `class` via add_css_class, `container` alias, `root` fallback —
+  swiby's resolution order minus ids); `apply_styles(0, s)` walks the LIVE
+  widget tree in-process (four tiny ABI getters per backend) and drives the
+  existing cross-backend style_* setters. A theme is just a sheet;
+  re-theming a running app is one call (the swiby banking Settings-dialog
+  move). Driver contract: setters stash last-set colors, widget JSON emits
+  `"bg"/"fg"` — specs prove the swap from the backend. `themes_demo`
+  (accounts list + Blue/Green themes, values lifted from swiby's
+  theme/*.rb, credited) + spec: element rule, class-beats-element,
+  container bg, live re-theme — **5/5 on GTK4 AND win32 (winbaz)**. v1
+  boundaries in docs/design/styling.md (one class/widget, no ids, no
+  un-bold, no widget font_family — the known gap). Also the front half of
+  any future vg-drawn-controls theming (see that doc's "concrete driver").
 - **Accessibility** — **semantics layer DONE 2026-07-19**.
   `a11y_role/a11y_label/a11y_description` set REAL platform a11y on any
   widget; the driver reads the effective values back via
