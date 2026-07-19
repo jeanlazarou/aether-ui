@@ -283,10 +283,7 @@ term in one result row — cosmetic, doesn't affect the spec.
   `attach_menu_bar_to_window(win_handle, bar)`: GTK4 packs a
   GtkPopoverMenuBar in the window's content; win32 SetMenu's the HWND;
   macOS uses the app-global OS bar (best-effort). `winmenu_demo` + spec
-  **2/2 on win32 (winbaz)**; GTK4 compiles clean + registered the W2 menu
-  when run (full GTK4 runtime re-check pending — a leaked-Xvfb/background-
-  build session-env issue blocks running any GTK4 app locally right now).
-  **Multi-window is now complete.**
+  **2/2 on GTK4 AND win32 (winbaz)**. **Multi-window is now complete.**
 - **Accessibility** — native widgets get GTK/AppKit a11y free; anything
   vg-DRAWN (the dropdown, a plan-B table) needs a semantics bridge
   eventually — this is the real cost of the drawn path, and why Flutter
