@@ -1067,7 +1067,13 @@ static void stack_do_layout(HWND stack_hwnd) {
             // scrollview inside was stealing half the canvas's pool).
             int pinned_primary = (orientation == 1) ? (cw->pref_height > 0)
                                                     : (cw->pref_width > 0);
-            if (mc[i].weight == 0 && !pinned_primary
+            // Intrinsically-greedy kinds (canvas/splitview/scrollview) stay
+            // greedy even with initial dims — GTK expands canvases created
+            // WITH sizes. The veto only stops PROPAGATED greed (a pinned
+            // sidebar containing a scrollview keeps its pinned width).
+            int intrinsic = (cw->kind == WK_CANVAS || cw->kind == WK_SPLITVIEW
+                             || cw->kind == WK_SCROLLVIEW);
+            if (mc[i].weight == 0 && (intrinsic || !pinned_primary)
                 && w32_subtree_greedy(cw, orientation))
                 mc[i].weight = 1;
         } else {
