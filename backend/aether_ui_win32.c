@@ -2948,6 +2948,14 @@ typedef struct {
     AeClosure* on_dismiss;
     int modal;
     int live;
+    // Per-entry exit transition (transition_overlay). trans_ms > 0 + a kind =>
+    // close plays an alpha fade over trans_ms before the real detach; exiting
+    // holds 1 during it. fade_* track the running animation.
+    char* trans_kind;
+    int trans_ms;
+    int exiting;
+    UINT_PTR fade_timer;  // system-assigned WM_TIMER id while fading (0 = none)
+    DWORD fade_start;      // GetTickCount at fade start
 } Win32OverlayEntry;
 
 static Win32OverlayEntry* w32_overlays = NULL;
@@ -3014,6 +3022,62 @@ static LRESULT CALLBACK scrim_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Animation globally suppressed (driver determinism switch)?
+static int w32_anim_off(void) {
+    const char* n = getenv("AETHER_UI_NO_ANIMATION");
+    return n && n[0] && n[0] != '0';
+}
+
+// Make a child HWND layered so SetLayeredWindowAttributes can fade its alpha.
+static void w32_make_layered(HWND h) {
+    if (!h) return;
+    LONG ex = GetWindowLongW(h, GWL_EXSTYLE);
+    if (!(ex & WS_EX_LAYERED))
+        SetWindowLongW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+}
+
+// Detach an overlay entry's windows for real (end state of a close, whether
+// instant or after the fade). Mirrors the old close body.
+static void w32_overlay_detach(Win32OverlayEntry* e) {
+    if (e->scrim) { DestroyWindow(e->scrim); e->scrim = NULL; }
+    if (e->content) {
+        ShowWindow(e->content, SW_HIDE);
+        SetParent(e->content, widget_holder);
+        e->content = NULL;
+    }
+    e->exiting = 0;
+    e->live = 0;
+}
+
+// WM_TIMER proc stepping an overlay's exit fade (content + scrim alpha) from
+// 255→0 over trans_ms, then detaching. One shared proc; matches on sys_id.
+static void CALLBACK w32_overlay_fade_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD now) {
+    (void)hwnd; (void)msg; (void)now;
+    for (int i = 0; i < w32_overlay_count; i++) {
+        Win32OverlayEntry* e = &w32_overlays[i];
+        if (e->fade_timer != id) continue;
+        DWORD elapsed = GetTickCount() - e->fade_start;
+        int ms = e->trans_ms > 0 ? e->trans_ms : 180;
+        if (elapsed >= (DWORD)ms) {
+            KillTimer(NULL, id);
+            e->fade_timer = 0;
+            w32_overlay_detach(e);
+            return;
+        }
+        // remaining fraction 1.0 → 0.0 as elapsed → ms
+        int rem = (int)(ms - elapsed);
+        if (e->content)
+            SetLayeredWindowAttributes(e->content, 0,
+                (BYTE)((255 * rem) / ms), LWA_ALPHA);
+        // Fade the scrim from its ~45% start (115) proportionally.
+        if (e->scrim)
+            SetLayeredWindowAttributes(e->scrim, 0,
+                (BYTE)((115 * rem) / ms), LWA_ALPHA);
+        return;
+    }
+    KillTimer(NULL, id);
 }
 
 // Resolve an overlay's host window HWND. win_handle 0 = the primary app
@@ -3095,16 +3159,20 @@ int aether_ui_overlay_open_impl(int win_handle, int content_handle,
 
 void aether_ui_overlay_close_impl(int overlay_handle) {
     Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
-    if (!e || !e->live) return;   // idempotent
-    e->live = 0;
-    if (e->scrim) { DestroyWindow(e->scrim); e->scrim = NULL; }
-    if (e->content) {
-        // Back to the hidden holder — the widget stays registered (and
-        // reusable), it just leaves the window like GTK's overlay child.
-        ShowWindow(e->content, SW_HIDE);
-        SetParent(e->content, widget_holder);
-        e->content = NULL;
+    if (!e || !e->live || e->exiting) return;   // idempotent / not twice
+    // A per-entry exit transition (and animation on): fade the content+scrim
+    // alpha to 0 over trans_ms, holding exiting:1, then detach in the timer.
+    // Everything else detaches immediately (same end-state as before).
+    if (e->trans_kind && e->trans_ms > 0 && !w32_anim_off() && e->content) {
+        w32_make_layered(e->content);
+        SetLayeredWindowAttributes(e->content, 0, 255, LWA_ALPHA);
+        e->exiting = 1;
+        e->fade_start = GetTickCount();
+        // ~60fps steps; the proc computes exact alpha from elapsed time.
+        e->fade_timer = SetTimer(NULL, 0, 16, w32_overlay_fade_proc);
+        return;
     }
+    w32_overlay_detach(e);
 }
 
 void aether_ui_overlay_set_on_dismiss_impl(int overlay_handle, void* boxed_closure) {
@@ -3124,19 +3192,23 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     return e ? e->modal : 0;
 }
 
-// Per-entry overlay transitions: win32 overlays have no CSS-keyframe layer, so
-// the transition is a no-op and exit is instant. The model still works — the
-// driver contract degrades to "no exit tween" (is_exiting is always 0), which
-// is the same end-state as AETHER_UI_NO_ANIMATION on GTK4. Native win32
-// overlay animation is a follow-up.
+// Per-entry overlay transitions. win32 has no CSS keyframes, so the exit is a
+// layered-window alpha fade over trans_ms (see aether_ui_overlay_close_impl +
+// w32_overlay_fade_proc). We store the kind for parity with GTK4's vocabulary,
+// but every kind renders as the fade (a real slide is a follow-up). Enter is
+// left instant — matching the app's expectation that content appears on open.
 void aether_ui_overlay_set_transition_impl(int overlay_handle,
                                            const char* kind, int ms) {
-    (void)overlay_handle; (void)kind; (void)ms;
+    Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
+    if (!e) return;
+    free(e->trans_kind);
+    e->trans_kind = (kind && *kind) ? _strdup(kind) : NULL;
+    e->trans_ms = ms;
 }
 
 int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
-    (void)overlay_handle;
-    return 0;
+    Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
+    return e ? e->exiting : 0;
 }
 
 // Escape closes the TOPMOST live overlay; returns 1 if one was closed so
