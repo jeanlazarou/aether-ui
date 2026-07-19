@@ -6064,7 +6064,7 @@ void aether_ui_menu_bar_attach_window(int win_handle, int bar_handle) {
 
     GtkWidget* menubar = gtk_popover_menu_bar_new_from_model(
         G_MENU_MODEL(bar->model));
-    aether_ui_register_widget(menubar);  // so the driver sees it (window:N tag)
+    aether_ui_register_widget(menubar);  // driver visibility (type:menubar, window:N)
     GtkWidget* child = gtk_window_get_child(win);
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(box), menubar);

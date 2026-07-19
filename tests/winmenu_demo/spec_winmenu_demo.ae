@@ -1,0 +1,35 @@
+// spec_winmenu_demo.ae — per-window menu bars.
+// A second window is opened with its OWN menu bar
+// (attach_menu_bar_to_window(2, bar)). The menu registers (GET /menus) and its
+// item fires the same closure the native bar would, with the effect observable
+// in the main window's status label.
+import aeocha
+import uidriver
+import std.string
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    aeocha.describe(fw, "per-window menu bar over AetherUIDriver") {
+        aeocha.it("opening window 2 attaches its menu bar") callback {
+            o = uidriver.widget_id_by_text("open w2 + menu")
+            uidriver.post_ok("/widget/${o}/click", "open w2 + attach menu")
+            // The window opened...
+            ok = uidriver.wait_body_contains("/windows", "\"title\":\"Window 2\"", 20)
+            aeocha.assert_true(ok, "window 2 opened")
+            // ...and its menu registered (the W2File → W2Save item is reachable).
+            m = uidriver.wait_body_contains("/menus", "\"W2Save\"", 20)
+            aeocha.assert_true(m, "the window-2 menu registered")
+        }
+
+        aeocha.it("the window-2 menu item fires its closure") callback {
+            h = uidriver.menu_handle_with("W2Save")
+            aeocha.assert_gt(h, 0, "the W2 menu has a handle")
+            uidriver.menu_activate(h, "W2Save")
+            ok = uidriver.wait_body_contains("/widgets", "saved: w2", 20)
+            aeocha.assert_true(ok, "W2Save ran its closure")
+        }
+    }
+    aeocha.run_summary(fw)
+}

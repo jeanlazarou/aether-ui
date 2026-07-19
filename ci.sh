@@ -60,7 +60,7 @@ fi
 # -------------------------------------------------------------------------
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo weightclamp_demo shortcut_demo polish_demo vlist_demo wshortcut_demo multiwindow_demo)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo weightclamp_demo shortcut_demo polish_demo vlist_demo wshortcut_demo multiwindow_demo winmenu_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -554,7 +554,7 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     run_server_test "$(EX_BIN wshortcut_demo)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" wshortcut_demo || FAIL=$((FAIL + 1))
     UI_SPEC=multiwindow_demo/spec_multiwindow_demo \
-    run_server_test "$(EX_BIN multiwindow_demo)" \
+    run_server_test "$(EX_BIN multiwindow_demo winmenu_demo)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" multiwindow_demo || FAIL=$((FAIL + 1))
 fi
 

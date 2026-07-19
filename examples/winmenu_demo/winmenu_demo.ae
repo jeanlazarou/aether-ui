@@ -1,0 +1,40 @@
+// Aether UI per-window menu bar — a second window carries its OWN menu bar,
+// attached via attach_menu_bar_to_window(win_handle, bar). GTK4 packs a
+// GtkPopoverMenuBar in the window's content; win32 SetMenu's the HWND; macOS
+// uses the app-global OS menu bar.
+import ui
+import ui (window, vstack, text, btn,
+    window_create, window_set_body, window_show,
+    root_vstack, menu_bar, menu, menu_item, menu_bar_add,
+    attach_menu_bar_to_window, enable_test_server_root)
+import std.os (os_getenv)
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    win2 = 0
+    status_h = 0
+    main_root = root_vstack(10) {
+        status = text("saved: none")
+        status_h = status
+        _open = btn("open w2 + menu") callback {
+            w2root = root_vstack(8) { text("Second window") }
+            win2 = window_create("Window 2", 320, 260)
+            window_set_body(win2, w2root)
+            window_show(win2)
+            // Attach a menu bar to WINDOW 2 (driver window handle 2).
+            bar = menu_bar()
+            fmenu = menu("W2File")
+            menu_item(fmenu, "W2Save") callback {
+                aether_ui_text_set_string(status_h, "saved: w2")
+            }
+            menu_bar_add(bar, fmenu)
+            attach_menu_bar_to_window(2, bar)
+        }
+    }
+    app = ui.app_create("Per-window menu", 320, 240)
+    if os_getenv("AETHER_UI_TEST_PORT") != null {
+        enable_test_server_root(9222, main_root)
+    }
+    ui.app_start(app, main_root)
+}
