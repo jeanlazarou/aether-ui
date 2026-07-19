@@ -130,6 +130,10 @@ static char* wide_to_utf8(const wchar_t* s) {
 // overrides, attached closures, child-layout info for stacks). Stored in the
 // global widgets[] array so the test-server and styling APIs can introspect.
 // ---------------------------------------------------------------------------
+struct W32CtxItem { char* label; void* closure; };
+
+#define AEUI_SPLIT_DIV 6   // splitview divider band, px
+
 typedef enum {
     WK_NULL = 0,
     WK_TEXT,
@@ -157,6 +161,7 @@ typedef enum {
     WK_GRID,
     WK_SCRIM,     // overlay modal scrim (full-client click-eater)
     WK_TABS,      // native tab strip over a page stack
+    WK_SPLITVIEW, // two panes + draggable divider (real since 2026-07-20)
 } WidgetKind;
 
 typedef struct {
@@ -253,6 +258,16 @@ typedef struct {
     char* a11y_name;
     char* a11y_desc;
     int styled_opacity_enc;   // explicit opacity readback: 0=unset, else v*100+1
+    // Splitview (WK_SPLITVIEW): requested divider px (+1 encoding, 0=unset →
+    // half) and the EFFECTIVE position from the last layout.
+    int split_pos_enc;
+    int split_eff;
+    // Context-menu side-store: labels + closures, driven by the real
+    // WM_CONTEXTMENU popup AND the driver's /context_menu routes.
+    struct W32CtxItem* ctx_items;
+    int ctx_count, ctx_cap;
+    // Toggle radio group id (0 = ungrouped).
+    int radio_group;
 
     // CSS-class mirror (item 4/8 parity): win32 has no CSS, but the class
     // LIST is the driver's selection-visibility contract (.aui-row-selected)
@@ -709,10 +724,113 @@ typedef struct {
 
 // Measure a single widget's intrinsic size. STATIC/BUTTON use a minimal
 // heuristic (text extents + padding); custom widgets honor pref_width/height.
+// Natural size of a stack container = recursive sum/max of its children
+// (+ spacing + padding). THE h:0 fix: containers used to measure as their
+// CURRENT rect, which is 0 until laid out — so nested stacks never grew,
+// every descendant inherited zero heights, and driver geometry (and real
+// rendering) was flat. Bottom-up natural sizing is how GTK/AppKit behave.
+static void measure_widget(Widget* w, int* out_w, int* out_h);
+static void measure_stack_natural(Widget* sw, int* out_w, int* out_h) {
+    StackLayout* sl = &sw->stack;
+    int total = 0, cross = 0, n = 0;
+    for (HWND c = GetWindow(sw->hwnd, GW_CHILD); c;
+         c = GetWindow(c, GW_HWNDNEXT)) {
+        int ch = handle_for_hwnd(c);
+        Widget* cw = widget_at(ch);
+        if (!cw || cw->dead) continue;
+        int mw = 0, mh = 0;
+        if (cw->kind == WK_SPACER) { n++; continue; }   // spacers are flex-only
+        measure_widget(cw, &mw, &mh);
+        int along, across;
+        if (sw->kind == WK_ZSTACK || sw->kind == WK_TABS
+            || sw->kind == WK_SPLITVIEW) {
+            // Overlay-ish containers: natural = max in BOTH axes.
+            if (mw > total) total = mw;
+            if (mh > cross) cross = mh;
+            n++;
+            continue;
+        }
+        if (sl->orientation == 1) { along = mh + cw->margin_top + cw->margin_bottom;
+                                    across = mw + cw->margin_left + cw->margin_right; }
+        else                      { along = mw + cw->margin_left + cw->margin_right;
+                                    across = mh + cw->margin_top + cw->margin_bottom; }
+        total += along;
+        if (across > cross) cross = across;
+        n++;
+    }
+    if (sw->kind != WK_ZSTACK && sw->kind != WK_TABS
+        && sw->kind != WK_SPLITVIEW && n > 1)
+        total += sl->spacing * (n - 1);
+    int pad_w = sl->padding_left + sl->padding_right;
+    int pad_h = sl->padding_top + sl->padding_bottom;
+    if (sw->kind == WK_ZSTACK || sw->kind == WK_TABS
+        || sw->kind == WK_SPLITVIEW) {
+        *out_w = total + pad_w;
+        *out_h = cross + pad_h;
+    } else if (sl->orientation == 1) {   // vstack: total is height
+        *out_w = cross + pad_w;
+        *out_h = total + pad_h;
+    } else {                              // hstack: total is width
+        *out_w = total + pad_w;
+        *out_h = cross + pad_h;
+    }
+}
+
 static void measure_widget(Widget* w, int* out_w, int* out_h) {
     if (w->pref_width > 0 && w->pref_height > 0) {
         *out_w = w->pref_width;
         *out_h = w->pref_height;
+        return;
+    }
+    // Containers: bottom-up natural size (see measure_stack_natural).
+    if (w->kind == WK_VSTACK || w->kind == WK_HSTACK || w->kind == WK_ZSTACK
+        || w->kind == WK_TABS || w->kind == WK_SPLITVIEW) {
+        measure_stack_natural(w, out_w, out_h);
+        if (w->pref_width > 0) *out_w = w->pref_width;
+        if (w->pref_height > 0) *out_h = w->pref_height;
+        return;
+    }
+    // Input widgets start 0x0 on the hidden holder — give them the natural
+    // sizes a dialog would (heights match DEFAULT_GUI_FONT rows).
+    if (w->kind == WK_TEXTFIELD || w->kind == WK_SECUREFIELD
+        || w->kind == WK_PICKER) {
+        *out_w = w->pref_width > 0 ? w->pref_width : 140;
+        *out_h = w->pref_height > 0 ? w->pref_height : 26;
+        return;
+    }
+    if (w->kind == WK_SLIDER) {
+        *out_w = w->pref_width > 0 ? w->pref_width : 140;
+        *out_h = w->pref_height > 0 ? w->pref_height : 26;
+        return;
+    }
+    if (w->kind == WK_PROGRESSBAR) {
+        *out_w = w->pref_width > 0 ? w->pref_width : 140;
+        *out_h = w->pref_height > 0 ? w->pref_height : 16;
+        return;
+    }
+    if (w->kind == WK_TOGGLE) {
+        // Checkbox box + label text.
+        HDC hdc = GetDC(w->hwnd);
+        wchar_t text[512];
+        int tlen = GetWindowTextW(w->hwnd, text, 512);
+        SIZE sz = {0, 16};
+        HFONT font = (HFONT)SendMessageW(w->hwnd, WM_GETFONT, 0, 0);
+        HFONT old = font ? (HFONT)SelectObject(hdc, font) : NULL;
+        GetTextExtentPoint32W(hdc, text, tlen, &sz);
+        if (old) SelectObject(hdc, old);
+        ReleaseDC(w->hwnd, hdc);
+        *out_w = sz.cx + 28;
+        *out_h = (sz.cy > 18 ? sz.cy : 18) + 4;
+        return;
+    }
+    if (w->kind == WK_DIVIDER) {
+        *out_w = w->pref_width > 0 ? w->pref_width : 2;
+        *out_h = w->pref_height > 0 ? w->pref_height : 2;
+        return;
+    }
+    if (w->kind == WK_TEXTAREA) {
+        *out_w = w->pref_width > 0 ? w->pref_width : 200;
+        *out_h = w->pref_height > 0 ? w->pref_height : 80;
         return;
     }
     RECT r;
@@ -796,6 +914,40 @@ static void stack_do_layout(HWND stack_hwnd) {
             SetWindowPos(children[i], NULL,
                          sl->padding_left, content_y,
                          avail_w, content_h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        free(children);
+        return;
+    }
+
+    // Splitview: pane A gets [0, pos), a 6px divider band, pane B the rest.
+    // Extra children (shouldn't happen) overlay pane B. The divider position
+    // clamps so both panes keep >= 24px.
+    if (sw->kind == WK_SPLITVIEW) {
+        int primary = (orientation == 1) ? avail_h : avail_w;
+        int pos = sw->split_pos_enc > 0 ? sw->split_pos_enc - 1 : primary / 2;
+        int min_pane = 24;
+        if (pos < min_pane) pos = min_pane;
+        if (pos > primary - AEUI_SPLIT_DIV - min_pane)
+            pos = primary - AEUI_SPLIT_DIV - min_pane;
+        if (pos < 0) pos = 0;
+        sw->split_eff = pos;
+        for (int i = 0; i < nchildren; i++) {
+            int x, y, cw, chh;
+            if (orientation == 1) {   // stacked (divider moves in y)
+                x = sl->padding_left; cw = avail_w;
+                if (i == 0) { y = sl->padding_top; chh = pos; }
+                else { y = sl->padding_top + pos + AEUI_SPLIT_DIV;
+                       chh = avail_h - pos - AEUI_SPLIT_DIV; }
+            } else {                   // side-by-side (divider moves in x)
+                y = sl->padding_top; chh = avail_h;
+                if (i == 0) { x = sl->padding_left; cw = pos; }
+                else { x = sl->padding_left + pos + AEUI_SPLIT_DIV;
+                       cw = avail_w - pos - AEUI_SPLIT_DIV; }
+            }
+            if (cw < 0) cw = 0;
+            if (chh < 0) chh = 0;
+            SetWindowPos(children[i], NULL, x, y, cw, chh,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
         }
         free(children);
         return;
@@ -956,11 +1108,61 @@ static void stack_do_layout(HWND stack_hwnd) {
     free(children);
 }
 
+static Widget* w32_ctx_owner(HWND hwnd);                 // fwd (ctx menus)
+static int w32_ctx_popup(Widget* w, int sx, int sy);     // fwd
+static void w32_radio_enforce(int active_handle);        // fwd (toggle groups)
+
 static LRESULT CALLBACK stack_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_SIZE:
             stack_do_layout(hwnd);
             return 0;
+
+        case WM_CONTEXTMENU: {
+            // Real right-click: find the nearest widget with stored items
+            // (the click may land on a child) and pop the native menu.
+            HWND target = (HWND)wp;
+            Widget* owner = w32_ctx_owner(target ? target : hwnd);
+            if (owner) {
+                int sx = GET_X_LPARAM(lp), sy = GET_Y_LPARAM(lp);
+                if (sx == -1 && sy == -1) {   // keyboard menu key
+                    RECT r; GetWindowRect(owner->hwnd, &r);
+                    sx = r.left + 8; sy = r.top + 8;
+                }
+                w32_ctx_popup(owner, sx, sy);
+                return 0;
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        case WM_LBUTTONDOWN: {
+            // Splitview divider drag: press within the divider band captures.
+            int h2 = handle_for_hwnd(hwnd);
+            Widget* w2 = widget_at(h2);
+            if (w2 && w2->kind == WK_SPLITVIEW) {
+                int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
+                int p = (w2->stack.orientation == 1) ? my : mx;
+                if (p >= w2->split_eff && p <= w2->split_eff + AEUI_SPLIT_DIV) {
+                    SetCapture(hwnd);
+                    return 0;
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        case WM_MOUSEMOVE: {
+            int h3 = handle_for_hwnd(hwnd);
+            Widget* w3 = widget_at(h3);
+            if (w3 && w3->kind == WK_SPLITVIEW && GetCapture() == hwnd) {
+                int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
+                int p = (w3->stack.orientation == 1) ? my : mx;
+                w3->split_pos_enc = (p > 0 ? p : 0) + 1;
+                stack_do_layout(hwnd);
+                return 0;
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        case WM_LBUTTONUP:
+            if (GetCapture() == hwnd) { ReleaseCapture(); return 0; }
+            return DefWindowProcW(hwnd, msg, wp, lp);
 
         case WM_MOUSEWHEEL: {
             // A vlist container carries an on_scroll(dy) closure — one wheel
@@ -1009,7 +1211,11 @@ static LRESULT CALLBACK stack_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
                         if (!cw->sealed) tabs_do_select(ts, tab_idx, 1);
                     } else if (!cw->sealed) invoke_closure(cw->on_click);
                 } else if (cw->kind == WK_TOGGLE && code == BN_CLICKED) {
-                    if (!cw->sealed) invoke_closure(cw->on_change);
+                    if (!cw->sealed) {
+                        if (aether_ui_toggle_get_active(ch))
+                            w32_radio_enforce(ch);
+                        invoke_closure(cw->on_change);
+                    }
                 } else if ((cw->kind == WK_TEXTFIELD || cw->kind == WK_SECUREFIELD
                             || cw->kind == WK_TEXTAREA) && code == EN_CHANGE) {
                     if (!cw->sealed) invoke_closure(cw->on_change);
@@ -1652,9 +1858,50 @@ void aether_ui_button_set_label(int handle, const char* label) {
 
 // Right-click context menus: not yet implemented on Win32 (TrackPopupMenu is
 // the native shape). No-op stub — same precedent as canvas_on_move.
+// Context-menu side-store (REAL, 2026-07-20): items accumulate on the widget;
+// a real right-click pops a TrackPopupMenu built from them, and the driver's
+// /widget/{id}/context_menu[/{idx}] routes report/activate the same store —
+// no test-only path.
 void aether_ui_context_menu_item_impl(int handle, const char* label,
                                       void* boxed_closure) {
-    (void)handle; (void)label; (void)boxed_closure;
+    Widget* w = widget_at(handle);
+    if (!w || !label) return;
+    if (w->ctx_count >= w->ctx_cap) {
+        w->ctx_cap = w->ctx_cap == 0 ? 8 : w->ctx_cap * 2;
+        w->ctx_items = (struct W32CtxItem*)realloc(
+            w->ctx_items, sizeof(struct W32CtxItem) * w->ctx_cap);
+    }
+    w->ctx_items[w->ctx_count].label = _strdup(label);
+    w->ctx_items[w->ctx_count].closure = boxed_closure;
+    w->ctx_count++;
+}
+
+// The nearest ancestor-or-self widget carrying context-menu items (a right-
+// click on a child of the menu owner should still open it — GTK's gesture on
+// the container behaves the same way).
+static Widget* w32_ctx_owner(HWND hwnd) {
+    for (HWND h = hwnd; h; h = GetParent(h)) {
+        int wh = handle_for_hwnd(h);
+        Widget* w = widget_at(wh);
+        if (w && w->ctx_count > 0) return w;
+    }
+    return NULL;
+}
+
+// Pop the real menu at screen (sx, sy) and fire the chosen item's closure.
+static int w32_ctx_popup(Widget* w, int sx, int sy) {
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i < w->ctx_count; i++)
+        AppendMenuW(m, MF_STRING, (UINT_PTR)(i + 1),
+                    utf8_to_wide(w->ctx_items[i].label));
+    int chosen = (int)TrackPopupMenu(m,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON, sx, sy, 0, w->hwnd, NULL);
+    DestroyMenu(m);
+    if (chosen >= 1 && chosen <= w->ctx_count) {
+        invoke_closure((AeClosure*)w->ctx_items[chosen - 1].closure);
+        return 1;
+    }
+    return 0;
 }
 
 // Shortcuts (item 9). Real via the driver's /window/key path (the same route
@@ -1947,12 +2194,37 @@ int aether_ui_toggle_get_active(int handle) {
     return SendMessageW(w->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
 }
 
-// Radio-group a toggle with another. STUB: Win32 radio semantics need
-// BS_AUTORADIOBUTTON + WS_GROUP at creation time; grouping an existing
-// checkbox after the fact requires a style swap not yet wired. The GTK4
-// backend is real; callers get plain checkboxes here (no exclusivity).
+// Radio-group toggles (REAL, 2026-07-20): group ids on the Widget rather than
+// BS_AUTORADIOBUTTON style swaps — the exclusivity is enforced in one helper
+// used by BOTH the real BN_CLICKED path and the driver's /toggle action, so
+// there is no test-only behaviour. Checking a member silently unchecks its
+// groupmates (state only; the activated member's on_change is the signal, as
+// on GTK4).
+static int w32_next_radio_group = 1;
+
 void aether_ui_toggle_set_group(int handle, int group_with) {
-    (void)handle; (void)group_with;
+    Widget* a = widget_at(handle);
+    Widget* b = widget_at(group_with);
+    if (!a || !b) return;
+    int gid = a->radio_group ? a->radio_group
+            : b->radio_group ? b->radio_group
+            : w32_next_radio_group++;
+    a->radio_group = gid;
+    b->radio_group = gid;
+}
+
+// `active_handle` just became checked — uncheck every other group member.
+static void w32_radio_enforce(int active_handle) {
+    Widget* w = widget_at(active_handle);
+    if (!w || !w->radio_group) return;
+    int n = widget_count;
+    for (int h = 1; h <= n; h++) {
+        if (h == active_handle) continue;
+        Widget* o = widget_at(h);
+        if (!o || o->radio_group != w->radio_group) continue;
+        if (aether_ui_toggle_get_active(h))
+            aether_ui_toggle_set_active(h, 0);
+    }
 }
 
 int aether_ui_slider_create(double min_val, double max_val,
@@ -2083,15 +2355,28 @@ int aether_ui_scrollview_create(void) {
 // out side by side / stacked; no draggable splitter). A real Win32
 // splitter is follow-up work — this keeps the cross-platform ABI green.
 // NB: splitview("h") means panes side-by-side = a HORIZONTAL stack.
+// Real splitview (2026-07-20): a WK_SPLITVIEW container with two panes and a
+// 6px draggable divider. `vertical` follows the DSL contract (same value the
+// GTK4 GtkPaned path receives): vertical=0 → side-by-side panes (divider
+// moves in x), vertical=1 → stacked panes (divider moves in y). The stack's
+// orientation field records the split axis for layout + hit-testing.
 int aether_ui_splitview_create(int vertical) {
-    return create_stack(vertical, 0);
+    int handle = create_stack(vertical, 0);
+    Widget* w = widget_at(handle);
+    if (w) w->kind = WK_SPLITVIEW;
+    return handle;
 }
 int aether_ui_split_position_impl(int handle) {
-    (void)handle;
-    return -1;
+    Widget* w = widget_at(handle);
+    if (!w || w->kind != WK_SPLITVIEW) return -1;
+    return w->split_eff;
 }
 void aether_ui_split_set_position_impl(int handle, int px) {
-    (void)handle; (void)px;
+    Widget* w = widget_at(handle);
+    if (!w || w->kind != WK_SPLITVIEW || px < 0) return;
+    w->split_pos_enc = px + 1;
+    stack_do_layout(w->hwnd);
+    InvalidateRect(w->hwnd, NULL, TRUE);
 }
 void aether_ui_widget_weight_impl(int handle, int n) {
     Widget* w = widget_at(handle);
@@ -3907,6 +4192,7 @@ typedef struct {
     AeClosure* on_click;   // pointer-press hook (canvas-local x,y)
     AeClosure* on_release; // pointer-release hook (canvas-local x,y)
     AeClosure* on_key;     // key-press hook (GDK key name string)
+    AeClosure* on_resize;  // |w, h| — fired from WM_SIZE (canvas rescale)
 } Canvas;
 
 static Canvas* canvases = NULL;
@@ -3985,11 +4271,12 @@ int aether_ui_canvas_get_widget(int canvas_id) {
     return handle_for_hwnd(canvases[canvas_id - 1].hwnd);
 }
 
-// Resize hook — honest stub. Win32 WM_SIZE → re-map + re-flush is not wired
-// yet; the vg scene renders at its initial size and does not rescale on window
-// resize on Win32. Tracked for parity with the GTK backend.
+// Resize hook — REAL (2026-07-20). WM_SIZE on the canvas HWND updates the
+// canvas's recorded dimensions and fires the |w, h| closure (same shape as
+// GTK4's), so the app re-flushes its vg scene at the new scale.
 void aether_ui_canvas_on_resize_impl(int canvas_id, void* boxed_closure) {
-    (void)canvas_id; (void)boxed_closure;
+    if (canvas_id < 1 || canvas_id > canvas_count) return;
+    canvases[canvas_id - 1].on_resize = (AeClosure*)boxed_closure;
 }
 
 // Pointer-press on a canvas: WM_LBUTTONDOWN → (x,y) into the closure, and
@@ -4125,14 +4412,49 @@ void aether_ui_canvas_stroke_text_impl(int canvas_id, const char* text,
     (void)line_width; (void)font_flags; (void)r; (void)g; (void)b; (void)a;
 }
 
-// Text metrics — STUB (returns zeros). Win32 has real metrics via GDI
-// (GetTextExtentPoint32 / GetTextMetrics); wiring them is deferred to when
-// we're next on winbaz. Zeros keep the ABI linkable so vg.text_extent
-// compiles everywhere (GTK4 has the real impl).
-double aether_ui_text_measure(double size, const char* text) { (void)size; (void)text; return 0.0; }
-double aether_ui_font_ascent(double size)  { (void)size; return 0.0; }
-double aether_ui_font_descent(double size) { (void)size; return 0.0; }
-double aether_ui_font_height(double size)  { (void)size; return 0.0; }
+// Text metrics — REAL via GDI (2026-07-20). A screen-DC scratch font at the
+// requested pixel size (negative lfHeight = character height, matching the
+// px semantics GTK4's cairo path uses); width via GetTextExtentPoint32W,
+// vertical metrics via GetTextMetricsW. The font is cached per size (specs
+// hammer one or two sizes).
+static HFONT aeui_metrics_font(double size) {
+    static HFONT cached = NULL;
+    static int cached_px = 0;
+    int px = (int)(size + 0.5);
+    if (px <= 0) px = 16;
+    if (cached && cached_px == px) return cached;
+    if (cached) DeleteObject(cached);
+    LOGFONTW lf = {0};
+    GetObjectW((HFONT)GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+    lf.lfHeight = -px;   // negative = character height in px
+    cached = CreateFontIndirectW(&lf);
+    cached_px = px;
+    return cached;
+}
+
+double aether_ui_text_measure(double size, const char* text) {
+    if (!text || !text[0]) return 0.0;
+    HDC hdc = GetDC(NULL);
+    HFONT old = (HFONT)SelectObject(hdc, aeui_metrics_font(size));
+    wchar_t wbuf[1024];
+    int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, wbuf, 1024);
+    SIZE sz = {0, 0};
+    if (n > 1) GetTextExtentPoint32W(hdc, wbuf, n - 1, &sz);
+    SelectObject(hdc, old);
+    ReleaseDC(NULL, hdc);
+    return (double)sz.cx;
+}
+
+static void aeui_metrics(double size, TEXTMETRICW* tm) {
+    HDC hdc = GetDC(NULL);
+    HFONT old = (HFONT)SelectObject(hdc, aeui_metrics_font(size));
+    GetTextMetricsW(hdc, tm);
+    SelectObject(hdc, old);
+    ReleaseDC(NULL, hdc);
+}
+double aether_ui_font_ascent(double size)  { TEXTMETRICW tm; aeui_metrics(size, &tm); return (double)tm.tmAscent; }
+double aether_ui_font_descent(double size) { TEXTMETRICW tm; aeui_metrics(size, &tm); return (double)tm.tmDescent; }
+double aether_ui_font_height(double size)  { TEXTMETRICW tm; aeui_metrics(size, &tm); return (double)(tm.tmHeight + tm.tmExternalLeading); }
 
 void aether_ui_canvas_draw_image_impl(int canvas_id, double x, double y,
                                        int iw, int ih,
@@ -4465,6 +4787,26 @@ static const char* vk_to_gdk_name(WPARAM vk, char* buf, int buflen) {
 
 static LRESULT CALLBACK canvas_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_SIZE: {
+            // Canvas rescale: record the new size + fire the app's on_resize
+            // (which re-flushes the vg scene at the new viewBox->px mapping).
+            int cid = 0;
+            for (int i = 0; i < canvas_count; i++)
+                if (canvases[i].hwnd == hwnd) { cid = i + 1; break; }
+            if (cid) {
+                Canvas* c = &canvases[cid - 1];
+                int nw = LOWORD(lp), nh = HIWORD(lp);
+                if (nw > 0 && nh > 0 && (nw != c->width || nh != c->height)) {
+                    c->width = nw;
+                    c->height = nh;
+                    if (c->on_resize && c->on_resize->fn)
+                        ((void(*)(void*, intptr_t, intptr_t))c->on_resize->fn)(
+                            c->on_resize->env, (intptr_t)nw, (intptr_t)nh);
+                    InvalidateRect(hwnd, NULL, TRUE);
+                }
+            }
+            return 0;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
@@ -4705,6 +5047,7 @@ static const char* widget_kind_name(WidgetKind k) {
         case WK_SHEET: return "sheet";
         case WK_SCRIM: return "scrim";
         case WK_TABS: return "tabs";
+        case WK_SPLITVIEW: return "splitview";
         default: return "widget";
     }
 }
@@ -4930,16 +5273,30 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
                 ctx->done = 1;
                 return 0;
             }
-            if (app_count > 0 && apps[0].hwnd) {
-                if (strcmp(ctx->sval, "Tab") == 0 ||
-                    strcmp(ctx->sval, "Shift+Tab") == 0) {
-                    BOOL back = (ctx->sval[0] == 'S');
-                    HWND cur = GetFocus();
-                    HWND nxt = GetNextDlgTabItem(apps[0].hwnd, cur, back);
-                    if (nxt) {
-                        SetFocus(nxt);
-                        ctx->retval = 1;
-                    }
+            if (strcmp(ctx->sval, "Tab") == 0 ||
+                strcmp(ctx->sval, "Shift+Tab") == 0) {
+                // Driver Tab walks the widget REGISTRY, whose order IS build
+                // order — matching GTK and macOS (which does exactly this walk
+                // because AppKit's key-view loop depends on an OS setting).
+                // Real keyboard Tab keeps Windows dialog order; this is the
+                // HEADLESS route's contract, same as the other backends'.
+                int back = (ctx->sval[0] == 'S');
+                int cur = handle_for_hwnd(GetFocus());
+                int n = widget_count;
+                int start = cur >= 1 ? cur : (back ? 1 : n);
+                for (int step = 1; step <= n; step++) {
+                    int h2 = back ? start - step : start + step;
+                    if (h2 < 1) h2 += n;
+                    if (h2 > n) h2 -= n;
+                    Widget* cand = widget_at(h2);
+                    if (!cand || cand->dead || !IsWindow(cand->hwnd)) continue;
+                    LONG style = GetWindowLongW(cand->hwnd, GWL_STYLE);
+                    if (!(style & WS_TABSTOP)) continue;
+                    if (!(style & WS_VISIBLE)) continue;
+                    if (!IsWindowEnabled(cand->hwnd)) continue;
+                    SetFocus(cand->hwnd);
+                    ctx->retval = 1;
+                    break;
                 }
             }
             ctx->result = 0;
@@ -5079,7 +5436,22 @@ static LRESULT CALLBACK driver_host_proc(HWND hwnd, UINT msg,
                 if (w->kind == WK_TOGGLE) {
                     int cur = aether_ui_toggle_get_active(ctx->handle);
                     aether_ui_toggle_set_active(ctx->handle, !cur);
+                    if (!cur) w32_radio_enforce(ctx->handle);   // now active
                     invoke_closure(w->on_change);
+                }
+                break;
+            case AETHER_DRV_CTX_MENU:
+                // "Mapped" = this widget (or itself) has a menu to show. The
+                // headless driver doesn't need a visible popup; the store IS
+                // the menu (activation drives the same closures).
+                ctx->retval = (w->ctx_count > 0) ? 1 : 0;
+                break;
+            case AETHER_DRV_CTX_ACTIVATE:
+                if (ctx->ival >= 0 && ctx->ival < w->ctx_count) {
+                    invoke_closure((AeClosure*)w->ctx_items[ctx->ival].closure);
+                    ctx->retval = 1;
+                } else {
+                    ctx->retval = 0;
                 }
                 break;
             case AETHER_DRV_SET_VALUE:
