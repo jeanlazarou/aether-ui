@@ -733,6 +733,8 @@ typedef struct {
 // shrink to their measured size for alignment.
 static void w32_note_layout(HWND hwnd, int w, int h);    // fwd (on_layout)
 
+static int w32_subtree_greedy(Widget* w, int orientation);  // fwd
+
 static int w32_fills_cross(int kind) {
     return kind == WK_VSTACK || kind == WK_HSTACK || kind == WK_ZSTACK
         || kind == WK_TABS || kind == WK_SPLITVIEW || kind == WK_SCROLLVIEW
@@ -883,6 +885,30 @@ static void measure_widget(Widget* w, int* out_w, int* out_h) {
     *out_h = w->pref_height > 0 ? w->pref_height : 24;
 }
 
+// A widget is "greedy" along `orientation` when it should take the stack's
+// leftover primary-axis space by default: splitviews/scrollviews, canvases
+// whose primary size the app did NOT pin, and containers holding any greedy
+// descendant (expand propagates up).
+static int w32_subtree_greedy(Widget* w, int orientation) {
+    if (!w) return 0;
+    if (w->kind == WK_SPLITVIEW || w->kind == WK_SCROLLVIEW) return 1;
+    if (w->kind == WK_CANVAS) {
+        int pinned = (orientation == 1) ? (w->pref_height > 0)
+                                        : (w->pref_width > 0);
+        return !pinned;
+    }
+    if (w->kind == WK_VSTACK || w->kind == WK_HSTACK || w->kind == WK_ZSTACK
+        || w->kind == WK_TABS || w->kind == WK_WRAP) {
+        for (HWND c = GetWindow(w->hwnd, GW_CHILD); c;
+             c = GetWindow(c, GW_HWNDNEXT)) {
+            Widget* cw = widget_at(handle_for_hwnd(c));
+            if (cw && !cw->dead && w32_subtree_greedy(cw, orientation))
+                return 1;
+        }
+    }
+    return 0;
+}
+
 // Layout all direct child windows of the stack.
 static void stack_do_layout(HWND stack_hwnd) {
     int h = handle_for_hwnd(stack_hwnd);
@@ -1029,19 +1055,15 @@ static void stack_do_layout(HWND stack_hwnd) {
             mc[i].margin_l = cw->margin_left;
             mc[i].weight = cw->weight;
             mc[i].kind = (int)cw->kind;
-            // Greedy containers (splitview/scrollview) expand along the
-            // primary axis by default — GTK's paned/scrolled do the same.
-            if (mc[i].weight == 0 &&
-                (cw->kind == WK_SPLITVIEW || cw->kind == WK_SCROLLVIEW))
+            // Greedy children expand along the primary axis by default —
+            // splitview/scrolled (GTK's paned/scrolled semantics), unpinned
+            // canvases (GTK's hexpand/vexpand=true), AND any container with
+            // a greedy descendant: expand PROPAGATES UP, retroactively — the
+            // same lesson the macOS backend learnt (a vstack holding the
+            // treemap must win width in its hstack, or the canvas never
+            // grows no matter how greedy it is).
+            if (mc[i].weight == 0 && w32_subtree_greedy(cw, orientation))
                 mc[i].weight = 1;
-            // Canvases mirror GTK's hexpand/vexpand=true default — but only
-            // when the app didn't pin the primary-axis size explicitly
-            // (falling_blocks fixes its board size; gp's treemap must grow).
-            if (mc[i].weight == 0 && cw->kind == WK_CANVAS) {
-                int pinned = (orientation == 1) ? (cw->pref_height > 0)
-                                                : (cw->pref_width > 0);
-                if (!pinned) mc[i].weight = 1;
-            }
         } else {
             cw_w = 100; ch_h = 24;
         }
