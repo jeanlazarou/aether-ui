@@ -1061,7 +1061,14 @@ static void stack_do_layout(HWND stack_hwnd) {
             // same lesson the macOS backend learnt (a vstack holding the
             // treemap must win width in its hstack, or the canvas never
             // grows no matter how greedy it is).
-            if (mc[i].weight == 0 && w32_subtree_greedy(cw, orientation))
+            // Pin veto: an explicit primary-axis size (width()/height())
+            // means the app CHOSE this child's size — auto-greed must not
+            // override it (gp pins its sidebar at 280 and the greedy
+            // scrollview inside was stealing half the canvas's pool).
+            int pinned_primary = (orientation == 1) ? (cw->pref_height > 0)
+                                                    : (cw->pref_width > 0);
+            if (mc[i].weight == 0 && !pinned_primary
+                && w32_subtree_greedy(cw, orientation))
                 mc[i].weight = 1;
         } else {
             cw_w = 100; ch_h = 24;
