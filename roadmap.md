@@ -179,8 +179,13 @@ term in one result row — cosmetic, doesn't affect the spec.
   only a bounded WINDOW of row widgets over an arbitrarily large item list;
   `vlist_scroll_to` slides the window and recycles (1000 items → 10
   widgets; scroll → still 10). Pure module.ae, so all-backend; 3/3 on
-  GTK4. (This is the explicit-scroll form; a native-scroll gesture that
-  calls vlist_scroll_to as the viewport moves is a later enhancement.)
+  GTK4. ~~native-scroll gesture~~ **DONE 2026-07-19** —
+  `vlist_scrollable(v)` wires a real wheel/drag on the container to the
+  window (GTK4 GtkEventControllerScroll, win32 WM_MOUSEWHEEL, macOS stores
+  the closure — scrollWheel: is the AppKit follow-up); each step slides one
+  row and recycles. Driver-fire `POST /widget/{container}/scroll?dy=N` on
+  both servers. `vlist_demo`/spec native-scroll test **4/4 on GTK4 AND
+  win32 (winbaz)**.
   ~~delegate cells (%-bars, chips)~~ **DONE** (`table_col_delegate`),
   ~~row double-click~~ **DONE**, ~~multi-select~~ **DONE**, ~~**tree
   mode**~~ **DONE**. The whole Table/list line is now closed. All pure
