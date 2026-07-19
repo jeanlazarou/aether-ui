@@ -88,12 +88,29 @@ weight too; `themes_demo`'s green theme is the worked example.
   `st_font_family` in the sheet + `fontFamily`/`fontWeight` driver readback.
 - Dark/light: `styles_for_mode(light, dark)`.
 
+## v1.2 (2026-07-19, same day): liveness, files, properties, mode events
+
+- **`use_styles(s)`** — the current sheet: widget constructors consult it at
+  creation (class/id rules land when `add_css_class`/`style_id` run), so
+  subtrees built later arrive already themed. `current_styles()` reads it.
+- **`load_styles(path)`** — themes as files: `sel.prop = value` lines
+  (`//` comments; the LAST dot splits selector from property; props
+  color/bg/size/weight/radius/family/opacity). See
+  `examples/themes_demo/theme/purple.aecs`.
+- **`st_opacity` / `st_gradient` / `st_insets`** — and win32 opacity went
+  REAL (layered-window alpha; was a no-op). `"opacity"` joins the driver
+  readback.
+- **`use_styles_pair(light, dark)` / `on_appearance_change(cb)`** — auto
+  re-theme on OS light/dark flips (GTK settings notify / WM_SETTINGCHANGE /
+  macOS theme notification), driver-steerable via `POST /appearance?dark=N`
+  (single callback slot; latest registration wins).
+
+Spec: 13/13 on GTK4 AND win32 (winbaz), including a clean-close check after
+the suite (no lingering process, port freed).
+
 ## Still-open boundaries (deliberate)
 
 - `style_opacity` is not in the sheet (its CSS route is a win32 no-op).
-- Styles apply at `apply_styles` time, not at widget construction — a
-  "current sheet consulted by constructors" layer can come later without
-  changing the model.
 - No live re-matching, inheritance, pseudo-states, or descendant
   combinators — those would make AeCS a style *engine*; see the honest
   AeCS-vs-CSS comparison in the session notes.
