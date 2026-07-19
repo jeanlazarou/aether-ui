@@ -2417,6 +2417,13 @@ typedef struct {
     AeClosure* on_dismiss;   // fired on scrim click / dismiss (owned copy, may be NULL)
     int modal;
     int live;                // 0 once closed
+    // Per-entry enter/exit transition (transition_overlay). exit_kind is one
+    // of "fade"/"slide-up"/"slide-down"/"scale" (NULL = no per-entry exit; the
+    // chrome still fades via the static CSS). exiting is 1 while the exit tween
+    // plays (dismissed, not yet removed).
+    char* exit_kind;
+    int exit_ms;
+    int exiting;
 } OverlayEntry;
 
 static OverlayEntry* overlays = NULL;
@@ -2471,7 +2478,25 @@ static void aeui_overlay_css_once(void) {
             "@keyframes aui-fade-in { from { opacity: 0; } to { opacity: 1; } }"
             ".aui-toast { animation: aui-fade-in 200ms ease-out; }"
             ".aui-overlay-scrim { animation: aui-fade-in 150ms ease-out; }"
-            ".aui-overlay-card { animation: aui-fade-in 150ms ease-out; }", -1);
+            ".aui-overlay-card { animation: aui-fade-in 150ms ease-out; }"
+            // Per-entry enter transitions (transition_overlay). The class is
+            // added on open; the matching -out class replaces it on dismiss so
+            // GTK plays the reverse keyframes before the real removal fires.
+            "@keyframes aui-slide-up-in { from { opacity: 0; margin-top: 24px; } to { opacity: 1; } }"
+            "@keyframes aui-slide-up-out { from { opacity: 1; } to { opacity: 0; margin-top: 24px; } }"
+            "@keyframes aui-slide-down-in { from { opacity: 0; margin-bottom: 24px; } to { opacity: 1; } }"
+            "@keyframes aui-slide-down-out { from { opacity: 1; } to { opacity: 0; margin-bottom: 24px; } }"
+            "@keyframes aui-scale-in { from { opacity: 0; } to { opacity: 1; } }"
+            "@keyframes aui-scale-out { from { opacity: 1; } to { opacity: 0; } }"
+            "@keyframes aui-fade-out { from { opacity: 1; } to { opacity: 0; } }"
+            ".aui-tr-fade-in       { animation: aui-fade-in 180ms ease-out; }"
+            ".aui-tr-fade-out      { animation: aui-fade-out 180ms ease-in forwards; }"
+            ".aui-tr-slide-up-in   { animation: aui-slide-up-in 200ms ease-out; }"
+            ".aui-tr-slide-up-out  { animation: aui-slide-up-out 200ms ease-in forwards; }"
+            ".aui-tr-slide-down-in { animation: aui-slide-down-in 200ms ease-out; }"
+            ".aui-tr-slide-down-out{ animation: aui-slide-down-out 200ms ease-in forwards; }"
+            ".aui-tr-scale-in      { animation: aui-scale-in 180ms ease-out; }"
+            ".aui-tr-scale-out     { animation: aui-scale-out 180ms ease-in forwards; }", -1);
         gtk_style_context_add_provider_for_display(
             display, GTK_STYLE_PROVIDER(anim),
             GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
@@ -2511,9 +2536,26 @@ static void overlay_fire_dismiss(OverlayEntry* e) {
         ((void(*)(void*))e->on_dismiss->fn)(e->on_dismiss->env);
 }
 
-static void overlay_do_close(OverlayEntry* e) {
-    if (!e->live) return;
-    e->live = 0;
+// Animation globally suppressed (driver determinism switch)?
+static int aeui_anim_off(void) {
+    const char* n = getenv("AETHER_UI_NO_ANIMATION");
+    return n && n[0] && n[0] != '0';
+}
+
+// Map a transition kind to its enter/exit CSS class. Returns NULL for an
+// unknown kind (caller falls back to no per-entry animation).
+static const char* aeui_tr_class(const char* kind, int entering) {
+    if (!kind) return NULL;
+    if (strcmp(kind, "fade") == 0)       return entering ? "aui-tr-fade-in"       : "aui-tr-fade-out";
+    if (strcmp(kind, "slide-up") == 0)   return entering ? "aui-tr-slide-up-in"   : "aui-tr-slide-up-out";
+    if (strcmp(kind, "slide-down") == 0) return entering ? "aui-tr-slide-down-in" : "aui-tr-slide-down-out";
+    if (strcmp(kind, "scale") == 0)      return entering ? "aui-tr-scale-in"      : "aui-tr-scale-out";
+    return NULL;
+}
+
+// Actually detach the entry's widgets. Split out so a deferred exit tween can
+// call it once the animation finishes.
+static void overlay_detach(OverlayEntry* e) {
     GtkOverlay* ov = aeui_window_overlay(e->window);
     if (ov) {
         if (e->scrim) gtk_overlay_remove_overlay(ov, e->scrim);
@@ -2521,6 +2563,33 @@ static void overlay_do_close(OverlayEntry* e) {
     }
     e->scrim = NULL;
     e->content = NULL;
+    e->exiting = 0;
+    e->live = 0;
+}
+
+// g_timeout callback: the exit tween has played, remove for real.
+static gboolean overlay_exit_done(gpointer data) {
+    overlay_detach((OverlayEntry*)data);
+    return G_SOURCE_REMOVE;
+}
+
+static void overlay_do_close(OverlayEntry* e) {
+    if (!e->live || e->exiting) return;
+    // A per-entry exit transition (and animation on): swap the enter class for
+    // the -out class so GTK plays the reverse keyframes, mark the entry exiting
+    // (still counted live so the layer stays interactive-blocked), and detach
+    // once the tween finishes. Everything else removes immediately.
+    const char* out = aeui_tr_class(e->exit_kind, 0);
+    if (out && e->content && !aeui_anim_off()) {
+        const char* in = aeui_tr_class(e->exit_kind, 1);
+        if (in) gtk_widget_remove_css_class(e->content, in);
+        gtk_widget_add_css_class(e->content, out);
+        if (e->scrim) gtk_widget_add_css_class(e->scrim, "aui-tr-fade-out");
+        e->exiting = 1;
+        g_timeout_add(e->exit_ms > 0 ? e->exit_ms : 180, overlay_exit_done, e);
+        return;
+    }
+    overlay_detach(e);
 }
 
 static void on_scrim_pressed(GtkGestureClick* g, int n, double x, double y,
@@ -2552,6 +2621,9 @@ int aether_ui_overlay_open_impl(int win_handle, int content_handle,
     e->on_dismiss = NULL;
     e->modal = modal;
     e->live = 1;
+    e->exit_kind = NULL;
+    e->exit_ms = 0;
+    e->exiting = 0;
 
     if (modal) {
         // Full-window scrim first (below the content, above the app). A
@@ -2604,6 +2676,26 @@ int aether_ui_overlay_count_impl(void) { return overlay_count; }
 int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     if (overlay_handle < 1 || overlay_handle > overlay_count) return 0;
     return overlays[overlay_handle - 1].modal;
+}
+
+// Declare a per-entry enter/exit transition. Stores the kind/ms and adds the
+// ENTER css class now (the content is already in the overlay, so GTK plays the
+// enter keyframes immediately). Exit is played by overlay_do_close.
+void aether_ui_overlay_set_transition_impl(int overlay_handle,
+                                           const char* kind, int ms) {
+    if (overlay_handle < 1 || overlay_handle > overlay_count) return;
+    OverlayEntry* e = &overlays[overlay_handle - 1];
+    g_free(e->exit_kind);
+    e->exit_kind = kind ? g_strdup(kind) : NULL;
+    e->exit_ms = ms;
+    const char* in = aeui_tr_class(kind, 1);
+    if (in && e->content && !aeui_anim_off())
+        gtk_widget_add_css_class(e->content, in);
+}
+
+int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
+    if (overlay_handle < 1 || overlay_handle > overlay_count) return 0;
+    return overlays[overlay_handle - 1].exiting;
 }
 
 // ---------------------------------------------------------------------------
@@ -5210,10 +5302,11 @@ static void handle_test_request(int client_fd) {
         int off = snprintf(buf, sizeof(buf), "{\"count\":%d,\"overlays\":[", n);
         for (int i = 1; i <= n && off < (int)sizeof(buf) - 64; i++) {
             off += snprintf(buf + off, sizeof(buf) - off,
-                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d}",
+                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d}",
                 i > 1 ? "," : "", i,
                 aether_ui_overlay_is_modal_impl(i),
-                aether_ui_overlay_is_live_impl(i));
+                aether_ui_overlay_is_live_impl(i),
+                aether_ui_overlay_is_exiting_impl(i));
         }
         snprintf(buf + off, sizeof(buf) - off, "]}");
         send_response(client_fd, 200, "OK", "application/json", buf);

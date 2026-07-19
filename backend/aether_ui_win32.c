@@ -2984,6 +2984,21 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     return e ? e->modal : 0;
 }
 
+// Per-entry overlay transitions: win32 overlays have no CSS-keyframe layer, so
+// the transition is a no-op and exit is instant. The model still works — the
+// driver contract degrades to "no exit tween" (is_exiting is always 0), which
+// is the same end-state as AETHER_UI_NO_ANIMATION on GTK4. Native win32
+// overlay animation is a follow-up.
+void aether_ui_overlay_set_transition_impl(int overlay_handle,
+                                           const char* kind, int ms) {
+    (void)overlay_handle; (void)kind; (void)ms;
+}
+
+int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
+    (void)overlay_handle;
+    return 0;
+}
+
 // Escape closes the TOPMOST live overlay; returns 1 if one was closed so
 // the caller can let Escape propagate when nothing is open.
 static int w32_escape_overlays(void) {

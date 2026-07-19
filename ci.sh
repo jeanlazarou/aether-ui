@@ -60,7 +60,7 @@ fi
 # -------------------------------------------------------------------------
 
 # All examples that must compile in Phase 1.
-EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo weightclamp_demo shortcut_demo polish_demo vlist_demo wshortcut_demo multiwindow_demo winmenu_demo reorder_demo)
+EXAMPLES=(counter form picker styled system canvas testable calculator context_menu overlay_demo vg_tooltip each_demo listbox_demo table_demo transitions_demo split_demo bindings_demo tabs_demo menu rbind_demo typo_demo multiselect_demo dblclick_demo tree_demo tabledeleg_demo weightclamp_demo shortcut_demo polish_demo vlist_demo wshortcut_demo multiwindow_demo winmenu_demo reorder_demo overlaytr_demo)
 # Examples without a test server — Phase 2 smoke-launches each.
 # calculator and testable are exercised through their HTTP drivers in
 # Phases 3-4, so they are not smoke-tested here.
@@ -562,6 +562,12 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=reorder_demo/spec_reorder_demo \
     run_server_test "$(EX_BIN reorder_demo)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" reorder_demo || FAIL=$((FAIL + 1))
+    # Overlay entry transitions — the deterministic contract (animation OFF):
+    # dismiss removes the entry at once. The exit-tween-observable case runs in
+    # its own animation-ON phase below.
+    UI_SPEC=overlaytr_demo/spec_overlaytr_demo \
+    run_server_test "$(EX_BIN overlaytr_demo)" \
+                    "$SCRIPT_DIR/tests/run_spec.sh" overlaytr_demo || FAIL=$((FAIL + 1))
 fi
 
 echo "=== Phase 5l: AetherUIDriver game specs (falling_blocks / svg_tetris / rubiks_cube) ==="
@@ -578,6 +584,18 @@ if [ "$AEOCHA_OK" -eq 1 ]; then
     UI_SPEC=rubiks_cube/spec_rubiks_cube \
     run_server_test "$(AEVG_BIN rubiks_cube)" \
                     "$SCRIPT_DIR/tests/run_spec.sh" rubiks_cube || FAIL=$((FAIL + 1))
+fi
+
+echo
+echo "=== Phase 5h2: overlay entry EXIT transition proof (animations ON) ==="
+# With animation on, dismissing a transitioned overlay must play its exit tween
+# (exiting:1) BEFORE removal — the spec's anim-on branch asserts that. Same
+# binary + spec as the deterministic run above; only the flag differs.
+if [ "$AEOCHA_OK" -eq 1 ]; then
+    ( unset AETHER_UI_NO_ANIMATION
+      UI_SPEC=overlaytr_demo/spec_overlaytr_demo \
+      run_server_test "$(EX_BIN overlaytr_demo)" \
+                      "$SCRIPT_DIR/tests/run_spec.sh" overlaytr_demo ) || FAIL=$((FAIL + 1))
 fi
 
 echo

@@ -55,6 +55,7 @@ SUITES=(
   "multiwindow|examples/multiwindow_demo|multiwindow_demo/spec_multiwindow_demo|"
   "winmenu|examples/winmenu_demo|winmenu_demo/spec_winmenu_demo|"
   "reorder|examples/reorder_demo|reorder_demo/spec_reorder_demo|"
+  "overlaytr|examples/overlaytr_demo|overlaytr_demo/spec_overlaytr_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"

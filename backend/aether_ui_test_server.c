@@ -65,6 +65,7 @@ extern double aether_ui_font_height(double size);
 extern int    aether_ui_overlay_count_impl(void);
 extern int    aether_ui_overlay_is_live_impl(int overlay_handle);
 extern int    aether_ui_overlay_is_modal_impl(int overlay_handle);
+extern int    aether_ui_overlay_is_exiting_impl(int overlay_handle);
 extern void   aether_ui_overlay_close_impl(int overlay_handle);
 extern int    aether_ui_split_position_impl(int handle);
 extern int    aether_ui_picker_get_selected(int handle);
@@ -988,10 +989,11 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         int off = snprintf(body, sizeof(body), "{\"count\":%d,\"overlays\":[", n);
         for (int i = 1; i <= n && off < (int)sizeof(body) - 64; i++) {
             off += snprintf(body + off, sizeof(body) - off,
-                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d}",
+                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d}",
                 i > 1 ? "," : "", i,
                 aether_ui_overlay_is_modal_impl(i),
-                aether_ui_overlay_is_live_impl(i));
+                aether_ui_overlay_is_live_impl(i),
+                aether_ui_overlay_is_exiting_impl(i));
         }
         snprintf(body + off, sizeof(body) - off, "]}");
         send_http(client_fd, 200, "OK", "application/json", body);

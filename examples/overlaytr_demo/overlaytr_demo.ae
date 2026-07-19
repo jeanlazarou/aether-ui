@@ -1,0 +1,66 @@
+// Aether UI overlay entry-transitions example (roadmap: Transitions).
+//
+// transition_overlay(overlay, kind, ms) declares a per-ENTRY enter+exit
+// animation. Enter plays on open; on dismiss the exit tween plays and the
+// entry is only removed AFTER it (overlay_is_exiting reads 1 during the tween,
+// then overlay_is_live flips to 0). kind ∈ "fade" | "slide-up" | "slide-down"
+// | "scale".
+//
+// The AetherUIDriver spec asserts the lifecycle via GET /overlays, whose
+// entries now carry {"live":..,"exiting":..}:
+//   * open      → live:1, exiting:0
+//   * dismiss   → exiting:1 while the tween plays (animation ON)
+//   * after ms  → the entry is gone (live:0)
+// With AETHER_UI_NO_ANIMATION=1 the exit is instant (dismiss → live:0 at once),
+// which is what CI uses for determinism.
+//
+// Platform note: GTK4 plays the CSS-keyframe tween. win32/macOS have no
+// keyframe layer yet, so exit is instant there (is_exiting always 0) — the
+// model still works; native animation is a follow-up.
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider,
+    root_vstack, overlay_modal, dismiss_overlay, transition_overlay,
+    enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    modal_handle = 0
+
+    window("Overlay transitions demo", 500, 340) {
+        vstack(12) {
+            text("Overlay entry enter/exit transitions")
+            divider()
+            status = text("status: idle")
+
+            hstack(10) {
+                open_btn = btn("Open panel") callback {
+                    card = root_vstack(10)
+                    _ = text(card, "I slide up in, and slide down out.")
+                    _ = btn(card, "Close") callback {
+                        dismiss_overlay(modal_handle)
+                        modal_handle = 0
+                        aether_ui_text_set_string(status, "status: closing")
+                    }
+                    modal_handle = overlay_modal(0, card, "center", 0, 0) callback {
+                        // scrim clicked → the layer closes it; drop our handle.
+                        modal_handle = 0
+                        aether_ui_text_set_string(status, "status: dismissed")
+                    }
+                    // Declare the enter/exit transition for THIS entry. 200ms
+                    // slide-up on enter; slide-down on exit before removal.
+                    transition_overlay(modal_handle, "slide-up", 200)
+                    aether_ui_text_set_string(status, "status: open")
+                }
+            }
+            divider()
+            text("Open the panel, then Close — it animates out before it's gone.")
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}
