@@ -3531,7 +3531,12 @@ static HWND aeui_overlay_host_hwnd(int win_handle, Widget* content) {
     }
     if (content && content->hwnd) {
         HWND root = GetAncestor(content->hwnd, GA_ROOT);
-        if (root) return root;
+        // A DETACHED content (root_vstack built for this modal) roots at the
+        // hidden 0x0 widget_holder — mounting the overlay THERE put the whole
+        // modal (scrim included) in an invisible parking lot: live-flags and
+        // closures worked, geometry and picks read zeros. Never accept the
+        // holder as a host.
+        if (root && root != widget_holder) return root;
     }
     return (app_count > 0) ? apps[0].hwnd : NULL;
 }
