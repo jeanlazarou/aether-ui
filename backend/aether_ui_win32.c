@@ -2988,6 +2988,10 @@ typedef struct {
     int exiting;
     UINT_PTR fade_timer;  // system-assigned WM_TIMER id while fading (0 = none)
     DWORD fade_start;      // GetTickCount at fade start
+    // Scrim material (overlay_material). win32 can't blur behind a child HWND,
+    // so "blur" degrades to "tint": a heavier, lighter-frost scrim. Effective:
+    // "dim" | "tint" (never "blur"). NULL = "dim".
+    char* material;
 } Win32OverlayEntry;
 
 static Win32OverlayEntry* w32_overlays = NULL;
@@ -3241,6 +3245,31 @@ void aether_ui_overlay_set_transition_impl(int overlay_handle,
 int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
     Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
     return e ? e->exiting : 0;
+}
+
+// Scrim material. win32 can't blur behind a child HWND, so "blur" degrades to
+// "tint": a heavier, lighter-frost scrim (raise the layered alpha + a light
+// tint color). "dim"/"" keeps the default. Records the EFFECTIVE material.
+void aether_ui_overlay_set_material_impl(int overlay_handle, const char* kind) {
+    Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
+    if (!e) return;
+    const char* eff = "dim";
+    if (kind && (strcmp(kind, "blur") == 0 || strcmp(kind, "tint") == 0))
+        eff = "tint";   // no in-window blur on win32 — honest degrade
+    free(e->material);
+    e->material = _strdup(eff);
+    if (e->scrim) {
+        if (strcmp(eff, "tint") == 0)
+            // Heavier, lighter frost: ~78% opacity over a light tint key.
+            SetLayeredWindowAttributes(e->scrim, RGB(240, 240, 245), 200, LWA_ALPHA);
+        else
+            SetLayeredWindowAttributes(e->scrim, 0, 115, LWA_ALPHA);  // default dim
+    }
+}
+
+const char* aether_ui_overlay_material_effective_impl(int overlay_handle) {
+    Win32OverlayEntry* e = w32_overlay_at(overlay_handle);
+    return (e && e->material) ? e->material : "dim";
 }
 
 // Escape closes the TOPMOST live overlay; returns 1 if one was closed so

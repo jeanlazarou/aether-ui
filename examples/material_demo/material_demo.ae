@@ -1,0 +1,56 @@
+// Aether UI backdrop-material example (roadmap: backdrop blur / materials).
+//
+// overlay_material(overlay, kind) sets a modal scrim's material: "dim" (the
+// default), "blur" (a frosted backdrop), or "tint". A real BACKDROP BLUR is
+// only native on macOS (NSVisualEffectView); win32/GTK4 have no way to blur
+// what's behind an in-window child layer, so they degrade "blur" to "tint".
+//
+// overlay_material_effective reports what the backend ACTUALLY applied, so a
+// spec asserts the degrade honestly: "blur" on macOS, "tint" on the others.
+// The /overlays entry also carries "material". See docs/design/backdrop-material.md.
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider,
+    root_vstack, overlay_modal, dismiss_overlay, overlay_material,
+    overlay_material_effective, enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    modal_handle = 0
+
+    window("Backdrop material demo", 500, 340) {
+        vstack(12) {
+            text("Modal scrim materials")
+            divider()
+            status = text("material: (none open)")
+
+            hstack(10) {
+                blur_btn = btn("Open frosted") callback {
+                    card = root_vstack(10)
+                    _ = text(card, "I float over a frosted backdrop.")
+                    _ = btn(card, "Close") callback {
+                        dismiss_overlay(modal_handle)
+                        modal_handle = 0
+                    }
+                    modal_handle = overlay_modal(0, card, "center", 0, 0) callback {
+                        modal_handle = 0
+                    }
+                    // Ask for a frosted backdrop. macOS frosts for real;
+                    // win32/GTK4 degrade to a tint.
+                    overlay_material(modal_handle, "blur")
+                    aether_ui_text_set_string(status,
+                        string.concat("material: ",
+                            overlay_material_effective(modal_handle)))
+                }
+            }
+            divider()
+            text("macOS frosts (NSVisualEffectView); win32/GTK4 tint (no in-window blur).")
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

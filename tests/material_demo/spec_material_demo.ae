@@ -1,0 +1,55 @@
+// spec_material_demo.ae — backdrop-material over the AetherUIDriver. Proves
+// overlay_material + the honest per-backend degrade (roadmap: backdrop blur /
+// materials):
+//   * requesting "blur" yields a real frosted material ONLY on macOS; win32
+//     and GTK4 have no in-window backdrop blur, so they degrade to "tint";
+//   * the EFFECTIVE material is reported (overlay_material_effective + the
+//     "material" field on /overlays), so the degrade is visible and asserted,
+//     nobody over-claims a frost that isn't there.
+//
+// This spec runs against the DRIVABLE backends (GTK4 + win32), where a blur
+// request must degrade to "tint". macOS asserts "blur" in its own run; the
+// shared contract is "requesting blur never silently no-ops — the reported
+// material is the real one".
+//
+// Run via ci.sh / spec_matrix, or by hand:
+//   AETHER_UI_TEST_PORT=9222 ./target/build/examples/material_demo/bin/material_demo &
+//   UI_SPEC=material_demo/spec_material_demo tests/run_spec.sh
+import aeocha
+import uidriver
+import std.string
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    aeocha.describe(fw, "backdrop material over AetherUIDriver") {
+        aeocha.it("starts with no overlays") callback {
+            r = uidriver.get_body("/overlays")
+            aeocha.assert_contains(r, "\"count\":0", "no overlays at startup")
+        }
+
+        aeocha.it("requesting blur degrades to tint on this backend") callback {
+            o = uidriver.widget_id_by_text("Open frosted")
+            aeocha.assert_gt(o, 0, "open button found")
+            uidriver.post_ok("/widget/${o}/click", "open frosted modal")
+
+            // The overlay is live and its EFFECTIVE material is reported.
+            ok = uidriver.wait_body_contains("/overlays", "\"material\":\"tint\"", 20)
+            aeocha.assert_true(ok, "blur degraded to tint (no in-window blur here)")
+            r = uidriver.get_body("/overlays")
+            aeocha.assert_contains(r, "\"live\":1", "the modal is live")
+            // Never a silent no-op: it must NOT report the plain dim default.
+            dim = string.contains(r, "\"material\":\"dim\"")
+            aeocha.assert_eq(dim, 0, "material is not the plain dim default")
+        }
+
+        aeocha.it("the effective material surfaces in the app too") callback {
+            // The demo writes overlay_material_effective into a label.
+            b = uidriver.get_body("/widgets")
+            aeocha.assert_contains(b, "material: tint",
+                "the app label reflects the effective material")
+        }
+    }
+    aeocha.run_summary(fw)
+}

@@ -46,6 +46,7 @@ exports (
     window_create, window_set_body, window_show, window_close,
     overlay, overlay_modal, dismiss_overlay, overlay_is_live, toast, style_shadow,
     transition_overlay, overlay_is_exiting,
+    overlay_material, overlay_material_effective,
     transition,
     vg_tooltip_show, vg_tooltip_hide, vg_tooltip_drawn,
     each, each_update, each_count, each_parent,
@@ -279,6 +280,8 @@ extern aether_ui_overlay_close_impl(overlay_handle: int)
 extern aether_ui_overlay_set_on_dismiss_impl(overlay_handle: int, boxed_closure: ptr)
 extern aether_ui_overlay_is_live_impl(overlay_handle: int) -> int
 extern aether_ui_overlay_set_transition_impl(overlay_handle: int, kind: string, ms: int)
+extern aether_ui_overlay_set_material_impl(overlay_handle: int, kind: string)
+extern aether_ui_overlay_material_effective_impl(overlay_handle: int) -> string
 extern aether_ui_overlay_is_exiting_impl(overlay_handle: int) -> int
 extern aether_ui_overlay_count_impl() -> int
 extern aether_ui_overlay_is_modal_impl(overlay_handle: int) -> int
@@ -1450,6 +1453,22 @@ transition_overlay(overlay_handle: int, kind: string, ms: int) {
 // removed). 0 before dismiss and after the tween finishes.
 overlay_is_exiting(overlay_handle: int) -> int {
     return aether_ui_overlay_is_exiting_impl(overlay_handle)
+}
+
+// overlay_material(overlay, kind) — the visual treatment of a modal's scrim.
+// kind: "dim" (default translucent black) | "blur" (frosted backdrop) |
+// "tint" (a stronger lighter tint). A real BACKDROP BLUR is only native on
+// macOS (NSVisualEffectView); win32/GTK4 degrade "blur" to "tint" (there is no
+// in-window blur there). overlay_material_effective reports what was actually
+// applied so a spec can assert the degrade. See docs/design/backdrop-material.md.
+overlay_material(overlay_handle: int, kind: string) {
+    aether_ui_overlay_set_material_impl(overlay_handle, kind)
+}
+
+// The material the backend ACTUALLY applied ("dim"|"blur"|"tint") — "blur"
+// only on macOS; "tint" is the off-macOS degrade of a requested blur.
+overlay_material_effective(overlay_handle: int) -> string {
+    return aether_ui_overlay_material_effective_impl(overlay_handle)
 }
 
 // toast(win, text, ms) — a transient bottom-center message, auto-dismissed

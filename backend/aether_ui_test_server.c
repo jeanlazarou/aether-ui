@@ -753,13 +753,14 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         int n = aether_ui_overlay_count_impl();
         char body[4096];
         int pos = snprintf(body, sizeof(body), "{\"count\":%d,\"overlays\":[", n);
-        for (int i = 1; i <= n && pos < (int)sizeof(body) - 64; i++) {
+        for (int i = 1; i <= n && pos < (int)sizeof(body) - 96; i++) {
             pos += snprintf(body + pos, sizeof(body) - pos,
-                            "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d}",
+                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d,\"material\":\"%s\"}",
                             i > 1 ? "," : "", i,
                             aether_ui_overlay_is_modal_impl(i),
                             aether_ui_overlay_is_live_impl(i),
-                            aether_ui_overlay_is_exiting_impl(i));
+                            aether_ui_overlay_is_exiting_impl(i),
+                            aether_ui_overlay_material_effective_impl(i));
         }
         snprintf(body + pos, sizeof(body) - pos, "]}");
         send_http(client_fd, 200, "OK", "application/json", body);

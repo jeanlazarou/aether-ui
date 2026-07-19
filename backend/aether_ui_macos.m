@@ -2724,6 +2724,11 @@ typedef struct {
     int live;
     int exiting;    // 1 while the exit tween plays (before live flips to 0)
     int trans_ms;   // per-entry transition duration; 0 = no tween (instant)
+    // Scrim material (overlay_material). macOS has a REAL frosted material —
+    // "blur" installs an NSVisualEffectView behind the scrim. effective is
+    // "dim" | "blur" | "tint". material_view is the effect view (nil = none).
+    char* material;
+    NSVisualEffectView* __unsafe_unretained material_view;
 } OverlayEntry;
 
 static OverlayEntry* overlays = NULL;
@@ -2916,6 +2921,58 @@ void aether_ui_overlay_set_transition_impl(int overlay_handle,
 int aether_ui_overlay_is_exiting_impl(int overlay_handle) {
     OverlayEntry* e = overlay_at(overlay_handle);
     return e ? e->exiting : 0;
+}
+
+// Scrim material. macOS has a REAL frosted material: "blur" installs an
+// NSVisualEffectView (behindWindow blending) below the click-eating scrim and
+// dials the scrim's own dim right down so the frost shows through. "tint"/"dim"
+// keep the plain scrim. Records the EFFECTIVE material.
+void aether_ui_overlay_set_material_impl(int overlay_handle, const char* kind) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    if (!e) return;
+    const char* eff = "dim";
+    if (kind && strcmp(kind, "blur") == 0)      eff = "blur";
+    else if (kind && strcmp(kind, "tint") == 0) eff = "tint";
+    free(e->material);
+    e->material = strdup(eff);
+
+    NSView* scrim = e->scrim;
+    if (!scrim) return;
+    void (^apply)(void) = ^{
+        // Remove any prior effect view.
+        if (e->material_view) { [e->material_view removeFromSuperview]; e->material_view = nil; }
+        if (strcmp(eff, "blur") == 0) {
+            NSView* host = [scrim superview];
+            NSVisualEffectView* fx = [[NSVisualEffectView alloc] initWithFrame:[host bounds]];
+            fx.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+            fx.material = NSVisualEffectMaterialHUDWindow;
+            fx.state = NSVisualEffectStateActive;
+            [fx setTranslatesAutoresizingMaskIntoConstraints:NO];
+            // Insert BELOW the scrim (which keeps eating clicks on top).
+            [host addSubview:fx positioned:NSWindowBelow relativeTo:scrim];
+            [fx.leadingAnchor constraintEqualToAnchor:host.leadingAnchor].active = YES;
+            [fx.trailingAnchor constraintEqualToAnchor:host.trailingAnchor].active = YES;
+            [fx.topAnchor constraintEqualToAnchor:host.topAnchor].active = YES;
+            [fx.bottomAnchor constraintEqualToAnchor:host.bottomAnchor].active = YES;
+            e->material_view = fx;
+            // Let the frost dominate: drop the scrim's own dim to a faint veil.
+            scrim.layer.backgroundColor =
+                [[NSColor colorWithRed:0 green:0 blue:0 alpha:0.08] CGColor];
+        } else if (strcmp(eff, "tint") == 0) {
+            scrim.layer.backgroundColor =
+                [[NSColor colorWithRed:0.95 green:0.95 blue:0.98 alpha:0.35] CGColor];
+        } else {
+            scrim.layer.backgroundColor =
+                [[NSColor colorWithRed:0 green:0 blue:0 alpha:0.45] CGColor];
+        }
+    };
+    if ([NSThread isMainThread]) apply();
+    else dispatch_sync(dispatch_get_main_queue(), apply);
+}
+
+const char* aether_ui_overlay_material_effective_impl(int overlay_handle) {
+    OverlayEntry* e = overlay_at(overlay_handle);
+    return (e && e->material) ? e->material : "dim";
 }
 
 // Escape closes the TOPMOST live overlay. Returns 1 if one was closed, so the

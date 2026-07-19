@@ -2534,6 +2534,9 @@ typedef struct {
     char* exit_kind;
     int exit_ms;
     int exiting;
+    // Scrim material (overlay_material). GTK4 has no backdrop-filter, so "blur"
+    // degrades to "tint" (a lighter, higher-contrast scrim). "dim" = default.
+    char* material;   // effective: "dim" | "tint" (never "blur" on GTK4)
 } OverlayEntry;
 
 static OverlayEntry* overlays = NULL;
@@ -2550,6 +2553,10 @@ static void aeui_overlay_css_once(void) {
     GtkCssProvider* prov = gtk_css_provider_new();
     gtk_css_provider_load_from_data(prov,
         ".aui-overlay-scrim { background-color: rgba(0,0,0,0.45); }"
+        // "tint" material (the degrade of a requested "blur" — GTK4 has no
+        // backdrop-filter): a lighter, frostier-looking scrim. Honestly a
+        // tint, not a blur.
+        ".aui-overlay-scrim-tint { background-color: rgba(245,245,250,0.35); }"
         ".aui-toast {"
         "  background-color: rgba(30,30,30,0.92); color: white;"
         "  padding: 10px 18px; border-radius: 8px; margin: 24px;"
@@ -2734,6 +2741,7 @@ int aether_ui_overlay_open_impl(int win_handle, int content_handle,
     e->exit_kind = NULL;
     e->exit_ms = 0;
     e->exiting = 0;
+    e->material = NULL;   // "dim" until overlay_material sets it
 
     if (modal) {
         // Full-window scrim first (below the content, above the app). A
@@ -2786,6 +2794,31 @@ int aether_ui_overlay_count_impl(void) { return overlay_count; }
 int aether_ui_overlay_is_modal_impl(int overlay_handle) {
     if (overlay_handle < 1 || overlay_handle > overlay_count) return 0;
     return overlays[overlay_handle - 1].modal;
+}
+
+// Scrim material. GTK4 has no backdrop-filter, so a requested "blur" degrades
+// to "tint"; "dim"/"" is the default. Applies the matching CSS class to the
+// scrim and records the EFFECTIVE material for the driver.
+void aether_ui_overlay_set_material_impl(int overlay_handle, const char* kind) {
+    if (overlay_handle < 1 || overlay_handle > overlay_count) return;
+    OverlayEntry* e = &overlays[overlay_handle - 1];
+    const char* eff = "dim";
+    if (kind && (strcmp(kind, "blur") == 0 || strcmp(kind, "tint") == 0))
+        eff = "tint";   // no in-window blur on GTK4 — honest degrade
+    g_free(e->material);
+    e->material = g_strdup(eff);
+    if (e->scrim) {
+        if (strcmp(eff, "tint") == 0)
+            gtk_widget_add_css_class(e->scrim, "aui-overlay-scrim-tint");
+        else
+            gtk_widget_remove_css_class(e->scrim, "aui-overlay-scrim-tint");
+    }
+}
+
+const char* aether_ui_overlay_material_effective_impl(int overlay_handle) {
+    if (overlay_handle < 1 || overlay_handle > overlay_count) return "dim";
+    const char* m = overlays[overlay_handle - 1].material;
+    return m ? m : "dim";
 }
 
 // Declare a per-entry enter/exit transition. Stores the kind/ms and adds the
@@ -5490,13 +5523,14 @@ static void handle_test_request(int client_fd) {
         char buf[4096];
         int n = aether_ui_overlay_count_impl();
         int off = snprintf(buf, sizeof(buf), "{\"count\":%d,\"overlays\":[", n);
-        for (int i = 1; i <= n && off < (int)sizeof(buf) - 64; i++) {
+        for (int i = 1; i <= n && off < (int)sizeof(buf) - 96; i++) {
             off += snprintf(buf + off, sizeof(buf) - off,
-                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d}",
+                "%s{\"handle\":%d,\"modal\":%d,\"live\":%d,\"exiting\":%d,\"material\":\"%s\"}",
                 i > 1 ? "," : "", i,
                 aether_ui_overlay_is_modal_impl(i),
                 aether_ui_overlay_is_live_impl(i),
-                aether_ui_overlay_is_exiting_impl(i));
+                aether_ui_overlay_is_exiting_impl(i),
+                aether_ui_overlay_material_effective_impl(i));
         }
         snprintf(buf + off, sizeof(buf) - off, "]}");
         send_response(client_fd, 200, "OK", "application/json", buf);

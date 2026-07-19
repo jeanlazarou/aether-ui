@@ -217,6 +217,11 @@ int aether_ui_overlay_is_modal_impl(int overlay_handle);
 // plays enter; is_exiting is 1 while the exit tween plays before real removal.
 void aether_ui_overlay_set_transition_impl(int overlay_handle, const char* kind, int ms);
 int aether_ui_overlay_is_exiting_impl(int overlay_handle);
+// Scrim material: "dim"|"blur"|"tint". Real backdrop blur only on macOS
+// (NSVisualEffectView); win32/GTK4 degrade "blur"→"tint". The _effective getter
+// reports what was actually applied. See docs/design/backdrop-material.md.
+void aether_ui_overlay_set_material_impl(int overlay_handle, const char* kind);
+const char* aether_ui_overlay_material_effective_impl(int overlay_handle);
 int aether_ui_toast_impl(int win_handle, const char* text, int ms);
 void aether_ui_widget_apply_css_impl(int handle, const char* property_css);
 void aether_ui_widget_add_css_class_impl(int handle, const char* cls);
