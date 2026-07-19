@@ -1473,6 +1473,18 @@ static LRESULT CALLBACK app_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             }
             return 0;
         }
+        case WM_GETMINMAXINFO: {
+            // Don't cap programmatic sizing at the physical screen: Windows'
+            // default ptMaxTrackSize is the display size, so a driver
+            // /window/resize LARGER than the (small) VM screen silently
+            // clamped back — gp's 1028→1716 grow landed at 1028 while the
+            // 3200x2000 Xvfb on Linux never hit the limit. Users can't drag
+            // past the screen anyway; this only frees SetWindowPos.
+            MINMAXINFO* mmi = (MINMAXINFO*)lp;
+            mmi->ptMaxTrackSize.x = 32000;
+            mmi->ptMaxTrackSize.y = 32000;
+            return 0;
+        }
         case WM_DPICHANGED: {
             RECT* suggested = (RECT*)lp;
             SetWindowPos(hwnd, NULL,
