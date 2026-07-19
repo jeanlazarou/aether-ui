@@ -276,10 +276,10 @@ term in one result row — cosmetic, doesn't affect the spec.
   done:** GTK4 overlays were ALREADY per-window (the "~50 sites" was
   overstated); win32 overlays now honour the target window (were hardcoded
   to apps[0]) — verified, an overlay on window 2 carries window:2 on GTK4
-  AND win32 (6/6). macOS sheets now follow the KEY window. Remaining: the
-  macOS overlay host is still interposed only on the primary's contentView
-  (a per-window-host AppKit change) — explicit TODO + sibling note. Menus
-  are still primary-attached (per-window menu bar = separate item).
+  AND win32 (6/6). macOS sheets follow the KEY window, and macOS overlays
+  got per-window hosts + safe main-thread close (sibling, spec_matrix
+  145/145). Per-window overlays/sheets are done on ALL THREE. Remaining:
+  menus are still primary-attached (per-window menu bar = separate item).
 - **Accessibility** — native widgets get GTK/AppKit a11y free; anything
   vg-DRAWN (the dropdown, a plan-B table) needs a semantics bridge
   eventually — this is the real cost of the drawn path, and why Flutter
