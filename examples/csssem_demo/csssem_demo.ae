@@ -1,0 +1,62 @@
+// AeCS CSS-semantics fixture — an INTENT-port of W3C selector/cascade tests
+// (Selectors Level 3 specificity ordering; CSS 2.1 §6.4.1 cascade order) to
+// the AeCS surface, plus the two PINNED DIVERGENCES where AeCS deliberately
+// is not CSS: no inheritance, and overwrite-never-unset. The spec asserts
+// all of it from backend fg readback. See docs/design/styling.md.
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider, add_css_class,
+    create_styles, st_color, st_font_size, apply_styles, style_id,
+    enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+main() {
+    window("AeCS semantics", 460, 320) {
+        vstack(10) {
+            status = text("state: start")
+            divider()
+            alpha = text("Alpha")                 // bare — element rules only
+            beta = text("Beta")                   // class "b"
+            add_css_class(beta, "b")
+            gamma = text("Gamma")                 // class "b" AND id "g"
+            add_css_class(gamma, "b")
+            style_id(gamma, "g")
+            divider()
+            hstack(10) {
+                _s1 = btn("S1") callback {
+                    // Selectors-L3 intent: id > class > type; CSS2.1 order
+                    // intent: the LAST declaration for a selector wins.
+                    s = create_styles()
+                    st_color(s, "text", 0x101010)     // overwritten below —
+                    st_color(s, "text", 0x336699)     // last write wins
+                    st_color(s, "b", 0x884422)        // bare class beats type
+                    st_color(s, "#g", 0x0A6E3C)       // id beats class
+                    apply_styles(0, s)
+                    aether_ui_text_set_string(status, "state: s1")
+                }
+                _s2 = btn("S2") callback {
+                    // PINNED DIVERGENCE: no inheritance. Colouring the
+                    // container must NOT flow into its child texts.
+                    s2 = create_styles()
+                    st_color(s2, "container", 0xAA00AA)
+                    apply_styles(0, s2)
+                    aether_ui_text_set_string(status, "state: s2")
+                }
+                _s3 = btn("S3") callback {
+                    // PINNED DIVERGENCE: overwrite-never-unset. A sheet with
+                    // no colour leaves earlier colours in place.
+                    s3 = create_styles()
+                    st_font_size(s3, "root", 13.0)
+                    apply_styles(0, s3)
+                    aether_ui_text_set_string(status, "state: s3")
+                }
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

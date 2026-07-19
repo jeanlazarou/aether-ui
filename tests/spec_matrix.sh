@@ -59,6 +59,7 @@ SUITES=(
   "a11y|examples/a11y_demo|a11y_demo/spec_a11y_demo|"
   "material|examples/material_demo|material_demo/spec_material_demo|"
   "themes|examples/themes_demo|themes_demo/spec_themes_demo|"
+  "csssem|examples/csssem_demo|csssem_demo/spec_csssem_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"
