@@ -231,6 +231,14 @@ typedef struct {
     // Sealed flag (test server)
     int sealed;
 
+    // Dead flag: the HWND was DestroyWindow'd (e.g. clear_children on a
+    // listbox rebuild). The registry never shrinks and Windows recycles HWND
+    // values, so IsWindow(hwnd) alone can't tell a destroyed row from a live
+    // one that reused its handle. This flag is the reliable signal the driver
+    // uses to drop the widget from /widgets (parity with GTK4's weak-ref slot
+    // nulling).
+    int dead;
+
     // CSS-class mirror (item 4/8 parity): win32 has no CSS, but the class
     // LIST is the driver's selection-visibility contract (.aui-row-selected)
     // — tracked here, emitted in widget JSON. Space-separated, owned.
@@ -4258,12 +4266,27 @@ void aether_ui_remove_child_impl(int parent_handle, int child_handle) {
     }
 }
 
+// Mark a widget and every descendant registered under it as dead, so the
+// driver stops listing them. Walks the live child tree BEFORE DestroyWindow
+// tears it down (afterwards GetWindow can't enumerate it).
+static void mark_subtree_dead(HWND hwnd) {
+    int h = handle_for_hwnd(hwnd);
+    if (h > 0) { Widget* w = widget_at(h); if (w) w->dead = 1; }
+    HWND c = GetWindow(hwnd, GW_CHILD);
+    while (c) {
+        HWND next = GetWindow(c, GW_HWNDNEXT);
+        mark_subtree_dead(c);
+        c = next;
+    }
+}
+
 void aether_ui_clear_children_impl(int handle) {
     Widget* p = widget_at(handle);
     if (!p) return;
     HWND c = GetWindow(p->hwnd, GW_CHILD);
     while (c) {
         HWND next = GetWindow(c, GW_HWNDNEXT);
+        mark_subtree_dead(c);   // flag the whole row subtree before it's gone
         DestroyWindow(c);
         c = next;
     }
@@ -4358,7 +4381,7 @@ static const char* hook_widget_type(int handle) {
     // this, a rebuilt listbox leaves stale rows the driver can still resolve
     // by text — and firing their captured on_drop(i) reorders by a STALE index.
     if (!w) return "null";
-    if (!IsWindow(w->hwnd)) return "null";
+    if (w->dead || !IsWindow(w->hwnd)) return "null";
     return widget_kind_name(w->kind);
 }
 
