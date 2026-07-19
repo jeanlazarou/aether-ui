@@ -2076,6 +2076,10 @@ void aether_ui_set_bg_color(int handle, double r, double g, double b, double a) 
     }
     global_css_append(css);
     global_css_reload();
+    // Stash the packed color for driver readback (styled_bg_impl): a theme
+    // swap must be provable from the backend, not just the DSL model.
+    g_object_set_data(G_OBJECT(w), "aeui-styled-bg",
+                      GINT_TO_POINTER(((ri & 255) << 16) | ((gi & 255) << 8) | (bi & 255) | 0x1000000));
 }
 
 void aether_ui_set_bg_gradient(int handle,
@@ -2110,6 +2114,12 @@ void aether_ui_set_text_color(int handle, double r, double g, double b) {
             (int)(r * 255), (int)(g * 255), (int)(b * 255));
         aether_ui_apply_css(handle, w, prop);
     }
+    // Stash for driver readback (styled_fg_impl); marker bit distinguishes
+    // "explicitly black" from "never set".
+    g_object_set_data(G_OBJECT(w), "aeui-styled-fg",
+        GINT_TO_POINTER((((int)(r * 255) & 255) << 16) |
+                        (((int)(g * 255) & 255) << 8) |
+                        ((int)(b * 255) & 255) | 0x1000000));
 }
 
 void aether_ui_set_font_size(int handle, double size) {
@@ -4712,6 +4722,43 @@ static const char* widget_type_name(GtkWidget* w) {
     return "widget";
 }
 
+// ── Stylesheet-walk ABI (ui.apply_styles) ───────────────────────────
+// The DSL's tree walk runs in-process: count + kind + parent + classes per
+// widget, and packed-color readback so the driver can prove a restyle.
+int aether_ui_widget_count_impl(void) { return widget_count; }
+
+const char* aether_ui_widget_kind_impl(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return "";
+    const char* t = widget_type_name(w);
+    return t ? t : "";
+}
+
+int aether_ui_widget_parent_impl(int handle) {
+    return parent_handle_for(handle);
+}
+
+const char* aether_ui_widget_classes_impl(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return "";
+    const char* cls = (const char*)g_object_get_data(G_OBJECT(w), "aeui-classes");
+    return cls ? cls : "";
+}
+
+int aether_ui_styled_bg_impl(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return -1;
+    int v = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "aeui-styled-bg"));
+    return (v & 0x1000000) ? (v & 0xFFFFFF) : -1;
+}
+
+int aether_ui_styled_fg_impl(int handle) {
+    GtkWidget* w = aether_ui_get_widget(handle);
+    if (!w) return -1;
+    int v = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "aeui-styled-fg"));
+    return (v & 0x1000000) ? (v & 0xFFFFFF) : -1;
+}
+
 // GET /window/pick?x=&y= — real GTK hit-test at a window-local point. Returns
 // the topmost widget's type + registered handle. This is the honest test of
 // overlay input policy: with a modal scrim up, a pick at a button's location
@@ -4940,6 +4987,15 @@ static int widget_to_json(int handle, char* buf, int bufsize) {
         if (cls && cls[0]) {
             n += snprintf(buf + n, bufsize - n, ",\"classes\":\"%s\"", cls);
         }
+    }
+
+    // Explicitly-styled colors (stylesheet layer): emitted only when set, so a
+    // spec can prove a theme swap restyled the backend, not just the model.
+    {
+        int bg = aether_ui_styled_bg_impl(handle);
+        int fg = aether_ui_styled_fg_impl(handle);
+        if (bg >= 0) n += snprintf(buf + n, bufsize - n, ",\"bg\":\"#%06x\"", bg);
+        if (fg >= 0) n += snprintf(buf + n, bufsize - n, ",\"fg\":\"#%06x\"", fg);
     }
 
     // Accessibility: effective role + accessible name (emitted only when

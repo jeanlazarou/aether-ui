@@ -4697,6 +4697,42 @@ static int hook_widget_parent(int handle) {
     return handle_for_hwnd(GetParent(w->hwnd));
 }
 
+// ── Stylesheet-walk ABI (ui.apply_styles) ───────────────────────────
+// In-process tree walk for the DSL + packed-color readback for the driver.
+int aether_ui_widget_count_impl(void) { return widget_count; }
+
+const char* aether_ui_widget_kind_impl(int handle) {
+    const char* t = hook_widget_type(handle);   // dead-safe ("null" for gone)
+    return (t && strcmp(t, "null") != 0) ? t : "";
+}
+
+int aether_ui_widget_parent_impl(int handle) {
+    return hook_widget_parent(handle);
+}
+
+const char* aether_ui_widget_classes_impl(int handle) {
+    Widget* w = widget_at(handle);
+    if (!w || !IsWindow(w->hwnd) || w->dead) return "";
+    return w->classes ? w->classes : "";
+}
+
+// COLORREF packs 0x00BBGGRR — repack to the driver's 0xRRGGBB.
+static int colorref_to_packed(COLORREF c) {
+    return ((int)GetRValue(c) << 16) | ((int)GetGValue(c) << 8) | (int)GetBValue(c);
+}
+
+int aether_ui_styled_bg_impl(int handle) {
+    Widget* w = widget_at(handle);
+    if (!w || !w->bg.has_value) return -1;
+    return colorref_to_packed(w->bg.color);
+}
+
+int aether_ui_styled_fg_impl(int handle) {
+    Widget* w = widget_at(handle);
+    if (!w || !w->fg.has_value) return -1;
+    return colorref_to_packed(w->fg.color);
+}
+
 static int hook_toggle_active(int handle) {
     Widget* w = widget_at(handle);
     if (!w || w->kind != WK_TOGGLE) return 0;

@@ -2130,6 +2130,10 @@ void aether_ui_set_bg_color(int handle, double r, double g, double b, double a) 
     if ([v isKindOfClass:[NSButton class]]) {
         [(NSButton*)v setBordered:NO];
     }
+    // Stash packed 0xRRGGBB (+ marker bit) for driver readback (styled_bg_impl).
+    int packed = (((int)(r * 255) & 255) << 16) | (((int)(g * 255) & 255) << 8)
+               | ((int)(b * 255) & 255) | 0x1000000;
+    objc_setAssociatedObject(v, "aeui_styled_bg", @(packed), OBJC_ASSOCIATION_RETAIN);
 }
 
 void aether_ui_set_bg_gradient(int handle,
@@ -2159,6 +2163,11 @@ void aether_ui_set_text_color(int handle, double r, double g, double b) {
     NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
     if (v && [v isKindOfClass:[NSTextField class]]) {
         [(NSTextField*)v setTextColor:[NSColor colorWithRed:r green:g blue:b alpha:1.0]];
+    }
+    if (v) {
+        int packed = (((int)(r * 255) & 255) << 16) | (((int)(g * 255) & 255) << 8)
+                   | ((int)(b * 255) & 255) | 0x1000000;
+        objc_setAssociatedObject(v, "aeui_styled_fg", @(packed), OBJC_ASSOCIATION_RETAIN);
     }
 }
 
@@ -4678,6 +4687,41 @@ static int hook_widget_parent(int handle) {
         if (h > 0) return h;
     }
     return 0;
+}
+
+// ── Stylesheet-walk ABI (ui.apply_styles) ───────────────────────────
+int aether_ui_widget_count_impl(void) { return widget_count; }
+
+const char* aether_ui_widget_kind_impl(int handle) {
+    const char* t = hook_widget_type(handle);
+    return (t && strcmp(t, "null") != 0) ? t : "";
+}
+
+int aether_ui_widget_parent_impl(int handle) {
+    return hook_widget_parent(handle);
+}
+
+const char* aether_ui_widget_classes_impl(int handle) {
+    if (handle < 1 || handle > widget_count) return "";
+    const char* c = widget_classes[handle - 1];
+    return c ? c : "";
+}
+
+static int aeui_styled_readback(int handle, const char* key) {
+    NSView* v = (__bridge NSView*)aether_ui_get_widget(handle);
+    if (!v) return -1;
+    NSNumber* n = objc_getAssociatedObject(v, key);
+    if (!n) return -1;
+    int packed = [n intValue];
+    return (packed & 0x1000000) ? (packed & 0xFFFFFF) : -1;
+}
+
+int aether_ui_styled_bg_impl(int handle) {
+    return aeui_styled_readback(handle, "aeui_styled_bg");
+}
+
+int aether_ui_styled_fg_impl(int handle) {
+    return aeui_styled_readback(handle, "aeui_styled_fg");
 }
 
 static int hook_toggle_active(int handle) {

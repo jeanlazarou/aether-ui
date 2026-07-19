@@ -148,6 +148,18 @@ void aether_ui_navstack_push(int handle, const char* title, int body_handle);
 void aether_ui_navstack_pop(int handle);
 
 // Styling (Group 4)
+// Stylesheet support (ui.create_styles / apply_styles — the swiby-shaped
+// CSS-alike layer; see docs/design/styling.md). The DSL walks the live widget
+// tree in-process and needs kind/parent/classes per widget; styled_bg/fg read
+// back the last EXPLICITLY-set colors (packed 0xRRGGBB, -1 = unset) so the
+// driver JSON can prove a theme swap actually restyled the backend.
+int aether_ui_widget_count_impl(void);
+const char* aether_ui_widget_kind_impl(int handle);   // "" for dead/unknown
+int aether_ui_widget_parent_impl(int handle);         // 0 = none/top
+const char* aether_ui_widget_classes_impl(int handle); // space-separated, "" none
+int aether_ui_styled_bg_impl(int handle);   // packed 0xRRGGBB or -1
+int aether_ui_styled_fg_impl(int handle);   // packed 0xRRGGBB or -1
+
 void aether_ui_set_bg_color(int handle, double r, double g, double b, double a);
 void aether_ui_set_bg_gradient(int handle,
                                double r1, double g1, double b1,

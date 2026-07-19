@@ -38,6 +38,8 @@ exports (
     style_bg_color, style_text_color, style_font_size, style_font_bold,
     style_bg_gradient, style_corner_radius, style_opacity,
     style_enabled, style_tooltip,
+    create_styles, st_color, st_bg, st_font_size, st_bold, st_radius,
+    apply_styles,
     a11y_role, a11y_label, a11y_description,
     edge_insets, width, height, distribution, alignment,
     fill_width, fill_height, margin, margin_of,
@@ -233,6 +235,10 @@ extern aether_ui_set_height(handle: int, height: int)
 extern aether_ui_set_opacity(handle: int, opacity: float)
 extern aether_ui_set_enabled(handle: int, enabled: int)
 extern aether_ui_set_tooltip(handle: int, text: string)
+extern aether_ui_widget_count_impl() -> int
+extern aether_ui_widget_kind_impl(handle: int) -> string
+extern aether_ui_widget_parent_impl(handle: int) -> int
+extern aether_ui_widget_classes_impl(handle: int) -> string
 extern aether_ui_a11y_set_role_impl(handle: int, role: string)
 extern aether_ui_a11y_set_label_impl(handle: int, name: string)
 extern aether_ui_a11y_set_description_impl(handle: int, desc: string)
@@ -1254,6 +1260,216 @@ style_enabled(handle: int, val: int) -> int {
 style_tooltip(handle: int, text: string) -> int {
     aether_ui_set_tooltip(handle, text)
     return handle
+}
+
+// ── Stylesheet layer (the swiby-shaped CSS-alike) ────────────────────
+// A declarative, cascading styles model over the imperative style_* setters,
+// modelled on Swiby's create_styles/apply_styles (Jean Lazarou & the Swiby
+// committers, BSD — see docs/design/styling.md). Selectors are widget KINDS as
+// the driver reports them ("button", "text", "textfield", …), plus:
+//   "root"           — the fallback every unmatched property cascades to
+//   "container"      — alias matching vstack/hstack/zstack
+//   "cls.kind"/"cls" — class-scoped rules; widgets opt in via add_css_class
+// Resolution per property (swiby's order, sans ids): class.kind → class →
+// kind → container-alias → root. apply_styles(target, s) walks the LIVE tree
+// (0 = everything) and calls the existing setters — so a theme is just a
+// sheet, and re-theming a running app is one call.
+//
+//   s = create_styles()
+//   st_font_size(s, "root", 11.0)
+//   st_color(s, "button", 0x5C458A)      // swiby blue_theme's button color
+//   st_bg(s, "container", 0xD6CFE6)
+//   apply_styles(0, s)
+struct StyleRule {
+    sel: string,
+    has_color: int, color: int,     // packed 0xRRGGBB text color
+    has_bg: int, bg: int,           // packed 0xRRGGBB background
+    has_fs: int, fs: float,         // font size (px)
+    has_bold: int,                  // font weight bold (set-only in v1)
+    has_radius: int, radius: float  // corner radius
+}
+
+struct StyleSheet { rules: ptr }    // std.list of *StyleRule
+
+create_styles() -> ptr {
+    s = malloc(8) as *StyleSheet
+    s.rules = list.new()
+    return s as ptr
+}
+
+// Find a rule (null when absent) / get-or-create for the setters.
+_style_find(sp: ptr, sel: string) -> ptr {
+    s = sp as *StyleSheet
+    n = list.size(s.rules)
+    i = 0
+    while i < n {
+        it, _e = list.get(s.rules, i)
+        r = it as *StyleRule
+        if string.equals(r.sel, sel) == 1 { return it }
+        i = i + 1
+    }
+    return null
+}
+
+_style_rule_of(sp: ptr, sel: string) -> ptr {
+    found = _style_find(sp, sel)
+    if found != null { return found }
+    s = sp as *StyleSheet
+    r = malloc(96) as *StyleRule
+    r.sel = sel
+    r.has_color = 0
+    r.has_bg = 0
+    r.has_fs = 0
+    r.has_bold = 0
+    r.has_radius = 0
+    _ = list.add(s.rules, r as ptr)
+    return r as ptr
+}
+
+st_color(sp: ptr, sel: string, hex: int) {
+    r = _style_rule_of(sp, sel) as *StyleRule
+    r.has_color = 1
+    r.color = hex
+}
+st_bg(sp: ptr, sel: string, hex: int) {
+    r = _style_rule_of(sp, sel) as *StyleRule
+    r.has_bg = 1
+    r.bg = hex
+}
+st_font_size(sp: ptr, sel: string, size: float) {
+    r = _style_rule_of(sp, sel) as *StyleRule
+    r.has_fs = 1
+    r.fs = size
+}
+st_bold(sp: ptr, sel: string) {
+    r = _style_rule_of(sp, sel) as *StyleRule
+    r.has_bold = 1
+}
+st_radius(sp: ptr, sel: string, radius: float) {
+    r = _style_rule_of(sp, sel) as *StyleRule
+    r.has_radius = 1
+    r.radius = radius
+}
+
+// Property codes for the generic first-match scan.
+// 0=color 1=bg 2=font_size 3=bold 4=radius
+_rule_has(rp: ptr, prop: int) -> int {
+    r = rp as *StyleRule
+    if prop == 0 { return r.has_color }
+    if prop == 1 { return r.has_bg }
+    if prop == 2 { return r.has_fs }
+    if prop == 3 { return r.has_bold }
+    return r.has_radius
+}
+
+// First candidate selector (in precedence order) that defines `prop`.
+_style_pick(sp: ptr, prop: int, c1: string, c2: string, c3: string,
+            c4: string, c5: string) -> ptr {
+    if string.length(c1) > 0 {
+        r = _style_find(sp, c1)
+        if r != null { if _rule_has(r, prop) == 1 { return r } }
+    }
+    if string.length(c2) > 0 {
+        r2 = _style_find(sp, c2)
+        if r2 != null { if _rule_has(r2, prop) == 1 { return r2 } }
+    }
+    r3 = _style_find(sp, c3)
+    if r3 != null { if _rule_has(r3, prop) == 1 { return r3 } }
+    if string.length(c4) > 0 {
+        r4 = _style_find(sp, c4)
+        if r4 != null { if _rule_has(r4, prop) == 1 { return r4 } }
+    }
+    r5 = _style_find(sp, c5)
+    if r5 != null { if _rule_has(r5, prop) == 1 { return r5 } }
+    return null
+}
+
+// The widget's FIRST css class (v1 styles resolve one class per widget).
+_style_first_class(h: int) -> string {
+    cls = aether_ui_widget_classes_impl(h)
+    if string.length(cls) == 0 { return "" }
+    idx = string.string_index_of(cls, " ")
+    if idx < 0 { return cls }
+    return string.string_substring(cls, 0, idx)
+}
+
+_style_is_container(kind: string) -> int {
+    if string.equals(kind, "vstack") == 1 { return 1 }
+    if string.equals(kind, "hstack") == 1 { return 1 }
+    if string.equals(kind, "zstack") == 1 { return 1 }
+    return 0
+}
+
+// Apply the sheet to ONE widget: resolve each property down the cascade and
+// call the imperative setter it lands on.
+_style_apply_one(sp: ptr, h: int, kind: string) {
+    cls = _style_first_class(h)
+    c1 = ""
+    if string.length(cls) > 0 {
+        c1 = string.concat(cls, string.concat(".", kind))
+    }
+    c4 = ""
+    if _style_is_container(kind) == 1 { c4 = "container" }
+
+    rc = _style_pick(sp, 0, c1, cls, kind, c4, "root")
+    if rc != null {
+        r = rc as *StyleRule
+        hex = r.color
+        _ = style_text_color(h, ((hex / 65536) % 256) / 255.0,
+                                ((hex / 256) % 256) / 255.0,
+                                (hex % 256) / 255.0)
+    }
+    rb = _style_pick(sp, 1, c1, cls, kind, c4, "root")
+    if rb != null {
+        r2 = rb as *StyleRule
+        hex2 = r2.bg
+        _ = style_bg_color(h, ((hex2 / 65536) % 256) / 255.0,
+                              ((hex2 / 256) % 256) / 255.0,
+                              (hex2 % 256) / 255.0, 1.0)
+    }
+    rf = _style_pick(sp, 2, c1, cls, kind, c4, "root")
+    if rf != null {
+        r3 = rf as *StyleRule
+        _ = style_font_size(h, r3.fs)
+    }
+    rw = _style_pick(sp, 3, c1, cls, kind, c4, "root")
+    if rw != null { _ = style_font_bold(h) }
+    rr = _style_pick(sp, 4, c1, cls, kind, c4, "root")
+    if rr != null {
+        r4 = rr as *StyleRule
+        _ = style_corner_radius(h, r4.radius)
+    }
+}
+
+// True when `h` is `target` or sits under it (parent-chain walk).
+_style_is_under(h: int, target: int) -> int {
+    p = h
+    hops = 0
+    while hops < 64 {
+        if p == target { return 1 }
+        p = aether_ui_widget_parent_impl(p)
+        if p == 0 { return 0 }
+        hops = hops + 1
+    }
+    return 0
+}
+
+// apply_styles(target, s) — restyle the LIVE tree under `target` (0 = every
+// widget) from the sheet. Call again after building new subtrees, and call
+// with a different sheet to re-theme a running app (the swiby banking-demo
+// move: preview a theme on one panel, then apply it to the whole app).
+apply_styles(target: int, sp: ptr) {
+    n = aether_ui_widget_count_impl()
+    h = 1
+    while h <= n {
+        kind = aether_ui_widget_kind_impl(h)
+        if string.length(kind) > 0 {
+            ok = 1
+            if target != 0 { ok = _style_is_under(h, target) }
+            if ok == 1 { _style_apply_one(sp, h, kind) }
+        }
+        h = h + 1
+    }
 }
 
 // ── Accessibility (semantics layer) ──────────────────────────────────

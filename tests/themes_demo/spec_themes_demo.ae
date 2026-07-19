@@ -1,0 +1,71 @@
+// spec_themes_demo.ae — the stylesheet/theming layer over the AetherUIDriver.
+// Proves the swiby-shaped CSS-alike (docs/design/styling.md):
+//   * a sheet's ELEMENT rule styles every widget of that kind ("text" →
+//     Owner: label), read back from the BACKEND ("fg" in the widget JSON is
+//     the last color the platform was actually given, not the DSL model);
+//   * a CLASS rule beats the element rule (the "header"-classed heading gets
+//     header.text's color, not text's);
+//   * a CONTAINER rule paints the stacks ("bg");
+//   * re-applying a different sheet RE-THEMES the live tree (the swiby
+//     banking-demo move) — the same widgets flip to the green theme's colors.
+//
+// Run via ci.sh / spec_matrix, or by hand:
+//   AETHER_UI_TEST_PORT=9222 ./target/build/examples/themes_demo/bin/themes_demo &
+//   UI_SPEC=themes_demo/spec_themes_demo tests/run_spec.sh
+import aeocha
+import uidriver
+import std.string
+
+main() {
+    fw = aeocha.init()
+    uidriver.wait_server()
+
+    aeocha.describe(fw, "stylesheet theming over AetherUIDriver") {
+        aeocha.it("starts unthemed (no explicit colors)") callback {
+            h = uidriver.widget_id_by_text("Accounts")
+            aeocha.assert_gt(h, 0, "heading found")
+            b = uidriver.get_body("/widget/${h}")
+            styled = string.contains(b, "\"fg\":")
+            aeocha.assert_eq(styled, 0, "heading has no explicit fg yet")
+        }
+
+        aeocha.it("blue theme: element rule styles plain text (backend readback)") callback {
+            t = uidriver.widget_id_by_text("Blue theme")
+            uidriver.post_ok("/widget/${t}/click", "apply blue theme")
+            ok = uidriver.wait_body_contains("/widgets", "theme: blue", 20)
+            aeocha.assert_true(ok, "status flipped")
+            o = uidriver.widget_id_by_text("Owner:")
+            b = uidriver.get_body("/widget/${o}")
+            aeocha.assert_contains(b, "\"fg\":\"#5c458a\"",
+                "plain text carries the blue theme's text color")
+        }
+
+        aeocha.it("class rule beats element rule (header.text)") callback {
+            h = uidriver.widget_id_by_text("Accounts")
+            b = uidriver.get_body("/widget/${h}")
+            aeocha.assert_contains(b, "\"fg\":\"#6030bf\"",
+                "the header-classed heading gets header.text's color, not text's")
+        }
+
+        aeocha.it("container rule paints the stacks") callback {
+            ok = uidriver.wait_body_contains("/widgets", "\"bg\":\"#d6cfe6\"", 20)
+            aeocha.assert_true(ok, "a container carries the blue theme's bg")
+        }
+
+        aeocha.it("applying another sheet re-themes the LIVE tree") callback {
+            g = uidriver.widget_id_by_text("Green theme")
+            uidriver.post_ok("/widget/${g}/click", "apply green theme")
+            ok = uidriver.wait_body_contains("/widgets", "theme: green", 20)
+            aeocha.assert_true(ok, "status flipped")
+            o = uidriver.widget_id_by_text("Owner:")
+            b = uidriver.get_body("/widget/${o}")
+            aeocha.assert_contains(b, "\"fg\":\"#738040\"",
+                "the same widget now shows the green theme's color")
+            h = uidriver.widget_id_by_text("Accounts")
+            b2 = uidriver.get_body("/widget/${h}")
+            aeocha.assert_contains(b2, "\"fg\":\"#a3bf30\"",
+                "the class rule re-resolved too")
+        }
+    }
+    aeocha.run_summary(fw)
+}

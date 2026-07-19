@@ -284,6 +284,15 @@ static int widget_to_json(const AetherDriverHooks* h, int handle,
         }
     }
 
+    // Explicitly-styled colors (stylesheet layer): emitted only when set, so a
+    // spec can prove a theme swap restyled the backend, not just the model.
+    {
+        int bg = aether_ui_styled_bg_impl(handle);
+        int fg = aether_ui_styled_fg_impl(handle);
+        if (bg >= 0) n += snprintf(buf + n, bufsize - n, ",\"bg\":\"#%06x\"", bg);
+        if (fg >= 0) n += snprintf(buf + n, bufsize - n, ",\"fg\":\"#%06x\"", fg);
+    }
+
     // Accessibility: the widget's effective role + accessible name (auto when
     // unset). Emitted only when present so existing specs are unaffected. The
     // name reuses the same JSON escaping the text field needs.
