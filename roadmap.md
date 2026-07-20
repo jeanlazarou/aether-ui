@@ -418,6 +418,36 @@ term in one result row — cosmetic, doesn't affect the spec.
   semantics bridge — the real cost of the drawn path (why Flutter keeps a
   semantics tree). Track it; don't block on it.
 
+## Toolkit-inspired backlog (2026-07-20 survey: SwiftUI/QML/Flutter/Swing/Swiby)
+
+Surveyed after win32 parity. Tier 1 (fits current architecture):
+
+- **QML States on AeCS** — named states per widget/subtree, each an AeCS
+  sheet fragment; `set_state` applies through the transition layer so
+  declared properties animate. *(IN PROGRESS)*
+- **Undo/Redo (Swing UndoManager)** — undoable-edit stack: explicit
+  `undoable(label, do, undo)`, Ctrl+Z/Ctrl+Shift+Z, driver /undo /redo
+  /undo_state. Text-field auto-enrolment is the follow-up. *(IN PROGRESS)*
+- **Widget Inspector (Flutter DevTools)** — a live tree browser over the
+  existing AetherUIDriver; itself an aether-ui app. The protocol already
+  exists; the inspector is a client.
+- **Golden-image tests (Flutter)** — /screenshot + per-platform golden
+  PNGs + MAE gate (the librsvg-parity philosophy applied to widgets).
+  Would have caught the win32 h:0 era, when everything rendered 0-tall
+  for weeks while click-specs stayed green.
+- **NavigationStack × swiby sweb pages** — real push/pop navigation with
+  back chrome (the navstack ABI exists as an unexercised stub) + swiby's
+  multi-page app shape ($context.goto + session).
+
+Tier 2: semantic color roles for AeCS (Flutter ColorScheme); QML
+property-to-property bindings (width: parent.width/2 via on_layout);
+Swing TableRowSorter (built-in table sort/filter); QML SpringAnimation
+easing for transitions.
+
+Noted, not scheduled: hero/matchedGeometry animations (wants the
+retained compositor); Flutter-style hot reload as "hot restart with
+state snapshot" (toolchain-adjacent: aeb watch + ui_state serialization).
+
 ## The strategic fork (not scheduled): vg-drawn controls
 
 The Flutter turn — a widget set *drawn by vg* — would make every control
