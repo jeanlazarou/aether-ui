@@ -87,7 +87,7 @@ button row) the buttons still absorb the slack. The real end-state is
 natural button hugging + explicit `ui.weight` opt-in, which wants a GTK
 side-by-side first; the canvas-priority fix covers the common case.
 
-### win32 — the gaps that remain
+### win32 — PARITY ACHIEVED 2026-07-20. Full matrix 188/0, equal to Linux.
 
 Real: focus/Tab (dialog order, not build order), driver introspection,
 state/bindings, canvas `on_click`/`on_key`/`on_release` (`c21334c`),
@@ -153,7 +153,27 @@ before app_run ran as thread timers whose system-assigned id never
 matched ours, so ui.timer closures never fired (gp's scan pump was
 dead on Windows, likely forever).
 
-**REFRESHED BASELINE 2026-07-19 (both drivable backends, full matrix):**
+**FINAL BASELINE 2026-07-20: GTK4 188/0 AND win32 188/0 — full parity.**
+The 2026-07-19 named-gap list below was closed in one arc (44/81 on 07-14 →
+141/47 on 07-19 → 188/0 on 07-20). What it took, in order: bottom-up natural
+sizing for containers (THE h:0 fix — stacks measured as their current rect,
+which is 0 until laid out, so nothing nested ever grew), cross-axis fill +
+greedy primary-axis flex with expand-propagating-up (the macOS lesson) +
+a pinned-size veto that exempts intrinsically-greedy kinds; real splitview
+(divider drag), real wrap (flow layout), real on_layout, GDI text metrics,
+context menus (store + TrackPopupMenu + driver actions), toggle radio
+groups, driver-Tab in build order, canvas rescale (WM_SIZE + on_resize);
+plus five deep bugs: /window/pick skipped WS_EX_LAYERED scrims
+(ChildWindowFromPointEx) then IsWindowVisible under a hidden toplevel
+(manual z-walk + own-style-bit), overlays mounting in the hidden widget
+holder (detached-content GA_ROOT), /window/resize resizing the BANNER
+(topmost child ≠ root — masked while specs resized to ≤ startup size),
+and WM_GETMINMAXINFO clamping growth to the small VM screen. gp's trash
+uses the real Recycle Bin on Windows; vg apps link (-lpcre2-8 in
+build.sh); LisMusic needs its documented manual sqlite build (+-lssl
+-lcrypto). AEUI_LAYOUT_DEBUG=1 prints per-stack measure tables.
+
+**(Historical) REFRESHED BASELINE 2026-07-19 (both drivable backends, full matrix):**
 
 - **GTK4 (Linux): 188 pass / 0 fail — ALL 44 suites green.** First-ever
   full spec_matrix run on Linux. It initially showed 8 red suites — ALL
