@@ -34,33 +34,41 @@ case "$(uname -s)" in
 esac
 export AETHER_UI_NO_ANIMATION=1
 
-# Per-OS launch wrapper + the exe suffix. FreeBSD (GhostBSD) is a full
-# desktop with NO Xvfb, so we drive the LIVE :0 through lightdm's root-owned
-# Xauthority — which needs root, hence the sudo (NOPASSWD is set for the CI
-# user on the shared box). See ~/aether-ui-freebsd-notes.md on .204. The app
-# then runs AS ROOT, so pid-based liveness/teardown can't see it (it's a child
-# of sudo) — the loop below waits on the PORT and pkills by binary name.
-EXE=""; FREEBSD=0
-LX_AUTH="${AEUI_XAUTHORITY:-/var/run/lightdm/root/:0}"
-LX_DISPLAY="${DISPLAY:-:0}"
+# Per-OS launch wrapper + the exe suffix.
+#
+# FreeBSD (GhostBSD) has no display in a plain SSH session, so — like Linux CI
+# — we spin up our OWN private Xvfb (pkg: xorg-vfbserver) at 3200x2000 with the
+# pointer parked off-window, and point launches at it via DISPLAY. This runs
+# UNPRIVILEGED (no sudo, no lightdm :0), and gives the same mapped-but-hidden
+# framebuffer Linux uses, so pointer-parking and HEADLESS behave identically.
+# Override the display via $DISPLAY (any pre-set DISPLAY is respected and Xvfb
+# is skipped — e.g. to use a real :0). See ~/aether-ui-freebsd-notes.md on .204.
+EXE=""; FREEBSD=0; XVFB_PID=""
 case "$(uname -s)" in
     FreeBSD) FREEBSD=1 ;;
     MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;;
 esac
 
-# Launch `$bin` with the given inline `VAR=val` env pairs. On FreeBSD the app
-# must reach the live :0 as root (no Xvfb) — and `sudo` RESETS the environment,
-# so DISPLAY/XAUTHORITY *and* the caller's vars all go INSIDE the sudo env.
-# Elsewhere it's a plain env exec. Backgrounded by the caller (trailing &).
+if [ "$FREEBSD" -eq 1 ] && [ -z "${DISPLAY:-}" ] && command -v Xvfb >/dev/null 2>&1; then
+    # A private display; :99 by convention unless taken.
+    XV_DISP=":99"
+    Xvfb "$XV_DISP" -screen 0 3200x2000x24 -ac >/tmp/aui_xvfb.log 2>&1 &
+    XVFB_PID=$!
+    export DISPLAY="$XV_DISP"
+    for _ in $(seq 1 20); do
+        xdpyinfo -display "$XV_DISP" >/dev/null 2>&1 && break
+        sleep 0.2
+    done
+    trap 'kill "$XVFB_PID" 2>/dev/null' EXIT
+fi
+
+# Launch `$bin` with the given inline `VAR=val` env pairs — a plain env exec on
+# every platform now (the display is set up above). Backgrounded by the caller.
 aui_launch() {   # aui_launch VAR=val ... -- <bin>
     local envs=()
     while [ "$1" != "--" ]; do envs+=("$1"); shift; done
     shift
-    if [ "$FREEBSD" -eq 1 ]; then
-        sudo -n env "DISPLAY=$LX_DISPLAY" "XAUTHORITY=$LX_AUTH" "${envs[@]}" "$@"
-    else
-        env "${envs[@]}" "$@"
-    fi
+    env "${envs[@]}" "$@"
 }
 
 # suite | binary | spec | extra env
@@ -134,15 +142,9 @@ port_free() {
 teardown() {
     local pid="$1" bin="$2"
     curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:$PORT/shutdown" || true
-    if ! port_free; then
-        if [ "$FREEBSD" -eq 1 ]; then
-            # The app is a root child of sudo — kill it by name, not pid.
-            sudo -n pkill -f "$bin" 2>/dev/null
-        else
-            kill "$pid" 2>/dev/null; sleep 0.5; kill -9 "$pid" 2>/dev/null
-        fi
-    fi
-    [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$bin" 2>/dev/null
+    port_free || { kill "$pid" 2>/dev/null; sleep 0.5; kill -9 "$pid" 2>/dev/null; }
+    # Belt-and-suspenders on FreeBSD (games sometimes ignore /shutdown).
+    [ "$FREEBSD" -eq 1 ] && pkill -f "$bin" 2>/dev/null
     wait "$pid" 2>/dev/null
 }
 
@@ -169,9 +171,8 @@ for row in "${SUITES[@]}"; do
             fi
             ;;
         FreeBSD)
-            # The sudo/:0 launch runs from a changed cwd, so an ABSOLUTE path
-            # is required. Prefer the aeb fan-out artifact if present; else
-            # build.sh into build/ on demand.
+            # No aeb on the box → prefer the fan-out artifact if present,
+            # else build.sh into build/ on demand. Absolutized for safety.
             if [ ! -x "$bin" ]; then
                 bin="build/$base"
                 [ -x "$bin" ] || ./build.sh "$appdir/$base.ae" "$base" \
@@ -196,16 +197,14 @@ for row in "${SUITES[@]}"; do
     ready=0
     for _ in $(seq 1 40); do
         if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/widgets"; then ready=1; break; fi
-        # On FreeBSD the app is a root child of sudo — $pid is the wrapper, so
-        # a dead-pid check would false-abort. Wait purely on the port there.
-        [ "$FREEBSD" -eq 1 ] || kill -0 "$pid" 2>/dev/null || break
+        kill -0 "$pid" 2>/dev/null || break
         sleep 0.25
     done
     if [ "$ready" -ne 1 ]; then
         printf "%-14s %6s %6s   %s\n" "$name" - - "APP DID NOT START (see $log)"
         SUITES_RED=$((SUITES_RED + 1))
         kill "$pid" 2>/dev/null
-        [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$bin" 2>/dev/null
+        [ "$FREEBSD" -eq 1 ] && pkill -f "$bin" 2>/dev/null
         continue
     fi
 
@@ -286,14 +285,14 @@ for gp in "${GP_SPECS[@]}"; do
     ready=0
     for _ in $(seq 1 40); do
         if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/widgets"; then ready=1; break; fi
-        [ "$FREEBSD" -eq 1 ] || kill -0 "$pid" 2>/dev/null || break
+        kill -0 "$pid" 2>/dev/null || break
         sleep 0.25
     done
     if [ "$ready" -ne 1 ]; then
         printf "%-14s %6s %6s   %s\n" "gp_$gp" - - "APP DID NOT START (see $log)"
         SUITES_RED=$((SUITES_RED + 1))
         kill "$pid" 2>/dev/null
-        [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$GP_BIN" 2>/dev/null
+        [ "$FREEBSD" -eq 1 ] && pkill -f "$GP_BIN" 2>/dev/null
         rm -rf "$fix"
         continue
     fi
