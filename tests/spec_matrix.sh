@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # spec_matrix.sh — run every Aeocha suite against its app and tabulate.
 #
 # The platform-parity baseline in one command. The Windows equivalent of this
@@ -33,6 +33,35 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*|Darwin) export AETHER_UI_HEADLESS=1 ;;
 esac
 export AETHER_UI_NO_ANIMATION=1
+
+# Per-OS launch wrapper + the exe suffix. FreeBSD (GhostBSD) is a full
+# desktop with NO Xvfb, so we drive the LIVE :0 through lightdm's root-owned
+# Xauthority — which needs root, hence the sudo (NOPASSWD is set for the CI
+# user on the shared box). See ~/aether-ui-freebsd-notes.md on .204. The app
+# then runs AS ROOT, so pid-based liveness/teardown can't see it (it's a child
+# of sudo) — the loop below waits on the PORT and pkills by binary name.
+EXE=""; FREEBSD=0
+LX_AUTH="${AEUI_XAUTHORITY:-/var/run/lightdm/root/:0}"
+LX_DISPLAY="${DISPLAY:-:0}"
+case "$(uname -s)" in
+    FreeBSD) FREEBSD=1 ;;
+    MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;;
+esac
+
+# Launch `$bin` with the given inline `VAR=val` env pairs. On FreeBSD the app
+# must reach the live :0 as root (no Xvfb) — and `sudo` RESETS the environment,
+# so DISPLAY/XAUTHORITY *and* the caller's vars all go INSIDE the sudo env.
+# Elsewhere it's a plain env exec. Backgrounded by the caller (trailing &).
+aui_launch() {   # aui_launch VAR=val ... -- <bin>
+    local envs=()
+    while [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    shift
+    if [ "$FREEBSD" -eq 1 ]; then
+        sudo -n env "DISPLAY=$LX_DISPLAY" "XAUTHORITY=$LX_AUTH" "${envs[@]}" "$@"
+    else
+        env "${envs[@]}" "$@"
+    fi
+}
 
 # suite | binary | spec | extra env
 SUITES=(
@@ -103,9 +132,17 @@ port_free() {
 }
 
 teardown() {
-    local pid="$1"
+    local pid="$1" bin="$2"
     curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:$PORT/shutdown" || true
-    port_free || { kill "$pid" 2>/dev/null; sleep 0.5; kill -9 "$pid" 2>/dev/null; }
+    if ! port_free; then
+        if [ "$FREEBSD" -eq 1 ]; then
+            # The app is a root child of sudo — kill it by name, not pid.
+            sudo -n pkill -f "$bin" 2>/dev/null
+        else
+            kill "$pid" 2>/dev/null; sleep 0.5; kill -9 "$pid" 2>/dev/null
+        fi
+    fi
+    [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$bin" 2>/dev/null
     wait "$pid" 2>/dev/null
 }
 
@@ -118,18 +155,29 @@ for row in "${SUITES[@]}"; do
     IFS='|' read -r name appdir spec extra <<< "$row"
     want_suite "$name" || continue
 
-    bin="target/build/$appdir/bin/$(basename "$appdir")"
+    base="$(basename "$appdir")"
+    bin="target/build/$appdir/bin/$base"
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             # aeb's fan-out can't build UI apps on MSYS yet (the
             # _orchestrator.c generation bug) — build.sh into build/ is
             # the Windows path, building on demand.
-            bin="build/$(basename "$appdir").exe"
+            bin="build/$base.exe"
             if [ ! -x "$bin" ]; then
-                ./build.sh "$appdir/$(basename "$appdir").ae" \
-                    "$(basename "$appdir")" > "/tmp/smx_$(basename "$appdir").log" 2>&1 \
-                    || true
+                ./build.sh "$appdir/$base.ae" "$base" \
+                    > "/tmp/smx_$base.log" 2>&1 || true
             fi
+            ;;
+        FreeBSD)
+            # The sudo/:0 launch runs from a changed cwd, so an ABSOLUTE path
+            # is required. Prefer the aeb fan-out artifact if present; else
+            # build.sh into build/ on demand.
+            if [ ! -x "$bin" ]; then
+                bin="build/$base"
+                [ -x "$bin" ] || ./build.sh "$appdir/$base.ae" "$base" \
+                    > "/tmp/smx_$base.log" 2>&1 || true
+            fi
+            [ -x "$bin" ] && bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
             ;;
     esac
     if [ ! -x "$bin" ]; then
@@ -142,25 +190,28 @@ for row in "${SUITES[@]}"; do
 
     log="$(mktemp)"
     # shellcheck disable=SC2086
-    env AETHER_UI_TEST_PORT=$PORT $extra "$bin" >"$log" 2>&1 &
+    aui_launch AETHER_UI_TEST_PORT=$PORT $extra -- "$bin" >"$log" 2>&1 &
     pid=$!
 
     ready=0
     for _ in $(seq 1 40); do
         if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/widgets"; then ready=1; break; fi
-        kill -0 "$pid" 2>/dev/null || break
+        # On FreeBSD the app is a root child of sudo — $pid is the wrapper, so
+        # a dead-pid check would false-abort. Wait purely on the port there.
+        [ "$FREEBSD" -eq 1 ] || kill -0 "$pid" 2>/dev/null || break
         sleep 0.25
     done
     if [ "$ready" -ne 1 ]; then
         printf "%-14s %6s %6s   %s\n" "$name" - - "APP DID NOT START (see $log)"
         SUITES_RED=$((SUITES_RED + 1))
         kill "$pid" 2>/dev/null
+        [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$bin" 2>/dev/null
         continue
     fi
 
     out="$(UI_SPEC="$spec" tests/run_spec.sh 2>&1)"
     rc=$?
-    teardown "$pid"
+    teardown "$pid" "$bin"
 
     pass=$(printf '%s' "$out" | grep -oE '[0-9]+ passing' | grep -oE '[0-9]+' | head -1)
     fail=$(printf '%s' "$out" | grep -oE '[0-9]+ failing' | grep -oE '[0-9]+' | head -1)
@@ -197,6 +248,14 @@ case "$(uname -s)" in
                 grand_perspective > /tmp/smx_gp.log 2>&1 || true
         fi
         ;;
+    FreeBSD)
+        if [ ! -x "$GP_BIN" ]; then
+            GP_BIN="build/grand_perspective"
+            [ -x "$GP_BIN" ] || ./build.sh apps/grand_perspective/grand_perspective.ae \
+                grand_perspective > /tmp/smx_gp.log 2>&1 || true
+        fi
+        [ -x "$GP_BIN" ] && GP_BIN="$(cd "$(dirname "$GP_BIN")" && pwd)/$(basename "$GP_BIN")"
+        ;;
 esac
 for gp in "${GP_SPECS[@]}"; do
     want_suite "gp_$gp" || continue
@@ -221,25 +280,27 @@ for gp in "${GP_SPECS[@]}"; do
     esac
 
     log="$(mktemp)"
-    env AETHER_UI_TEST_PORT=$PORT AEVG_DIR="$fix_app" GP_FIXTURE="$fix_app" \
-        "$GP_BIN" >"$log" 2>&1 &
+    aui_launch AETHER_UI_TEST_PORT=$PORT AEVG_DIR="$fix_app" GP_FIXTURE="$fix_app" \
+        -- "$GP_BIN" >"$log" 2>&1 &
     pid=$!
     ready=0
     for _ in $(seq 1 40); do
         if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/widgets"; then ready=1; break; fi
-        kill -0 "$pid" 2>/dev/null || break
+        [ "$FREEBSD" -eq 1 ] || kill -0 "$pid" 2>/dev/null || break
         sleep 0.25
     done
     if [ "$ready" -ne 1 ]; then
         printf "%-14s %6s %6s   %s\n" "gp_$gp" - - "APP DID NOT START (see $log)"
         SUITES_RED=$((SUITES_RED + 1))
-        kill "$pid" 2>/dev/null; rm -rf "$fix"
+        kill "$pid" 2>/dev/null
+        [ "$FREEBSD" -eq 1 ] && sudo -n pkill -f "$GP_BIN" 2>/dev/null
+        rm -rf "$fix"
         continue
     fi
 
     out="$(AEVG_DIR="$fix_app" GP_FIXTURE="$fix_app" UI_SPEC="grand_perspective/spec_${gp}" \
            tests/run_spec.sh 2>&1)"
-    teardown "$pid"
+    teardown "$pid" "$GP_BIN"
     rm -rf "$fix" "$log"
 
     pass=$(printf '%s' "$out" | grep -oE '[0-9]+ passing' | grep -oE '[0-9]+' | head -1)

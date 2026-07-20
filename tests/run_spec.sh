@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # tests/run_spec.sh — launcher glue for ALL the Aeocha driver specs.
 # The specs are Aether programs (tests/<app>/spec_*.ae) built on the shared
 # tests/lib/uidriver.ae client; this wrapper only wires the module search
