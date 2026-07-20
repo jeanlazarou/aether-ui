@@ -1,0 +1,57 @@
+// Undo/Redo — the Swing UndoManager shape on aether-ui. undoable(label,
+// do, undo) runs the action AND records the pair; Ctrl+Z / Ctrl+Shift+Z
+// are prewired via enable_undo_shortcuts(); the driver steps the same
+// stack via POST /undo, POST /redo, GET /undo_state.
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider,
+    undoable, undo, redo, enable_undo_shortcuts, enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+extern malloc(size: int) -> ptr
+
+// Mutable state captured across NESTED closures must live on the heap
+// (the do/undo lambdas outlive the button callback's frame).
+struct Cnt { v: int }
+
+main() {
+    window("Undo manager", 440, 300) {
+        vstack(10) {
+            total = text("total: 0")
+            name = text("name: Ellen")
+            divider()
+            cnt = malloc(8) as *Cnt
+            cnt.v = 0
+            hstack(8) {
+                _a = btn("Add 5") callback {
+                    undoable("add 5", || {
+                        cnt.v = cnt.v + 5
+                        aether_ui_text_set_string(total,
+                            string.concat("total: ", string.from_int(cnt.v)))
+                    }, || {
+                        cnt.v = cnt.v - 5
+                        aether_ui_text_set_string(total,
+                            string.concat("total: ", string.from_int(cnt.v)))
+                    })
+                }
+                _r = btn("Rename") callback {
+                    undoable("rename", || {
+                        aether_ui_text_set_string(name, "name: Ripley")
+                    }, || {
+                        aether_ui_text_set_string(name, "name: Ellen")
+                    })
+                }
+                _u = btn("Undo") callback { _du = undo() }
+                _d = btn("Redo") callback { _dr = redo() }
+            }
+            divider()
+            text("Ctrl+Z / Ctrl+Shift+Z work too.")
+        }
+        enable_undo_shortcuts()
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

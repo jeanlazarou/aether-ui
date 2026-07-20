@@ -70,6 +70,8 @@ SUITES=(
   "themes|examples/themes_demo|themes_demo/spec_themes_demo|"
   "csssem|examples/csssem_demo|csssem_demo/spec_csssem_demo|"
   "zen|examples/zen_demo|zen_demo/spec_zen_demo|"
+  "states|examples/states_demo|states_demo/spec_states_demo|"
+  "undo|examples/undo_demo|undo_demo/spec_undo_demo|"
   "falling_blocks|apps/falling_blocks|falling_blocks/spec_falling_blocks|"
   "svg_tetris|apps/svg_tetris|svg_tetris/spec_svg_tetris|"
   "rubiks_cube|apps/rubiks_cube|rubiks_cube/spec_rubiks_cube|"

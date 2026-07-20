@@ -1,0 +1,70 @@
+// QML States on AeCS — named states for a widget subtree, each an AeCS
+// sheet fragment. set_state applies through the existing style setters, so
+// properties with a declared ui.transition ANIMATE and the rest snap. The
+// current state is driver-visible as a marker class ("st-<name>").
+//
+//   AetherUIDriver: set AETHER_UI_TEST_PORT to arm the HTTP test server (9222).
+
+import ui
+import ui (window, vstack, hstack, text, btn, divider, add_css_class,
+    create_styles, st_color, st_bg, st_font_size, st_opacity,
+    ui_states, add_state, set_state, current_state, transition,
+    enable_test_server)
+import std.os (os_getenv)
+import std.string
+
+extern aether_ui_text_set_string(handle: int, text: string)
+
+collapsed_sheet() -> ptr {
+    s = create_styles()
+    st_bg(s, "container", 0x2B2B33)
+    st_color(s, "text", 0x8888AA)
+    st_color(s, "cardtitle.text", 0xAAAACC)
+    st_font_size(s, "cardtitle.text", 12.0)
+    st_opacity(s, "detail.text", 0.25)
+    return s
+}
+
+expanded_sheet() -> ptr {
+    s = create_styles()
+    st_bg(s, "container", 0xEFF2F8)
+    st_color(s, "text", 0x2A3550)
+    st_color(s, "cardtitle.text", 0x1E4FA0)
+    st_font_size(s, "cardtitle.text", 18.0)
+    st_opacity(s, "detail.text", 1.0)
+    return s
+}
+
+main() {
+    window("QML States on AeCS", 460, 320) {
+        vstack(10) {
+            status = text("st: none")
+            divider()
+            card = vstack(6) {
+                title = text("Order #4177")
+                add_css_class(title, "cardtitle")
+                det = text("3 items - ships tomorrow - paid")
+                add_css_class(det, "detail")
+                // Declared transition: opacity changes between states TWEEN.
+                _tr = transition(det, "opacity", 400, "ease_out")
+            }
+            divider()
+            ws = ui_states(card)
+            add_state(ws, "collapsed", collapsed_sheet())
+            add_state(ws, "expanded", expanded_sheet())
+            hstack(8) {
+                _c = btn("Collapse") callback {
+                    _s1 = set_state(ws, "collapsed")
+                    aether_ui_text_set_string(status,
+                        string.concat("st: ", current_state(ws)))
+                }
+                _e = btn("Expand") callback {
+                    _s2 = set_state(ws, "expanded")
+                    aether_ui_text_set_string(status,
+                        string.concat("st: ", current_state(ws)))
+                }
+            }
+        }
+        if os_getenv("AETHER_UI_TEST_PORT") != null { enable_test_server(9222) }
+    }
+}

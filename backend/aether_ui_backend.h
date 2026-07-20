@@ -181,6 +181,18 @@ int aether_ui_appearance_invoke(int dark);
 void aether_ui_watch_appearance_impl(void);   // idempotent OS-event hookup
 int aether_ui_fire_appearance(int dark);      // driver: override + invoke
 
+// Undo/redo (Swing UndoManager shape; stack lives in system_extras.c).
+// _step is the DIRECT call (UI thread — app-side undo()/redo());
+// fire_undo/redo are the driver's marshalled twins (HTTP thread safe).
+void aether_ui_undo_push_impl(const char* label, void* undo_boxed, void* redo_boxed);
+int aether_ui_undo_step_impl(void);
+int aether_ui_redo_step_impl(void);
+int aether_ui_undo_depth_impl(void);
+int aether_ui_redo_depth_impl(void);
+const char* aether_ui_undo_label_impl(void);
+int aether_ui_fire_undo(void);
+int aether_ui_fire_redo(void);
+
 void aether_ui_set_bg_color(int handle, double r, double g, double b, double a);
 void aether_ui_set_bg_gradient(int handle,
                                double r1, double g1, double b1,

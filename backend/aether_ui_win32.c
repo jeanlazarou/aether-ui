@@ -3832,6 +3832,11 @@ int aether_ui_styled_opacity_impl(int handle) {
 // app_wnd_proc; nothing extra to hook up.
 void aether_ui_watch_appearance_impl(void) { }
 
+// Undo/redo driver fire — direct from the HTTP thread (the /drop
+// precedent: cross-thread SendMessages tolerate it on win32).
+int aether_ui_fire_undo(void) { return aether_ui_undo_step_impl(); }
+int aether_ui_fire_redo(void) { return aether_ui_redo_step_impl(); }
+
 int aether_ui_fire_appearance(int dark) {
     aether_ui_appearance_override_set(dark ? 1 : 0);
     // Direct invoke from the HTTP thread — same threading posture as the

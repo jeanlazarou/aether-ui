@@ -4629,6 +4629,24 @@ static gboolean fire_appearance_idle(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+// Undo/redo driver fire — marshalled to the GTK thread (edit closures
+// mutate widgets); the HTTP thread spins on done like the other idles.
+typedef struct { int redo; int did; volatile int done; } AeuiUndoReq;
+static gboolean aeui_undo_idle(gpointer data) {
+    AeuiUndoReq* r = (AeuiUndoReq*)data;
+    r->did = r->redo ? aether_ui_redo_step_impl() : aether_ui_undo_step_impl();
+    r->done = 1;
+    return G_SOURCE_REMOVE;
+}
+static int aeui_fire_undo_redo(int redo) {
+    AeuiUndoReq r = { redo, 0, 0 };
+    g_idle_add(aeui_undo_idle, &r);
+    while (!r.done) g_usleep(1000);
+    return r.did;
+}
+int aether_ui_fire_undo(void) { return aeui_fire_undo_redo(0); }
+int aether_ui_fire_redo(void) { return aeui_fire_undo_redo(1); }
+
 int aether_ui_fire_appearance(int dark) {
     aether_ui_appearance_override_set(dark ? 1 : 0);
     // The callback re-themes live widgets — GTK thread only.
@@ -5595,6 +5613,29 @@ static void handle_test_request(int client_fd) {
         while (!rq.done) usleep(1000);
         send_response(client_fd, 200, "OK", "application/json", rq.out ? rq.out : "[]");
         free(rq.out);
+        close(client_fd);
+        return;
+    }
+
+    // POST /undo | /redo — step the edit stack (marshalled to the GTK
+    // thread); GET /undo_state — depths + the next undo's label.
+    if (method == 1 && (strcmp(path, "/undo") == 0 || strcmp(path, "/redo") == 0)) {
+        int did = (path[1] == 'u') ? aether_ui_fire_undo() : aether_ui_fire_redo();
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"did\":%d,\"undo_depth\":%d,\"redo_depth\":%d}",
+                 did, aether_ui_undo_depth_impl(), aether_ui_redo_depth_impl());
+        send_response(client_fd, 200, "OK", "application/json", body);
+        close(client_fd);
+        return;
+    }
+    if (method == 0 && strcmp(path, "/undo_state") == 0) {
+        char body[192];
+        snprintf(body, sizeof(body),
+                 "{\"undo_depth\":%d,\"redo_depth\":%d,\"label\":\"%s\"}",
+                 aether_ui_undo_depth_impl(), aether_ui_redo_depth_impl(),
+                 aether_ui_undo_label_impl());
+        send_response(client_fd, 200, "OK", "application/json", body);
         close(client_fd);
         return;
     }

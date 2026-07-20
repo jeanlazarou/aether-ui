@@ -2649,6 +2649,20 @@ void aether_ui_watch_appearance_impl(void) {
                 }];
 }
 
+// Undo/redo driver fire — marshalled to the main thread (edit closures
+// mutate AppKit views).
+static int aeui_fire_undo_redo(int redo) {
+    __block int did = 0;
+    void (^fire)(void) = ^{
+        did = redo ? aether_ui_redo_step_impl() : aether_ui_undo_step_impl();
+    };
+    if ([NSThread isMainThread]) fire();
+    else dispatch_sync(dispatch_get_main_queue(), fire);
+    return did;
+}
+int aether_ui_fire_undo(void) { return aeui_fire_undo_redo(0); }
+int aether_ui_fire_redo(void) { return aeui_fire_undo_redo(1); }
+
 int aether_ui_fire_appearance(int dark) {
     aether_ui_appearance_override_set(dark ? 1 : 0);
     void (^fire)(void) = ^{ aether_ui_appearance_invoke(dark ? 1 : 0); };

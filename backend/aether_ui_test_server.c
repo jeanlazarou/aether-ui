@@ -554,6 +554,22 @@ static void handle_request(aether_sock_t client_fd, const AetherDriverHooks* h) 
         char body[64];
         snprintf(body, sizeof(body), "{\"fired\":%s}", fired ? "true" : "false");
         send_http(client_fd, 200, "OK", "application/json", body);
+    } else if (method == 1 && (strcmp(path, "/undo") == 0
+                               || strcmp(path, "/redo") == 0)) {
+        // Step the edit stack via the backend's marshalled fire.
+        int did = (path[1] == 'u') ? aether_ui_fire_undo() : aether_ui_fire_redo();
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"did\":%d,\"undo_depth\":%d,\"redo_depth\":%d}",
+                 did, aether_ui_undo_depth_impl(), aether_ui_redo_depth_impl());
+        send_http(client_fd, 200, "OK", "application/json", body);
+    } else if (method == 0 && strcmp(path, "/undo_state") == 0) {
+        char body[192];
+        snprintf(body, sizeof(body),
+                 "{\"undo_depth\":%d,\"redo_depth\":%d,\"label\":\"%s\"}",
+                 aether_ui_undo_depth_impl(), aether_ui_redo_depth_impl(),
+                 aether_ui_undo_label_impl());
+        send_http(client_fd, 200, "OK", "application/json", body);
     } else if (method == 1 && strncmp(path, "/appearance", 11) == 0) {
         // POST /appearance?dark=N — steer the OS-appearance override
         // headlessly (AeCS styles_for_mode re-theme; see the GTK4 twin).

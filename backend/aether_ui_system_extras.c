@@ -397,3 +397,47 @@ int aether_ui_appearance_invoke(int dark) {
     ((void (*)(void*, long long))c->fn)(c->env, (long long)dark);
     return 1;
 }
+
+// ---------------------------------------------------------------------------
+// Undo/redo edit stack (the Swing UndoManager shape; docs: roadmap backlog).
+// Edits [0, cursor) are undoable, [cursor, len) redoable. Pushing a new edit
+// truncates the redo tail (the classic rule). Closures are zero-arg.
+// ---------------------------------------------------------------------------
+#define AEUI_UNDO_CAP 128
+typedef struct { char* label; void* undo_boxed; void* redo_boxed; } AeUndoEdit;
+static AeUndoEdit undo_stack[AEUI_UNDO_CAP];
+static int undo_len = 0, undo_cursor = 0;
+
+void aether_ui_undo_push_impl(const char* label, void* undo_boxed, void* redo_boxed) {
+    for (int i = undo_cursor; i < undo_len; i++) free(undo_stack[i].label);
+    undo_len = undo_cursor;
+    if (undo_len >= AEUI_UNDO_CAP) {          // drop the oldest edit
+        free(undo_stack[0].label);
+        memmove(undo_stack, undo_stack + 1, sizeof(AeUndoEdit) * (AEUI_UNDO_CAP - 1));
+        undo_len--; undo_cursor--;
+    }
+    undo_stack[undo_len].label = strdup(label ? label : "");
+    undo_stack[undo_len].undo_boxed = undo_boxed;
+    undo_stack[undo_len].redo_boxed = redo_boxed;
+    undo_len++; undo_cursor = undo_len;
+}
+
+// Direct steps — call ON THE UI THREAD (app-side undo()/redo(), or the
+// per-backend marshalled aether_ui_fire_undo/redo for driver routes).
+int aether_ui_undo_step_impl(void) {
+    if (undo_cursor <= 0) return 0;
+    undo_cursor--;
+    invoke_closure(undo_stack[undo_cursor].undo_boxed);
+    return 1;
+}
+int aether_ui_redo_step_impl(void) {
+    if (undo_cursor >= undo_len) return 0;
+    invoke_closure(undo_stack[undo_cursor].redo_boxed);
+    undo_cursor++;
+    return 1;
+}
+int aether_ui_undo_depth_impl(void) { return undo_cursor; }
+int aether_ui_redo_depth_impl(void) { return undo_len - undo_cursor; }
+const char* aether_ui_undo_label_impl(void) {
+    return undo_cursor > 0 ? undo_stack[undo_cursor - 1].label : "";
+}
