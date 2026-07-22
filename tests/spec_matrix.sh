@@ -78,6 +78,7 @@ SUITES=(
   "testable|examples/testable|testable/spec_testable|"
   "context_menu|examples/context_menu|context_menu/spec_context_menu|"
   "overlay|examples/overlay_demo|overlay_demo/spec_overlay_demo|"
+  "auto_hide|examples/auto_hide_demo|auto_hide_demo/spec_auto_hide_demo|"
   "vg_tooltip|examples/vg_tooltip|vg_tooltip/spec_vg_tooltip|AETHER_UI_TOOLTIP=drawn"
   "picker|examples/picker|picker/spec_picker|AETHER_UI_PICKER=drawn"
   "each|examples/each_demo|each_demo/spec_each_demo|"
